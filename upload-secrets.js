@@ -3,7 +3,7 @@ const { readFileSync, writeFileSync } = require("fs");
 const path = require("path");
 const { FunctionsDonUtils } = require("./don-helpers.js");
 
-config();
+
 
 async function uploadSecrets() {
   const privateKey = process.env.PRIVATE_KEY;
