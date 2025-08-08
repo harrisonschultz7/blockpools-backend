@@ -1,7 +1,7 @@
 const { config } = require("dotenv");
 const { readFileSync, writeFileSync } = require("fs");
 const path = require("path");
-const { FunctionsDonUtils } = require("./don-helpers.js");
+const { FunctionsDonUtils } = require("./utils/don-helpers.js");
 
 config();
 
@@ -35,7 +35,7 @@ async function uploadSecrets() {
 
   const outputPath = path.join("secrets", "activeSecrets.json");
   const data = {
-    secretsVersion: encryptedSecretsReference,
+    secretsVersion: encryptedSecretsReference.version,
     donId,
     updatedAt: new Date().toISOString(),
   };
@@ -48,4 +48,3 @@ uploadSecrets().catch((err) => {
   console.error("❌ Upload failed:", err);
   process.exit(1);
 });
-
