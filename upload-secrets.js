@@ -1,4 +1,4 @@
-const { config } = require("dotenv");
+try { require("dotenv").config(); } catch (_) {}
 const { readFileSync, writeFileSync } = require("fs");
 const path = require("path");
 const { FunctionsDonUtils } = require("./utils/don-helpers.js");
