@@ -1,7 +1,7 @@
 try { require("dotenv").config(); } catch (_) {}
 const { readFileSync, writeFileSync } = require("fs");
 const path = require("path");
-const { FunctionsDonUtils } = require("./utils/don-helpers.js");
+const { FunctionsDonUtils } = require("./don-helpers.js");
 
 config();
 
@@ -23,7 +23,7 @@ async function uploadSecrets() {
 
   await donUtils.initialize();
 
-  const secrets = JSON.parse(readFileSync("secrets/secrets.json", "utf8"));
+  const secrets = JSON.parse(readFileSync("secrets.json", "utf8"));
   const encryptedSecretsHexstring = await donUtils.encryptSecrets(secrets);
 
   const { encryptedSecretsReference } = await donUtils.uploadEncryptedSecrets({
@@ -33,7 +33,7 @@ async function uploadSecrets() {
   console.log("✅ Secrets uploaded successfully!");
   console.log("📦 Reference:", encryptedSecretsReference);
 
-  const outputPath = path.join("secrets", "activeSecrets.json");
+  const outputPath = path.join("activeSecrets.json");
   const data = {
     secretsVersion: encryptedSecretsReference.version,
     donId,
