@@ -1,4 +1,4 @@
-// upload-secrets.js — resilient DON-hosted uploader (0.3.x fallback fixed)
+// upload-secrets.js — resilient DON-hosted uploader (0.3.x shapes normalized)
 try { require("dotenv").config(); } catch (_) {}
 
 const fs = require("fs");
@@ -22,6 +22,28 @@ function must(name) {
   const v = process.env[name];
   if (!v || !String(v).trim()) throw new Error(`❌ Missing required env: ${name}`);
   return v;
+}
+
+// normalize any output (string / object / Uint8Array) to a 0x-prefixed hex string
+function to0xHex(maybe) {
+  if (!maybe) return null;
+  if (typeof maybe === "string") {
+    // already hex?
+    if (/^0x[0-9a-fA-F]*$/.test(maybe)) return maybe;
+    // plain hex without 0x?
+    if (/^[0-9a-fA-F]+$/.test(maybe)) return "0x" + maybe;
+    return null;
+  }
+  // toolkit sometimes returns { encryptedSecretsHexstring } or { encryptedSecrets }
+  if (typeof maybe === "object") {
+    if (typeof maybe.encryptedSecretsHexstring === "string")
+      return to0xHex(maybe.encryptedSecretsHexstring);
+    if (typeof maybe.encryptedSecrets === "string")
+      return to0xHex(maybe.encryptedSecrets);
+    if (maybe instanceof Uint8Array)
+      return "0x" + Buffer.from(maybe).toString("hex");
+  }
+  return null;
 }
 
 (async () => {
@@ -65,11 +87,15 @@ function must(name) {
     }
   }
 
-  if (!version && typeof sm.uploadEncryptedSecretsToDON === "function") {
-    const encryptedSecretsHexstring = await sm.encryptSecrets(secrets);
+  if (!version && typeof sm.encryptSecrets === "function" && typeof sm.uploadEncryptedSecretsToDON === "function") {
+    const enc = await sm.encryptSecrets(secrets);
+    const encryptedSecretsHexstring = to0xHex(enc);
+    if (!encryptedSecretsHexstring) {
+      throw new Error("encryptSecrets() did not return a valid hex payload");
+    }
     ({ version, slotId } = await sm.uploadEncryptedSecretsToDON({
       encryptedSecretsHexstring,
-      gatewayUrls: GATEWAY_URLS,        // ← required on 0.3.x
+      gatewayUrls: GATEWAY_URLS,           // required on 0.3.x
       secondsUntilExpiration: TTL_SECONDS,
       slotId: SLOT_ID,
     }));
