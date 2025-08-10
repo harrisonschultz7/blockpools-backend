@@ -1,4 +1,4 @@
-// upload-secrets.js — resilient DON-hosted uploader (0.3.x shapes normalized)
+// upload-secrets.js — resilient DON-hosted uploader (0.3.x fixed minutes param)
 try { require("dotenv").config(); } catch (_) {}
 
 const fs = require("fs");
@@ -28,13 +28,10 @@ function must(name) {
 function to0xHex(maybe) {
   if (!maybe) return null;
   if (typeof maybe === "string") {
-    // already hex?
     if (/^0x[0-9a-fA-F]*$/.test(maybe)) return maybe;
-    // plain hex without 0x?
     if (/^[0-9a-fA-F]+$/.test(maybe)) return "0x" + maybe;
     return null;
   }
-  // toolkit sometimes returns { encryptedSecretsHexstring } or { encryptedSecrets }
   if (typeof maybe === "object") {
     if (typeof maybe.encryptedSecretsHexstring === "string")
       return to0xHex(maybe.encryptedSecretsHexstring);
@@ -78,7 +75,7 @@ function to0xHex(maybe) {
     try {
       ({ version, slotId } = await sm.uploadSecretsToDON({
         secrets,
-        secondsUntilExpiration: TTL_SECONDS,
+        secondsUntilExpiration: TTL_SECONDS,   // new API uses seconds
         slotId: SLOT_ID,
       }));
       console.log("ℹ️ Used uploadSecretsToDON");
@@ -90,21 +87,19 @@ function to0xHex(maybe) {
   if (!version && typeof sm.encryptSecrets === "function" && typeof sm.uploadEncryptedSecretsToDON === "function") {
     const enc = await sm.encryptSecrets(secrets);
     const encryptedSecretsHexstring = to0xHex(enc);
-    if (!encryptedSecretsHexstring) {
-      throw new Error("encryptSecrets() did not return a valid hex payload");
-    }
+    if (!encryptedSecretsHexstring) throw new Error("encryptSecrets() did not return a valid hex payload");
+
+    const minutesUntilExpiration = Math.max(5, Math.floor(TTL_SECONDS / 60)); // 0.3.x expects minutes >= 5
     ({ version, slotId } = await sm.uploadEncryptedSecretsToDON({
       encryptedSecretsHexstring,
-      gatewayUrls: GATEWAY_URLS,           // required on 0.3.x
-      secondsUntilExpiration: TTL_SECONDS,
+      gatewayUrls: GATEWAY_URLS,            // required on 0.3.x
+      minutesUntilExpiration,               // ← fix: use minutes, not seconds
       slotId: SLOT_ID,
     }));
     console.log("ℹ️ Used uploadEncryptedSecretsToDON (fallback, 0.3.x)");
   }
 
-  if (!version) {
-    throw new Error("No compatible DON-hosted upload method found on this toolkit build.");
-  }
+  if (!version) throw new Error("No compatible DON-hosted upload method found on this toolkit build.");
 
   console.log("✅ DON-hosted secrets uploaded:", { version: Number(version), slotId });
 
@@ -112,13 +107,7 @@ function to0xHex(maybe) {
   fs.writeFileSync(
     "activeSecrets.json",
     JSON.stringify(
-      {
-        secretsVersion: Number(version),
-        slotId,
-        donId: DON_ID,
-        uploadedAt: new Date().toISOString(),
-        canary: secrets.CANARY,
-      },
+      { secretsVersion: Number(version), slotId, donId: DON_ID, uploadedAt: new Date().toISOString(), canary: secrets.CANARY },
       null,
       2
     )
