@@ -1,0 +1,14 @@
+{
+  "name": "secrets-uploader",
+  "private": true,
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "upload": "node upload-secrets.js"
+  },
+  "dependencies": {
+    "@chainlink/functions-toolkit": "^0.10.0",
+    "ethers": "^5.7.2",
+    "dotenv": "^16.4.5"
+  }
+}
