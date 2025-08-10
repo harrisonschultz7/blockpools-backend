@@ -1,4 +1,4 @@
-// upload-secrets.js — robust: supports new uploadSecretsToDON and older uploadEncryptedSecretsToDON
+// upload-secrets.js — resilient DON-hosted uploader with auto-fallback
 try { require("dotenv").config(); } catch (_) {}
 
 const fs = require("fs");
@@ -19,7 +19,7 @@ function must(name) {
 }
 
 (async () => {
-  // 1) Build secrets from GH Actions env (never from repo file)
+  // 1) Build secrets from GH Actions env (no repo file)
   const secrets = {
     MLB_API_KEY: must("MLB_API_KEY"),
     NFL_API_KEY: must("NFL_API_KEY"),
@@ -43,36 +43,51 @@ function must(name) {
   });
   await sm.initialize();
 
-  // 3) Upload to DON-hosted (handle both toolkit APIs)
+  // 3) Upload to DON-hosted (try modern API, then older encrypted-to-DON API)
   let version, slotId;
+
   if (typeof sm.uploadSecretsToDON === "function") {
-    // Newer toolkit API (preferred) – takes plain object
-    ({ version, slotId } = await sm.uploadSecretsToDON({
-      secrets,
-      secondsUntilExpiration: TTL_SECONDS,
-      slotId: SLOT_ID,
-    }));
-  } else if (typeof sm.uploadEncryptedSecretsToDON === "function") {
-    // Older toolkit API – encrypt first, then upload encrypted payload to DON
+    try {
+      ({ version, slotId } = await sm.uploadSecretsToDON({
+        secrets,
+        secondsUntilExpiration: TTL_SECONDS,
+        slotId: SLOT_ID,
+      }));
+      console.log("ℹ️ Used uploadSecretsToDON");
+    } catch (e) {
+      console.warn("⚠️ uploadSecretsToDON threw, will fall back:", e.message || e);
+    }
+  }
+
+  if (!version && typeof sm.uploadEncryptedSecretsToDON === "function") {
     const encryptedSecretsHexstring = await sm.encryptSecrets(secrets);
     ({ version, slotId } = await sm.uploadEncryptedSecretsToDON({
       encryptedSecretsHexstring,
       secondsUntilExpiration: TTL_SECONDS,
       slotId: SLOT_ID,
     }));
-  } else {
+    console.log("ℹ️ Used uploadEncryptedSecretsToDON (fallback)");
+  }
+
+  if (!version) {
     throw new Error(
-      "Toolkit too old: neither uploadSecretsToDON nor uploadEncryptedSecretsToDON exists."
+      "No compatible DON-hosted upload method found on this toolkit build."
     );
   }
 
-  console.log("✅ DON-hosted secrets uploaded:", { version, slotId });
+  console.log("✅ DON-hosted secrets uploaded:", { version: Number(version), slotId });
 
   // 4) Persist short version pointer for send-request.js
   fs.writeFileSync(
     "activeSecrets.json",
     JSON.stringify(
-      { secretsVersion: Number(version), slotId, donId: DON_ID, uploadedAt: new Date().toISOString(), canary: secrets.CANARY },
+      {
+        secretsVersion: Number(version),
+        slotId,
+        donId: DON_ID,
+        uploadedAt: new Date().toISOString(),
+        canary: secrets.CANARY,
+      },
       null,
       2
     )
