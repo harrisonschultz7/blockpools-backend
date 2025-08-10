@@ -1,4 +1,4 @@
-// upload-secrets.js — DON-hosted secrets (short version), no repo file reads
+// upload-secrets.js — robust: supports new uploadSecretsToDON and older uploadEncryptedSecretsToDON
 try { require("dotenv").config(); } catch (_) {}
 
 const fs = require("fs");
@@ -6,7 +6,7 @@ const crypto = require("crypto");
 const { ethers } = require("ethers");
 const { SecretsManager } = require("@chainlink/functions-toolkit");
 
-// Network / DON config (Ethereum Sepolia)
+// Ethereum Sepolia
 const FUNCTIONS_ROUTER = "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0";
 const DON_ID = "fun-ethereum-sepolia-1";
 const SLOT_ID = 0;
@@ -19,7 +19,7 @@ function must(name) {
 }
 
 (async () => {
-  // 1) Build secrets from GitHub Actions env (never from a repo file)
+  // 1) Build secrets from GH Actions env (never from repo file)
   const secrets = {
     MLB_API_KEY: must("MLB_API_KEY"),
     NFL_API_KEY: must("NFL_API_KEY"),
@@ -28,7 +28,6 @@ function must(name) {
     CANARY: `gh-actions-${new Date().toISOString()}`,
   };
 
-  // Redacted audit (no secret values in logs)
   const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
   console.log("🔐 Building DON-hosted payload (redacted). keys:", Object.keys(secrets).join(", "));
   console.log("   payload sha256:", sha);
@@ -44,20 +43,36 @@ function must(name) {
   });
   await sm.initialize();
 
-  // 3) Upload to DON-hosted (returns SHORT integer version)
-  const { version, slotId } = await sm.uploadSecretsToDON({
-    secrets,
-    secondsUntilExpiration: TTL_SECONDS,
-    slotId: SLOT_ID,
-  });
+  // 3) Upload to DON-hosted (handle both toolkit APIs)
+  let version, slotId;
+  if (typeof sm.uploadSecretsToDON === "function") {
+    // Newer toolkit API (preferred) – takes plain object
+    ({ version, slotId } = await sm.uploadSecretsToDON({
+      secrets,
+      secondsUntilExpiration: TTL_SECONDS,
+      slotId: SLOT_ID,
+    }));
+  } else if (typeof sm.uploadEncryptedSecretsToDON === "function") {
+    // Older toolkit API – encrypt first, then upload encrypted payload to DON
+    const encryptedSecretsHexstring = await sm.encryptSecrets(secrets);
+    ({ version, slotId } = await sm.uploadEncryptedSecretsToDON({
+      encryptedSecretsHexstring,
+      secondsUntilExpiration: TTL_SECONDS,
+      slotId: SLOT_ID,
+    }));
+  } else {
+    throw new Error(
+      "Toolkit too old: neither uploadSecretsToDON nor uploadEncryptedSecretsToDON exists."
+    );
+  }
 
   console.log("✅ DON-hosted secrets uploaded:", { version, slotId });
 
-  // 4) Persist pointer for send-request.js
+  // 4) Persist short version pointer for send-request.js
   fs.writeFileSync(
     "activeSecrets.json",
     JSON.stringify(
-      { secretsVersion: version, slotId, donId: DON_ID, uploadedAt: new Date().toISOString(), canary: secrets.CANARY },
+      { secretsVersion: Number(version), slotId, donId: DON_ID, uploadedAt: new Date().toISOString(), canary: secrets.CANARY },
       null,
       2
     )
