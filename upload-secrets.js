@@ -1,4 +1,4 @@
-// upload-secrets.js — resilient DON-hosted uploader (with gateway URLs for old toolkit)
+// upload-secrets.js — resilient DON-hosted uploader (0.3.x fallback fixed)
 try { require("dotenv").config(); } catch (_) {}
 
 const fs = require("fs");
@@ -12,7 +12,7 @@ const DON_ID = "fun-ethereum-sepolia-1";
 const SLOT_ID = 0;
 const TTL_SECONDS = 14 * 24 * 60 * 60; // 14 days
 
-// Required by older toolkit (0.3.x) when using encrypted-to-DON path
+// Needed for toolkit 0.3.x when using encrypted-to-DON path
 const GATEWAY_URLS = [
   "https://01.functions-gateway.testnet.chain.link/",
   "https://02.functions-gateway.testnet.chain.link/",
@@ -46,11 +46,10 @@ function must(name) {
     signer,
     functionsRouterAddress: FUNCTIONS_ROUTER,
     donId: DON_ID,
-    gatewayUrls: GATEWAY_URLS, // <-- important for 0.3.x fallback path
   });
   await sm.initialize();
 
-  // 3) Upload to DON-hosted (try modern API, then 0.3.x encrypted-to-DON)
+  // 3) Upload to DON-hosted (prefer modern API; fallback to 0.3.x encrypted-to-DON)
   let version, slotId;
 
   if (typeof sm.uploadSecretsToDON === "function") {
@@ -70,6 +69,7 @@ function must(name) {
     const encryptedSecretsHexstring = await sm.encryptSecrets(secrets);
     ({ version, slotId } = await sm.uploadEncryptedSecretsToDON({
       encryptedSecretsHexstring,
+      gatewayUrls: GATEWAY_URLS,        // ← required on 0.3.x
       secondsUntilExpiration: TTL_SECONDS,
       slotId: SLOT_ID,
     }));
