@@ -2,21 +2,23 @@
 try { require("dotenv").config(); } catch (_) {}
 
 const fs = require("fs");
+const path = require("path");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
 const { SecretsManager } = require("@chainlink/functions-toolkit");
 
-// Ethereum Sepolia
+// --- Network/Router (Ethereum Sepolia)
 const FUNCTIONS_ROUTER = "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0";
 const DON_ID = "fun-ethereum-sepolia-1";
-const SLOT_ID = 0;
 
-// ---- TTL (adjustable). Gateways reject long expirations on testnet.
-// Use 24h by default; you can override via env DON_TTL_MINUTES.
-const TTL_MINUTES = Math.max(5, Math.min(10080, Number(process.env.DON_TTL_MINUTES || 1440))); // 5..10080
+// IMPORTANT: keep this in sync with your send script (or read from activeSecrets.json there).
+const SLOT_ID = Number(process.env.SLOT_ID ?? 0);
+
+// TTL (5 min .. 7 days typical on test envs)
+const TTL_MINUTES = Math.max(5, Math.min(10080, Number(process.env.DON_TTL_MINUTES || 1440)));
 const TTL_SECONDS = TTL_MINUTES * 60;
 
-// Needed for toolkit 0.3.x when using encrypted-to-DON path
+// Fallback path for older toolkit
 const GATEWAY_URLS = [
   "https://01.functions-gateway.testnet.chain.link/",
   "https://02.functions-gateway.testnet.chain.link/",
@@ -24,10 +26,9 @@ const GATEWAY_URLS = [
 
 function must(name) {
   const v = process.env[name];
-  if (!v || !String(v).trim()) throw new Error(`❌ Missing required env: ${name}`);
+  if (!v || !String(v).trim()) throw new Error(`Missing required env: ${name}`);
   return v;
 }
-
 function to0xHex(maybe) {
   if (!maybe) return null;
   if (typeof maybe === "string") {
@@ -44,49 +45,55 @@ function to0xHex(maybe) {
 }
 
 (async () => {
-function want(name) {
-  const v = process.env[name];
-  return v && String(v).trim() ? v : undefined;
-}
-
-// Add/extend this list any time you add leagues.
-const secrets = { CANARY: `gh-actions-${new Date().toISOString()}` };
-
-// Pick up every *_API_KEY present in env
-for (const [k, v] of Object.entries(process.env)) {
-  if (/_API_KEY$/i.test(k) && v && String(v).trim()) {
-    secrets[k] = v;
+  // --- Deep debug: show what REALLY exists in process.env for these keys
+  const leagueKeys = ["MLB_API_KEY","NFL_API_KEY","NBA_API_KEY","NHL_API_KEY","EPL_API_KEY","UCL_API_KEY"];
+  console.log("Env presence (process.env) for *_API_KEY:");
+  for (const k of leagueKeys) {
+    const val = process.env[k];
+    console.log(
+      `  ${k}:`,
+      val && String(val).trim() ? `present (len=${String(val).length})` : "MISSING/empty"
+    );
   }
-}
 
-// Pick up every *_ENDPOINT present in env
-for (const [k, v] of Object.entries(process.env)) {
-  if (/_ENDPOINT$/i.test(k) && v && String(v).trim()) {
-    secrets[k] = v;
+  // Collect secrets dynamically
+  const secrets = { CANARY: `gh-actions-${new Date().toISOString()}` };
+
+  // Pick up every *_API_KEY present in env
+  const apiKeyNames = Object.keys(process.env).filter(k => /_API_KEY$/i.test(k));
+  // Also log the names we see in Node (not just in the workflow echo)
+  console.log("Discovered *_API_KEY names in process.env:", apiKeyNames);
+
+  for (const k of apiKeyNames) {
+    const v = process.env[k];
+    if (v && String(v).trim()) secrets[k] = v;
   }
-}
 
-console.log("Collected secrets from env:", Object.keys(secrets));
+  // Optionally upload *_ENDPOINT too (harmless if unused)
+  const endpointNames = Object.keys(process.env).filter(k => /_ENDPOINT$/i.test(k));
+  console.log("Discovered *_ENDPOINT names in process.env:", endpointNames);
+  for (const k of endpointNames) {
+    const v = process.env[k];
+    if (v && String(v).trim()) secrets[k] = v;
+  }
 
-
-// still require RPC + PRIVATE_KEY for the uploader to run
+  // Build + log the payload keys we will upload
+  const payloadKeys = Object.keys(secrets);
   const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
-  console.log("🔐 Building DON-hosted payload (redacted). keys:", Object.keys(secrets).join(", "));
-  console.log("   payload sha256:", sha, "TTL_MINUTES:", TTL_MINUTES);
+  console.log("Building DON-hosted payload. keys:", payloadKeys.join(", "));
+  console.log("payload sha256:", sha, "TTL_MINUTES:", TTL_MINUTES, "SLOT_ID:", SLOT_ID);
 
-  const provider = new ethers.providers.JsonRpcProvider(must("SEPOLIA_RPC_URL"));
+  // Signer & RPC (prefer Arbitrum var if present later; you’re on Sepolia today)
+  const rpcUrl = process.env.ARBITRUM_SEPOLIA_RPC_URL || must("SEPOLIA_RPC_URL");
+  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
   const signer = new ethers.Wallet(must("PRIVATE_KEY"), provider);
 
-  const sm = new SecretsManager({
-    signer,
-    functionsRouterAddress: FUNCTIONS_ROUTER,
-    donId: DON_ID,
-  });
+  const sm = new SecretsManager({ signer, functionsRouterAddress: FUNCTIONS_ROUTER, donId: DON_ID });
   await sm.initialize();
 
   let version, slotId;
 
-  // Newer toolkit path (seconds)
+  // Preferred (newer) path
   if (typeof sm.uploadSecretsToDON === "function") {
     try {
       ({ version, slotId } = await sm.uploadSecretsToDON({
@@ -94,41 +101,42 @@ console.log("Collected secrets from env:", Object.keys(secrets));
         secondsUntilExpiration: Math.max(300, Math.min(10080 * 60, TTL_SECONDS)),
         slotId: SLOT_ID,
       }));
-      console.log("ℹ️ Used uploadSecretsToDON");
+      console.log("Used uploadSecretsToDON");
     } catch (e) {
-      console.warn("⚠️ uploadSecretsToDON threw, falling back:", e.message || e);
+      console.warn("uploadSecretsToDON failed, falling back:", e.message || e);
     }
   }
 
-  // Old 0.3.x path (minutes + gatewayUrls)
+  // Back-compat path
   if (!version && typeof sm.encryptSecrets === "function" && typeof sm.uploadEncryptedSecretsToDON === "function") {
     const enc = await sm.encryptSecrets(secrets);
     const encryptedSecretsHexstring = to0xHex(enc);
     if (!encryptedSecretsHexstring) throw new Error("encryptSecrets() did not return a valid hex payload");
-
     ({ version, slotId } = await sm.uploadEncryptedSecretsToDON({
       encryptedSecretsHexstring,
       gatewayUrls: GATEWAY_URLS,
-      minutesUntilExpiration: TTL_MINUTES, // must be >= 5, not too big
+      minutesUntilExpiration: TTL_MINUTES,
       slotId: SLOT_ID,
     }));
-    console.log("ℹ️ Used uploadEncryptedSecretsToDON (fallback, 0.3.x)");
+    console.log("Used uploadEncryptedSecretsToDON (fallback, 0.3.x)");
   }
 
   if (!version) throw new Error("No compatible DON-hosted upload method found on this toolkit build.");
 
-  console.log("✅ DON-hosted secrets uploaded:", { version: Number(version), slotId });
+  console.log("DON-hosted secrets uploaded:", { version: Number(version), slotId });
 
+  // Always write to REPO ROOT so the sender picks up the latest pointer
+  const outPath = path.resolve(__dirname, "../../activeSecrets.json");
   fs.writeFileSync(
-    "activeSecrets.json",
+    outPath,
     JSON.stringify(
-      { secretsVersion: Number(version), slotId, donId: DON_ID, uploadedAt: new Date().toISOString(), canary: secrets.CANARY },
+      { secretsVersion: Number(version), slotId: Number(slotId ?? SLOT_ID), donId: DON_ID, uploadedAt: new Date().toISOString(), canary: secrets.CANARY },
       null,
       2
     )
   );
-  console.log("📝 Wrote activeSecrets.json");
+  console.log("Wrote", outPath);
 })().catch((e) => {
-  console.error("❌ Upload failed:", e);
+  console.error("Upload failed:", e);
   process.exit(1);
 });
