@@ -44,14 +44,24 @@ function to0xHex(maybe) {
 }
 
 (async () => {
-  const secrets = {
-    MLB_API_KEY: must("MLB_API_KEY"),
-    NFL_API_KEY: must("NFL_API_KEY"),
-    MLB_ENDPOINT: must("MLB_ENDPOINT"),
-    NFL_ENDPOINT: must("NFL_ENDPOINT"),
-    CANARY: `gh-actions-${new Date().toISOString()}`,
-  };
+function want(name) {
+  const v = process.env[name];
+  return v && String(v).trim() ? v : undefined;
+}
 
+// Add/extend this list any time you add leagues.
+const LEAGUES = ["MLB", "NFL", "NBA", "NHL", "EPL", "UCL"];
+
+const secrets = { CANARY: `gh-actions-${new Date().toISOString()}` };
+
+for (const L of LEAGUES) {
+  const k = want(`${L}_API_KEY`);
+  const e = want(`${L}_ENDPOINT`);
+  if (k) secrets[`${L}_API_KEY`] = k;
+  if (e) secrets[`${L}_ENDPOINT`] = e;
+}
+
+// still require RPC + PRIVATE_KEY for the uploader to run
   const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
   console.log("🔐 Building DON-hosted payload (redacted). keys:", Object.keys(secrets).join(", "));
   console.log("   payload sha256:", sha, "TTL_MINUTES:", TTL_MINUTES);
