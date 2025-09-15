@@ -50,16 +50,24 @@ function want(name) {
 }
 
 // Add/extend this list any time you add leagues.
-const LEAGUES = ["MLB", "NFL", "NBA", "NHL", "EPL", "UCL"];
-
 const secrets = { CANARY: `gh-actions-${new Date().toISOString()}` };
 
-for (const L of LEAGUES) {
-  const k = want(`${L}_API_KEY`);
-  const e = want(`${L}_ENDPOINT`);
-  if (k) secrets[`${L}_API_KEY`] = k;
-  if (e) secrets[`${L}_ENDPOINT`] = e;
+// Pick up every *_API_KEY present in env
+for (const [k, v] of Object.entries(process.env)) {
+  if (/_API_KEY$/i.test(k) && v && String(v).trim()) {
+    secrets[k] = v;
+  }
 }
+
+// Pick up every *_ENDPOINT present in env
+for (const [k, v] of Object.entries(process.env)) {
+  if (/_ENDPOINT$/i.test(k) && v && String(v).trim()) {
+    secrets[k] = v;
+  }
+}
+
+console.log("Collected secrets from env:", Object.keys(secrets));
+
 
 // still require RPC + PRIVATE_KEY for the uploader to run
   const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
