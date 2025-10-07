@@ -24,20 +24,15 @@ jobs:
         with:
           node-version: 20
 
-      # Run with ephemeral deps (no npm ci). Transpile-only avoids type issues.
       - name: Run settlement bot (ephemeral deps, transpile-only)
         env:
-          # map your existing secrets here 👇
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          # optional: add this secret if you have a TSDB key; code defaults to "1" if unset
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          # start with a dry run; flip to "0" once logs look good
-          DRY_RUN: "1"
+          DRY_RUN: "1"                  # flip to "0" after a good dry run
           MAX_TX_PER_RUN: "8"
           REQUEST_GAP_SECONDS: "120"
-          # optionally list contracts here (comma/space-separated) to bypass games.json
-          CONTRACTS: ${{ secrets.CONTRACTS }}
+          CONTRACTS: ${{ secrets.CONTRACTS }}   # optional
           TS_NODE_COMPILER_OPTIONS: >-
             {"module":"commonjs","moduleResolution":"node","esModuleInterop":true,
              "resolveJsonModule":true,"skipLibCheck":true}
@@ -47,5 +42,5 @@ jobs:
           --package typescript@5
           --package axios@^1
           --package ethers@^6
-          --package dotenv@^16
           ts-node --transpile-only bots/settlement-bot.ts
+
