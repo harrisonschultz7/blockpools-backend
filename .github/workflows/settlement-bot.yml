@@ -2,7 +2,7 @@ name: Settlement Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"  # every 5 minutes (UTC)
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -24,7 +24,6 @@ jobs:
         with:
           node-version: 20
 
-      # Cache node_modules for the minimal bot-runner workspace
       - name: Cache bot dependencies
         id: bot_cache
         uses: actions/cache@v4
@@ -34,10 +33,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bot-deps-
 
-      # Install only if cache missed
       - name: Install bot deps
         if: steps.bot_cache.outputs.cache-hit != 'true'
-        run: npm ci --omit=optional
+        run: npm install --omit=optional --no-audit --no-fund
         working-directory: bot-runner
 
       - name: Run settlement bot (via cached tsx)
@@ -45,9 +43,9 @@ jobs:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "1"               # flip to "0" after a good dry run
+          DRY_RUN: "1"              # flip to "0" after a good dry run
           MAX_TX_PER_RUN: "8"
           REQUEST_GAP_SECONDS: "120"
-          CONTRACTS: ${{ secrets.CONTRACTS }}   # optional list of addresses
+          CONTRACTS: ${{ secrets.CONTRACTS }}   # optional (comma/space-separated)
         run: ./node_modules/.bin/tsx ../bots/settlement-bot.ts
         working-directory: bot-runner
