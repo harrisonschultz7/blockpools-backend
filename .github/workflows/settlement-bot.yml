@@ -24,17 +24,22 @@ jobs:
         with:
           node-version: 20
 
+      # Install only what the script needs at runtime.
+      - name: Prepare minimal deps (ethers only)
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --no-save ethers@^6
+
       - name: Run settlement bot (ESM via tsx)
         env:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "1"                  # flip to "0" after a good dry run
+          DRY_RUN: "1"                 # flip to "0" after a good dry run
           MAX_TX_PER_RUN: "8"
           REQUEST_GAP_SECONDS: "120"
-          CONTRACTS: ${{ secrets.CONTRACTS }}   # optional
+          CONTRACTS: ${{ secrets.CONTRACTS }}   # optional: list of pool addresses
         run: >
           npx -y
           --package tsx@^4
-          --package ethers@^6
           tsx bots/settlement-bot.ts
