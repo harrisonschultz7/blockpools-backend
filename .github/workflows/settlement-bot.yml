@@ -2,7 +2,7 @@ name: Settlement Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (UTC)
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -40,7 +40,5 @@ jobs:
           npx -y
           --package ts-node@10.9.2
           --package typescript@5
-          --package axios@^1
           --package ethers@^6
           ts-node --transpile-only bots/settlement-bot.ts
-
