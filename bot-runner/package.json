@@ -1,0 +1,9 @@
+{
+  "name": "settlement-bot-runner",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ethers": "^6",
+    "tsx": "^4"
+  }
+}
