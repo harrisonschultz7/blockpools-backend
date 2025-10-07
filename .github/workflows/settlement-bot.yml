@@ -7,7 +7,7 @@ on:
 
 jobs:
   run:
-    if: github.ref == 'refs/heads/main'   # only run on main
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,15 +27,17 @@ jobs:
       # Run with ephemeral deps (no npm ci). Transpile-only avoids type issues.
       - name: Run settlement bot (ephemeral deps, transpile-only)
         env:
-          RPC_URL: ${{ secrets.RPC_URL }}
+          # map your existing secrets here 👇
+          RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          # optional: add this secret if you have a TSDB key; code defaults to "1" if unset
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "1"                 # set to "0" after a successful dry run
+          # start with a dry run; flip to "0" once logs look good
+          DRY_RUN: "1"
           MAX_TX_PER_RUN: "8"
           REQUEST_GAP_SECONDS: "120"
-          # Optional: comma/space-separated contract addresses if you don't want to rely on games.json
+          # optionally list contracts here (comma/space-separated) to bypass games.json
           CONTRACTS: ${{ secrets.CONTRACTS }}
-          # Make TS lenient and allow JSON imports if ever added
           TS_NODE_COMPILER_OPTIONS: >-
             {"module":"commonjs","moduleResolution":"node","esModuleInterop":true,
              "resolveJsonModule":true,"skipLibCheck":true}
