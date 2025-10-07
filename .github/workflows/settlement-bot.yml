@@ -7,7 +7,7 @@ on:
 
 jobs:
   run:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'   # only run on main
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,9 +24,21 @@ jobs:
         with:
           node-version: 20
 
-      # Run the bot without installing your repo's node_modules.
-      # npx will fetch only what the bot needs for this run.
-      - name: Run settlement bot (ephemeral deps)
+      # Run with ephemeral deps (no npm ci). Transpile-only avoids type issues.
+      - name: Run settlement bot (ephemeral deps, transpile-only)
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
+          DRY_RUN: "1"                 # set to "0" after a successful dry run
+          MAX_TX_PER_RUN: "8"
+          REQUEST_GAP_SECONDS: "120"
+          # Optional: comma/space-separated contract addresses if you don't want to rely on games.json
+          CONTRACTS: ${{ secrets.CONTRACTS }}
+          # Make TS lenient and allow JSON imports if ever added
+          TS_NODE_COMPILER_OPTIONS: >-
+            {"module":"commonjs","moduleResolution":"node","esModuleInterop":true,
+             "resolveJsonModule":true,"skipLibCheck":true}
         run: >
           npx -y
           --package ts-node@10.9.2
@@ -34,12 +46,4 @@ jobs:
           --package axios@^1
           --package ethers@^6
           --package dotenv@^16
-          ts-node bots/settlement-bot.ts
-        env:
-          RPC_URL: ${{ secrets.RPC_URL }}
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          # Set to "1" for a safe test run (no txs), then back to "0".
-          DRY_RUN: "0"
-          MAX_TX_PER_RUN: "8"
-          REQUEST_GAP_SECONDS: "120"
+          ts-node --transpile-only bots/settlement-bot.ts
