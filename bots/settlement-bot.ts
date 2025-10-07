@@ -1,10 +1,15 @@
-import 'dotenv/config';
+// @ts-nocheck
+
+// Optional .env for local runs; CI passes env via secrets.
+// If dotenv isn't present, this no-ops.
+try { require('dotenv').config(); } catch {}
+
 import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
 import { ethers } from 'ethers';
 
-// ===== Env =====
+/** ===== Env ===== */
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
 const TSDB_KEY = process.env.THESPORTSDB_API_KEY || '1';
@@ -12,14 +17,25 @@ const DRY_RUN = process.env.DRY_RUN === '1';
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
-// ===== Paths =====
-const GAMES_PATH = path.resolve(__dirname, '..', 'src', 'data', 'games.json');
+/** ===== Paths (try a couple spots) ===== */
+const GAMES_CANDIDATES = [
+  path.resolve(__dirname, '..', 'src', 'data', 'games.json'),
+  path.resolve(__dirname, '..', 'games.json'),
+];
 
-// ===== ABI =====
-import poolAbiJson from '../build/artifacts/contracts/GamePool.sol/GamePool.json';
-const poolAbi = (poolAbiJson as any).abi;
+/** ===== Minimal ABI (reads + requestSettlement only) ===== */
+const poolAbi = [
+  { inputs: [], name: 'league', outputs: [{ internalType: 'string', name: '', type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'teamAName', outputs: [{ internalType: 'string', name: '', type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'teamBName', outputs: [{ internalType: 'string', name: '', type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'isLocked', outputs: [{ internalType: 'bool', name: '', type: 'bool' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'requestSent', outputs: [{ internalType: 'bool', name: '', type: 'bool' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'winningTeam', outputs: [{ internalType: 'uint8', name: '', type: 'uint8' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'lockTime', outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'requestSettlement', outputs: [], stateMutability: 'nonpayable', type: 'function' },
+] as const;
 
-// ===== Utils (match your send-request helpers) =====
+/** ===== Utils (mirror your send-request helpers) ===== */
 function epochToEtISO(epochSec: number) {
   const dt = new Date(epochSec * 1000);
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -30,8 +46,9 @@ function epochToEtISO(epochSec: number) {
   });
   const parts: Record<string, string> = {};
   for (const p of fmt.formatToParts(dt)) parts[p.type] = p.value;
-  return `${parts.year}-${parts.month}-${parts.day}`; // YYYY-MM-DD
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
+
 function addDaysISO(iso: string, days: number) {
   const [y, m, d] = iso.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -41,6 +58,7 @@ function addDaysISO(iso: string, days: number) {
   const d2 = String(dt.getUTCDate()).padStart(2, '0');
   return `${y2}-${m2}-${d2}`;
 }
+
 const f = (s: string) => (s || '').trim().toLowerCase();
 
 function statusIsFinal(evt: any) {
@@ -50,11 +68,9 @@ function statusIsFinal(evt: any) {
     /^(FT|AOT|AET|PEN|FINISHED)$/.test(statusU) ||
     /final/i.test(statusU) ||
     /final/i.test(prog);
-
   const hs = Number(evt?.intHomeScore ?? NaN);
   const as = Number(evt?.intAwayScore ?? NaN);
-  const haveScores = Number.isFinite(hs) && Number.isFinite(as);
-  return isFinished && haveScores;
+  return isFinished && Number.isFinite(hs) && Number.isFinite(as);
 }
 
 function toEpoch(evt: any) {
@@ -80,7 +96,6 @@ function toEpoch(evt: any) {
 
 async function fetchDay(leagueKey: string, dayIso: string) {
   if (!dayIso) return [];
-  // Map your lowercase league to TheSportsDB league name used in eventsday.php
   const TSDB: Record<string, string> = {
     mlb: 'MLB',
     nfl: 'NFL',
@@ -89,7 +104,7 @@ async function fetchDay(leagueKey: string, dayIso: string) {
     epl: 'English%20Premier%20League',
     ucl: 'UEFA%20Champions%20League',
   };
-  const lk = leagueKey.toLowerCase();
+  const lk = (leagueKey || '').toLowerCase();
   if (!TSDB[lk]) return [];
   const url = `https://www.thesportsdb.com/api/v1/json/${TSDB_KEY}/eventsday.php?d=${dayIso}&l=${TSDB[lk]}`;
   const { data } = await axios.get(url, { timeout: 10000 });
@@ -114,26 +129,50 @@ function pickBestEvent(events: any[], startEpoch: number, nameA: string, nameB: 
   return candidates[0].e;
 }
 
-// Flatten your grouped games.json into a list of contract addresses.
-// We don't need team codes from the file because we read names on-chain.
+/** ===== Input discovery ===== */
 function loadContractsFromGames(): string[] {
-  const raw = fs.readFileSync(GAMES_PATH, 'utf8');
-  const grouped = JSON.parse(raw) as Record<string, Array<{ contractAddress: string }>>;
-  const addrs: string[] = [];
-  for (const key of Object.keys(grouped)) {
-    for (const g of grouped[key]) {
-      if (g?.contractAddress) addrs.push(g.contractAddress);
+  for (const p of GAMES_CANDIDATES) {
+    if (fs.existsSync(p)) {
+      try {
+        const raw = fs.readFileSync(p, 'utf8');
+        const grouped = JSON.parse(raw) as Record<string, Array<{ contractAddress: string }>>;
+        const addrs: string[] = [];
+        for (const key of Object.keys(grouped)) {
+          for (const g of grouped[key]) if (g?.contractAddress) addrs.push(g.contractAddress);
+        }
+        const uniq = Array.from(new Set(addrs));
+        if (uniq.length) {
+          console.log(`Using games from ${p} (${uniq.length} contracts)`);
+          return uniq;
+        }
+      } catch (e) {
+        console.warn(`Failed to parse ${p}:`, (e as Error).message);
+      }
     }
   }
-  // dedupe
-  return Array.from(new Set(addrs));
+  const envList = (process.env.CONTRACTS || '').trim();
+  if (envList) {
+    const arr = envList.split(/[,\s]+/).filter(Boolean);
+    const filtered = arr.filter(a => {
+      try { return ethers.isAddress(a); } catch { return false; }
+    });
+    if (filtered.length) {
+      console.log(`Using CONTRACTS from env (${filtered.length})`);
+      return Array.from(new Set(filtered));
+    }
+  }
+  console.warn('No contracts found in games.json or CONTRACTS env. Nothing to do.');
+  return [];
 }
 
+/** ===== Main ===== */
 async function main() {
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
   const contracts = loadContractsFromGames();
+  if (!contracts.length) return;
+
   let submitted = 0;
 
   for (const addr of contracts) {
@@ -141,7 +180,6 @@ async function main() {
 
     const pool = new ethers.Contract(addr, poolAbi, wallet);
 
-    // Read on-chain config/state (single source of truth)
     let league: string, teamAName: string, teamBName: string;
     let isLocked: boolean, requestSent: boolean, winningTeam: number, lockTime: number;
     try {
@@ -152,7 +190,7 @@ async function main() {
         pool.isLocked(),
         pool.requestSent(),
         pool.winningTeam().then((x: any) => Number(x)),
-        pool.lockTime ? pool.lockTime().then((x: any) => Number(x)) : 0,
+        pool.lockTime().then((x: any) => Number(x)),
       ]);
       league = String(lg || '').toLowerCase();
       teamAName = String(ta || '');
@@ -166,13 +204,11 @@ async function main() {
       continue;
     }
 
-    // On-chain gates
     if (!isLocked) continue;
     if (winningTeam !== 0) continue;
     if (requestSent) continue;
     if (lockTime > 0 && Date.now() / 1000 < lockTime + REQUEST_GAP_SECONDS) continue;
 
-    // Off-chain final check (mirror your SOURCE)
     const d0 = epochToEtISO(lockTime);
     const d1 = addDaysISO(d0, 1);
 
@@ -180,25 +216,17 @@ async function main() {
     try {
       const ev0 = await fetchDay(league, d0);
       const ev1 = await fetchDay(league, d1);
-      const all = [...ev0, ...ev1];
-      picked = pickBestEvent(all, lockTime, teamAName, teamBName);
-      if (!picked) {
-        // No match found off-chain; skip and let next run try again
-        continue;
-      }
-      if (!statusIsFinal(picked)) {
-        // Not final yet
-        continue;
-      }
+      picked = pickBestEvent([...ev0, ...ev1], lockTime, teamAName, teamBName);
+      if (!picked) continue;
+      if (!statusIsFinal(picked)) continue;
     } catch (e) {
       console.error(`[ERR] TSDB query ${addr}:`, (e as Error).message);
       continue;
     }
 
-    // Trigger on-chain request (Functions will double-check and write)
     try {
       if (DRY_RUN) {
-        console.log(`[DRY_RUN] Would requestSettlement() on ${addr}  (${league.toUpperCase()} ${teamAName} vs ${teamBName})`);
+        console.log(`[DRY_RUN] Would call requestSettlement() on ${addr}  (${league.toUpperCase()} ${teamAName} vs ${teamBName})`);
       } else {
         const tx = await pool.requestSettlement();
         console.log(`[OK] requestSettlement sent for ${addr}: ${tx.hash}`);
@@ -216,3 +244,5 @@ main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
+
+
