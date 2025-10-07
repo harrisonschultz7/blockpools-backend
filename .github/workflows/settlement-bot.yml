@@ -33,19 +33,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bot-deps-
 
-      - name: Install bot deps
+      - name: Install bot deps (if cache miss)
         if: steps.bot_cache.outputs.cache-hit != 'true'
         run: npm install --omit=optional --no-audit --no-fund
         working-directory: bot-runner
+
+      # Make cached deps visible to bots/ by creating a root-level symlink
+      - name: Link cached deps at repo root
+        run: ln -sfn bot-runner/node_modules node_modules
 
       - name: Run settlement bot (via cached tsx)
         env:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "1"              # flip to "0" after a good dry run
+          DRY_RUN: "1"             # flip to "0" after a good dry run
           MAX_TX_PER_RUN: "8"
           REQUEST_GAP_SECONDS: "120"
-          CONTRACTS: ${{ secrets.CONTRACTS }}   # optional (comma/space-separated)
-        run: ./node_modules/.bin/tsx ../bots/settlement-bot.ts
-        working-directory: bot-runner
+          CONTRACTS: ${{ secrets.CONTRACTS }}   # optional: comma/space-separated
+        run: ./bot-runner/node_modules/.bin/tsx bots/settlement-bot.ts
