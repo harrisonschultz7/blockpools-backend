@@ -1,12 +1,10 @@
 // @ts-nocheck
 
-// Optional .env for local runs; CI passes env via secrets.
-// If dotenv isn't present, this no-ops.
+// Optional .env for local runs; CI uses secrets. If dotenv isn't present, this no-ops.
 try { require('dotenv').config(); } catch {}
 
 import fs from 'fs';
 import path from 'path';
-import axios from 'axios';
 import { ethers } from 'ethers';
 
 /** ===== Env ===== */
@@ -25,13 +23,13 @@ const GAMES_CANDIDATES = [
 
 /** ===== Minimal ABI (reads + requestSettlement only) ===== */
 const poolAbi = [
-  { inputs: [], name: 'league', outputs: [{ internalType: 'string', name: '', type: 'string' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'teamAName', outputs: [{ internalType: 'string', name: '', type: 'string' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'teamBName', outputs: [{ internalType: 'string', name: '', type: 'string' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'isLocked', outputs: [{ internalType: 'bool', name: '', type: 'bool' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'requestSent', outputs: [{ internalType: 'bool', name: '', type: 'bool' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'winningTeam', outputs: [{ internalType: 'uint8', name: '', type: 'uint8' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'lockTime', outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'league', outputs: [{ internalType: 'string', type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'teamAName', outputs: [{ internalType: 'string', type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'teamBName', outputs: [{ internalType: 'string', type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'isLocked', outputs: [{ internalType: 'bool',   type: 'bool'   }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'requestSent', outputs: [{ internalType: 'bool', type: 'bool'   }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'winningTeam', outputs: [{ internalType: 'uint8',type: 'uint8'  }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'lockTime', outputs: [{ internalType: 'uint256', type: 'uint256'}], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'requestSettlement', outputs: [], stateMutability: 'nonpayable', type: 'function' },
 ] as const;
 
@@ -94,6 +92,13 @@ function toEpoch(evt: any) {
   return null;
 }
 
+// Node 20 has global fetch + AbortSignal.timeout
+async function fetchJSON(url: string, timeoutMs = 10000) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return res.json();
+}
+
 async function fetchDay(leagueKey: string, dayIso: string) {
   if (!dayIso) return [];
   const TSDB: Record<string, string> = {
@@ -107,7 +112,7 @@ async function fetchDay(leagueKey: string, dayIso: string) {
   const lk = (leagueKey || '').toLowerCase();
   if (!TSDB[lk]) return [];
   const url = `https://www.thesportsdb.com/api/v1/json/${TSDB_KEY}/eventsday.php?d=${dayIso}&l=${TSDB[lk]}`;
-  const { data } = await axios.get(url, { timeout: 10000 });
+  const data = await fetchJSON(url, 10000);
   const ev = (data && data.events) || [];
   return Array.isArray(ev) ? ev : [];
 }
@@ -244,5 +249,3 @@ main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
-
-
