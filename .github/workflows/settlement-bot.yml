@@ -69,7 +69,7 @@ jobs:
 
           # TSDB + behavior
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "1"                  # set to "0" to actually send txs
+          DRY_RUN: "0"                  # set to "0" to actually send txs
           MAX_TX_PER_RUN: "8"
           REQUEST_GAP_SECONDS: "120"
           CONTRACTS: ${{ secrets.CONTRACTS }}             # optional fallback
