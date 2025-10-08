@@ -2,7 +2,7 @@ name: Settlement Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes
+    - cron: "*/5 * * * *"   # every 5 minutes (UTC)
   workflow_dispatch: {}
 
 jobs:
@@ -46,4 +46,32 @@ jobs:
         working-directory: bot-runner
 
       - name: Link cached deps at repo root
-       
+        run: ln -sfn bot-runner/node_modules node_modules
+
+      - name: Run settlement bot (send on-chain)
+        env:
+          # RPC + signer (must be deployer/owner EOA)
+          RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+
+          # Chainlink Functions config
+          SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}
+          FUNCTIONS_GAS_LIMIT: "300000"
+          DON_SECRETS_SLOT: "0"
+
+          # DON pointer loader
+          GITHUB_OWNER: "harrisonschultz7"
+          GITHUB_REPO: "blockpools-backend"
+          GITHUB_REF: "main"
+          GH_PAT: ${{ secrets.GH_PAT }}
+
+          # Sports API + runtime
+          THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
+          DRY_RUN: "0"  # ✅ send real transactions
+          MAX_TX_PER_RUN: "8"
+          REQUEST_GAP_SECONDS: "120"
+
+          # Frontend games.json source
+          GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
+
+        run: ./bot-runner/node_modules/.bin/tsx bots/settlement-bot.ts
