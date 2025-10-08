@@ -2,7 +2,7 @@ name: Settlement Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (UTC)
+    - cron: "*/5 * * * *"   # every 5 minutes
   workflow_dispatch: {}
 
 jobs:
@@ -16,17 +16,15 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      # Backend (this repo)
       - name: Checkout backend repo
         uses: actions/checkout@v4
 
-      # Frontend repo — source of truth for games.json
       - name: Checkout frontend repo (for games.json)
         uses: actions/checkout@v4
         with:
           repository: harrisonschultz7/blockpools-frontend
           path: frontend-src
-          token: ${{ secrets.FRONTEND_READ_TOKEN }}  # PAT with read access
+          token: ${{ secrets.FRONTEND_READ_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -48,35 +46,4 @@ jobs:
         working-directory: bot-runner
 
       - name: Link cached deps at repo root
-        run: ln -sfn bot-runner/node_modules node_modules
-
-      - name: Run settlement bot (classic sendRequest)
-        env:
-          # RPC + signer
-          RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-
-          # Chainlink Functions params
-          SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}  # e.g. 4766
-          FUNCTIONS_GAS_LIMIT: "300000"
-          DON_SECRETS_SLOT: "0"
-
-          # DON pointer loader (same as scripts/send-request.js)
-          GITHUB_OWNER: "harrisonschultz7"
-          GITHUB_REPO: "blockpools-backend"
-          GITHUB_REF: "main"
-          GH_PAT: ${{ secrets.GH_PAT }}                    # optional; if repo is private
-
-          # TSDB + behavior
-          THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "0"                  # set to "0" to actually send txs
-          MAX_TX_PER_RUN: "8"
-          REQUEST_GAP_SECONDS: "120"
-          CONTRACTS: ${{ secrets.CONTRACTS }}             # optional fallback
-
-          # Path inside the checked-out frontend repo:
-          GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
-
-          # If your SOURCE_CODE still needs 6-arg compat, flip this:
-          # COMPAT_TSDB: "1"
-        run: ./bot-runner/node_modules/.bin/tsx bots/settlement-bot.ts
+       
