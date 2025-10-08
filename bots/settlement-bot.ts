@@ -8,23 +8,23 @@ import { ethers } from "ethers";
 // ===== Env =====
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
-
-const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);               // uint64
-const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
-const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);         // uint8
+const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);
+const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000);
+const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);
 const COMPAT_TSDB = process.env.COMPAT_TSDB === "1";
 
+// "1" = dry run only; "0" = actually send txs
+const DRY_RUN = process.env.DRY_RUN === "1";
+
 const TSDB_KEY = process.env.THESPORTSDB_API_KEY || "0";
-const DRY_RUN = process.env.DRY_RUN === "0";
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
-const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
-const GITHUB_REF   = process.env.GITHUB_REF   || "main";
-const GH_PAT       = process.env.GH_PAT;
+const GITHUB_REPO = process.env.GITHUB_REPO || "blockpools-backend";
+const GITHUB_REF = process.env.GITHUB_REF || "main";
+const GH_PAT = process.env.GH_PAT;
 
-// Optional: where games.json lives
 const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
 const GAMES_CANDIDATES = [
   path.resolve(__dirname, "..", "src", "data", "games.json"),
@@ -33,23 +33,24 @@ const GAMES_CANDIDATES = [
 
 // ===== ABI loader with fallback =====
 const FALLBACK_MIN_ABI = [
-  { inputs: [], name: "league",     outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamAName",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamBName",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamACode",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamBCode",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "isLocked",   outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "requestSent",outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "winningTeam",outputs: [{ type: "uint8"  }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "lockTime",   outputs: [{ type: "uint256"}], stateMutability: "view", type: "function" },
+  { inputs: [], name: "league", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamAName", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamBName", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamACode", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamBCode", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "isLocked", outputs: [{ type: "bool" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "requestSent", outputs: [{ type: "bool" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "winningTeam", outputs: [{ type: "uint8" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "lockTime", outputs: [{ type: "uint256" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "owner", outputs: [{ type: "address" }], stateMutability: "view", type: "function" },
   {
     inputs: [
       { type: "string[]", name: "args" },
-      { type: "uint64",   name: "subscriptionId" },
-      { type: "uint32",   name: "gasLimit" },
-      { type: "uint8",    name: "donHostedSecretsSlotID" },
-      { type: "uint64",   name: "donHostedSecretsVersion" },
-      { type: "bytes32",  name: "donID" },
+      { type: "uint64", name: "subscriptionId" },
+      { type: "uint32", name: "gasLimit" },
+      { type: "uint8", name: "donHostedSecretsSlotID" },
+      { type: "uint64", name: "donHostedSecretsVersion" },
+      { type: "bytes32", name: "donID" },
     ],
     name: "sendRequest",
     outputs: [],
@@ -58,15 +59,12 @@ const FALLBACK_MIN_ABI = [
   },
 ] as const;
 
-function loadGamePoolAbi(): { abi: any, fromArtifact: boolean } {
+function loadGamePoolAbi(): { abi: any; fromArtifact: boolean } {
   const ARTIFACT_PATH_ENV = process.env.ARTIFACT_PATH?.trim();
-
   const candidates = [
-    // explicit env
     ARTIFACT_PATH_ENV && (path.isAbsolute(ARTIFACT_PATH_ENV)
       ? ARTIFACT_PATH_ENV
       : path.resolve(process.cwd(), ARTIFACT_PATH_ENV)),
-    // common CI/local layouts
     path.resolve(__dirname, "..", "..", "build", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
     path.resolve(__dirname, "..", "..", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
     path.resolve(__dirname, "..", "build", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
@@ -106,7 +104,7 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
       ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "settlement-bot",
-      "Accept": "application/vnd.github+json",
+      Accept: "application/vnd.github+json",
     };
     const res = await fetch(url, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -135,7 +133,6 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 }
 
 const f = (s: string) => (s || "").trim().toLowerCase();
-
 function epochToEtISO(epochSec: number) {
   const dt = new Date(epochSec * 1000);
   const fmt = new Intl.DateTimeFormat("en-CA", {
@@ -148,7 +145,6 @@ function epochToEtISO(epochSec: number) {
   for (const p of fmt.formatToParts(dt)) parts[p.type] = p.value;
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
-
 function addDaysISO(iso: string, days: number) {
   const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -159,80 +155,7 @@ function addDaysISO(iso: string, days: number) {
   return `${y2}-${m2}-${d2}`;
 }
 
-function toEpoch(evt: any) {
-  const ts = evt?.strTimestamp || "";
-  if (ts) {
-    const ms = Date.parse(ts);
-    if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
-  }
-  const de = evt?.dateEvent;
-  const tm = evt?.strTime;
-  if (de && tm) {
-    let iso = `${de}T${tm}`;
-    if (!/Z$/.test(iso)) iso += "Z";
-    const ms = Date.parse(iso);
-    if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
-  }
-  if (de) {
-    const ms = Date.parse(`${de}T00:00:00Z`);
-    if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
-  }
-  return null;
-}
-
-async function fetchJSON(url: string, timeoutMs = 10000) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  return res.json();
-}
-
-async function fetchDay(leagueKey: string, dayIso: string) {
-  if (!dayIso) return [];
-  const TSDB: Record<string, string> = {
-    mlb: "MLB",
-    nfl: "NFL",
-    nba: "NBA",
-    nhl: "NHL",
-    epl: "English%20Premier%20League",
-    ucl: "UEFA%20Champions%20League",
-  };
-  const lk = (leagueKey || "").toLowerCase();
-  if (!TSDB[lk]) return [];
-  const url = `https://www.thesportsdb.com/api/v1/json/${TSDB_KEY}/eventsday.php?d=${dayIso}&l=${TSDB[lk]}`;
-  const data = await fetchJSON(url, 10000);
-  const ev = (data && data.events) || [];
-  return Array.isArray(ev) ? ev : [];
-}
-
-function statusIsFinal(evt: any) {
-  const statusU = String(evt?.strStatus || "").toUpperCase();
-  const prog = String(evt?.strProgress || "");
-  const isFinished =
-    /^(FT|AOT|AET|PEN|FINISHED)$/.test(statusU) ||
-    /final/i.test(statusU) ||
-    /final/i.test(prog);
-  const hs = Number(evt?.intHomeScore ?? NaN);
-  const as = Number(evt?.intAwayScore ?? NaN);
-  return isFinished && Number.isFinite(hs) && Number.isFinite(as);
-}
-
-function pickBestEvent(events: any[], startEpoch: number, nameA: string, nameB: string) {
-  const A = f(nameA), B = f(nameB);
-  const candidates: { e: any; ep: number | null }[] = [];
-  for (const e of events) {
-    const home = f(e.strHomeTeam), away = f(e.strAwayTeam);
-    const isMatch = (home === A && away === B) || (home === B && away === A);
-    if (isMatch) candidates.push({ e, ep: toEpoch(e) });
-  }
-  if (!candidates.length) return null;
-  candidates.sort((a, b) => {
-    const da = a.ep == null ? 1e15 : Math.abs(a.ep - startEpoch);
-    const db = b.ep == null ? 1e15 : Math.abs(b.ep - startEpoch);
-    return da - db || ((a.ep || 0) - (b.ep || 0));
-  });
-  return candidates[0].e;
-}
-
+// ===== games.json loader =====
 function readGamesAtPath(p: string): string[] | null {
   if (!fs.existsSync(p)) return null;
   try {
@@ -264,7 +187,11 @@ function loadContractsFromGames(): string[] {
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
     const filtered = arr.filter((a) => {
-      try { return ethers.isAddress(a); } catch { return false; }
+      try {
+        return ethers.isAddress(a);
+      } catch {
+        return false;
+      }
     });
     if (filtered.length) {
       console.log(`Using CONTRACTS from env (${filtered.length})`);
@@ -277,6 +204,14 @@ function loadContractsFromGames(): string[] {
 
 // ===== Main =====
 async function main() {
+  if (!RPC_URL) throw new Error("RPC_URL missing");
+  if (!PRIVATE_KEY) throw new Error("PRIVATE_KEY missing");
+  if (!process.env.SUBSCRIPTION_ID) throw new Error("SUBSCRIPTION_ID missing");
+
+  console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN})`);
+  console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
+  console.log(`[CFG] FUNCTIONS_GAS_LIMIT=${FUNCTIONS_GAS_LIMIT}`);
+
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
@@ -288,7 +223,6 @@ async function main() {
 
   const donHostedSecretsVersion = BigInt(secretsVersion);
   const donID = ethers.encodeBytes32String(donId);
-
   const contracts = loadContractsFromGames();
   if (!contracts.length) return;
 
@@ -299,9 +233,19 @@ async function main() {
 
     const pool = new ethers.Contract(addr, poolAbi, wallet);
 
-    let league: string, teamAName: string, teamBName: string, teamACode: string, teamBCode: string;
-    let isLocked: boolean, requestSent: boolean, winningTeam: number, lockTime: number;
+    // Verify ownership
+    const botAddr = await wallet.getAddress();
+    let onchainOwner = "(read failed)";
+    try { onchainOwner = await pool.owner(); } catch {}
+    const isOwner = onchainOwner !== "(read failed)" && onchainOwner.toLowerCase() === botAddr.toLowerCase();
+    console.log(`[OWN] pool=${addr} owner=${onchainOwner} bot=${botAddr} isOwner=${isOwner}`);
+    if (!isOwner) {
+      console.error(`[SKIP] ${addr} signer is not the owner. This would revert "Not contract owner".`);
+      continue;
+    }
 
+    let league, teamAName, teamBName, teamACode, teamBCode;
+    let isLocked, requestSent, winningTeam, lockTime;
     try {
       const [lg, ta, tb, tca, tcb, locked, req, win, lt] = await Promise.all([
         pool.league(),
@@ -355,15 +299,9 @@ async function main() {
       teamBName,
     ];
     const args = COMPAT_TSDB ? compatArgs : fullArgs;
-
     console.log(`[DBG] ${addr} args=${JSON.stringify(args)}`);
 
-    if (!Array.isArray(args) || args.length === 0 || args.some((s) => typeof s !== "string" || s.trim() === "")) {
-      console.error(`[SKIP] ${addr} invalid/empty args`);
-      continue;
-    }
-
-    // --- Static-call probe (decode if possible) ---
+    // Static call
     try {
       console.log(`[SIM] Static-call test for ${addr}`);
       await pool.sendRequest.staticCall(
@@ -378,18 +316,11 @@ async function main() {
     } catch (e: any) {
       const data = e?.data ?? e?.error?.data;
       let decoded = "unknown";
-      if (fromArtifact) {
-        try {
-          if (data) decoded = iface.parseError(data).name;
-        } catch {}
-      } else {
-        // minimal ABI cannot decode custom errors; keep selector
-      }
+      try { if (data) decoded = iface.parseError(data).name; } catch {}
       console.error(`[SIM-ERR] ${addr} selector=${data?.slice?.(0,10)} (${decoded})`);
       continue;
     }
 
-    // --- Send tx ---
     try {
       if (DRY_RUN) {
         console.log(`[DRY_RUN] Would call sendRequest(${addr})`);
@@ -409,11 +340,7 @@ async function main() {
     } catch (e: any) {
       const data = e?.data ?? e?.error?.data;
       let decoded = "unknown custom error";
-      if (fromArtifact) {
-        try {
-          if (data) decoded = iface.parseError(data).name;
-        } catch {}
-      }
+      try { if (data) decoded = iface.parseError(data).name; } catch {}
       console.error(`[ERR] sendRequest ${addr}:`, e?.reason || e?.message || e);
       if (data) console.error(` selector = ${data.slice(0,10)} (${decoded})`);
     }
