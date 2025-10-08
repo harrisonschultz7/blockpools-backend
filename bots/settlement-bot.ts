@@ -11,7 +11,7 @@ import { ethers } from 'ethers';
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
 const TSDB_KEY = process.env.THESPORTSDB_API_KEY || '1';
-const DRY_RUN = process.env.DRY_RUN === '1';
+const DRY_RUN = process.env.DRY_RUN === '0';
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
