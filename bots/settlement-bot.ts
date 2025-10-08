@@ -15,7 +15,10 @@ const DRY_RUN = process.env.DRY_RUN === '1';
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
-/** ===== Paths (try a couple spots) ===== */
+// Explicit override path (for reading games.json from another repo)
+const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
+
+/** ===== Local fallback candidates (if no override) ===== */
 const GAMES_CANDIDATES = [
   path.resolve(__dirname, '..', 'src', 'data', 'games.json'),
   path.resolve(__dirname, '..', 'games.json'),
@@ -92,7 +95,7 @@ function toEpoch(evt: any) {
   return null;
 }
 
-// Node 20 has global fetch + AbortSignal.timeout
+// Node 20: global fetch + AbortSignal.timeout
 async function fetchJSON(url: string, timeoutMs = 10000) {
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
@@ -135,30 +138,42 @@ function pickBestEvent(events: any[], startEpoch: number, nameA: string, nameB: 
 }
 
 /** ===== Input discovery ===== */
-function loadContractsFromGames(): string[] {
-  for (const p of GAMES_CANDIDATES) {
-    if (fs.existsSync(p)) {
-      try {
-        const raw = fs.readFileSync(p, 'utf8');
-        const grouped = JSON.parse(raw) as Record<string, Array<{ contractAddress: string }>>;
-        const addrs: string[] = [];
-        for (const key of Object.keys(grouped)) {
-          for (const g of grouped[key]) if (g?.contractAddress) addrs.push(g.contractAddress);
-        }
-        const uniq = Array.from(new Set(addrs));
-        if (uniq.length) {
-          console.log(`Using games from ${p} (${uniq.length} contracts)`);
-          return uniq;
-        }
-      } catch (e) {
-        console.warn(`Failed to parse ${p}:`, (e as Error).message);
-      }
+function readGamesAtPath(p: string): string[] | null {
+  if (!fs.existsSync(p)) return null;
+  try {
+    const raw = fs.readFileSync(p, 'utf8');
+    const grouped = JSON.parse(raw) as Record<string, Array<{ contractAddress: string }>>;
+    const addrs = Object.values(grouped).flat().map((g) => g?.contractAddress).filter(Boolean);
+    const uniq = Array.from(new Set(addrs));
+    if (uniq.length) {
+      console.log(`Using games from ${p} (${uniq.length} contracts)`);
+      return uniq;
     }
+  } catch (e) {
+    console.warn(`Failed to parse ${p}:`, (e as Error).message);
   }
+  return null;
+}
+
+function loadContractsFromGames(): string[] {
+  // 0) Explicit override: use games.json from another repo/location
+  if (GAMES_PATH_OVERRIDE) {
+    const fromOverride = readGamesAtPath(GAMES_PATH_OVERRIDE);
+    if (fromOverride) return fromOverride;
+    console.warn(`GAMES_PATH was set but not readable/usable: ${GAMES_PATH_OVERRIDE}`);
+  }
+
+  // 1) Local candidates (repo files)
+  for (const p of GAMES_CANDIDATES) {
+    const fromLocal = readGamesAtPath(p);
+    if (fromLocal) return fromLocal;
+  }
+
+  // 2) Env fallback (comma/space-separated addresses)
   const envList = (process.env.CONTRACTS || '').trim();
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
-    const filtered = arr.filter(a => {
+    const filtered = arr.filter((a) => {
       try { return ethers.isAddress(a); } catch { return false; }
     });
     if (filtered.length) {
@@ -166,6 +181,7 @@ function loadContractsFromGames(): string[] {
       return Array.from(new Set(filtered));
     }
   }
+
   console.warn('No contracts found in games.json or CONTRACTS env. Nothing to do.');
   return [];
 }
