@@ -5,53 +5,57 @@ import fs from "fs";
 import path from "path";
 import { ethers } from "ethers";
 
-// ===== Env =====
+/* =========================
+   Env / configuration
+   ========================= */
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
-const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);
-const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000);
-const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);
+const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);           // uint64
+const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
+const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);     // uint8
 const COMPAT_TSDB = process.env.COMPAT_TSDB === "1";
 
-// ✅ DRY_RUN = "1" means simulate; "0" means send real txs
+// DRY_RUN = "1" means simulate; anything else (unset/"0") sends real txs
 const DRY_RUN = process.env.DRY_RUN === "1";
 
-const TSDB_KEY = process.env.THESPORTSDB_API_KEY || "0";
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
+// DON pointer (activeSecrets.json) lookup
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
-const GITHUB_REPO = process.env.GITHUB_REPO || "blockpools-backend";
-const GITHUB_REF = process.env.GITHUB_REF || "main";
-const GH_PAT = process.env.GH_PAT;
+const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
+const GITHUB_REF   = process.env.GITHUB_REF   || "main";
+const GH_PAT       = process.env.GH_PAT;
 
-// Optional override
+// Where games.json is
 const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
 const GAMES_CANDIDATES = [
   path.resolve(__dirname, "..", "src", "data", "games.json"),
   path.resolve(__dirname, "..", "games.json"),
 ];
 
-// ===== ABI loader with fallback =====
+/* =========================
+   ABI loader (artifact -> fallback)
+   ========================= */
 const FALLBACK_MIN_ABI = [
-  { inputs: [], name: "league", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamAName", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamBName", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamACode", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamBCode", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "isLocked", outputs: [{ type: "bool" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "requestSent", outputs: [{ type: "bool" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "winningTeam", outputs: [{ type: "uint8" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "lockTime", outputs: [{ type: "uint256" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "owner", outputs: [{ type: "address" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "league",     outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamAName",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamBName",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamACode",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamBCode",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "isLocked",   outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "requestSent",outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "winningTeam",outputs: [{ type: "uint8"  }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "lockTime",   outputs: [{ type: "uint256"}], stateMutability: "view", type: "function" },
+  { inputs: [], name: "owner",      outputs: [{ type: "address"}], stateMutability: "view", type: "function" },
   {
     inputs: [
       { type: "string[]", name: "args" },
-      { type: "uint64", name: "subscriptionId" },
-      { type: "uint32", name: "gasLimit" },
-      { type: "uint8", name: "donHostedSecretsSlotID" },
-      { type: "uint64", name: "donHostedSecretsVersion" },
-      { type: "bytes32", name: "donID" },
+      { type: "uint64",   name: "subscriptionId" },
+      { type: "uint32",   name: "gasLimit" },
+      { type: "uint8",    name: "donHostedSecretsSlotID" },
+      { type: "uint64",   name: "donHostedSecretsVersion" },
+      { type: "bytes32",  name: "donID" },
     ],
     name: "sendRequest",
     outputs: [],
@@ -63,9 +67,7 @@ const FALLBACK_MIN_ABI = [
 function loadGamePoolAbi(): { abi: any; fromArtifact: boolean } {
   const ARTIFACT_PATH_ENV = process.env.ARTIFACT_PATH?.trim();
   const candidates = [
-    ARTIFACT_PATH_ENV && (path.isAbsolute(ARTIFACT_PATH_ENV)
-      ? ARTIFACT_PATH_ENV
-      : path.resolve(process.cwd(), ARTIFACT_PATH_ENV)),
+    ARTIFACT_PATH_ENV && (path.isAbsolute(ARTIFACT_PATH_ENV) ? ARTIFACT_PATH_ENV : path.resolve(process.cwd(), ARTIFACT_PATH_ENV)),
     path.resolve(__dirname, "..", "..", "build", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
     path.resolve(__dirname, "..", "build", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
     path.resolve(process.cwd(), "build", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
@@ -80,7 +82,6 @@ function loadGamePoolAbi(): { abi: any; fromArtifact: boolean } {
       }
     } catch {}
   }
-
   console.warn("⚠️  Could not locate GamePool.json. Using minimal ABI.");
   return { abi: FALLBACK_MIN_ABI, fromArtifact: false };
 }
@@ -88,83 +89,113 @@ function loadGamePoolAbi(): { abi: any; fromArtifact: boolean } {
 const { abi: poolAbi, fromArtifact } = loadGamePoolAbi();
 const iface = new ethers.Interface(poolAbi);
 
-// ===== Helpers =====
-async function loadActiveSecrets() {
+/* =========================
+   Helpers
+   ========================= */
+async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: string; source: string }> {
   const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
   const envDonId = process.env.DON_ID;
   if (envVersion && envDonId) {
     return { secretsVersion: Number(envVersion), donId: envDonId, source: "env" };
   }
 
-  try {
-    const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/activeSecrets.json?ref=${GITHUB_REF}`;
-    const headers = {
-      ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "settlement-bot",
-    };
-    const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const json = JSON.parse(Buffer.from(data.content, "base64").toString("utf8"));
-    return {
-      secretsVersion: Number(json.secretsVersion ?? json.version),
-      donId: json.donId || "fun-ethereum-sepolia-1",
-      source: "github",
-    };
-  } catch (e: any) {
-    console.warn("⚠️  Could not fetch activeSecrets.json:", e.message);
-  }
-  throw new Error("Failed to load DON pointer.");
+  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/activeSecrets.json?ref=${GITHUB_REF}`;
+  const headers: any = {
+    ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "settlement-bot",
+    Accept: "application/vnd.github+json",
+  };
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`activeSecrets.json HTTP ${res.status}`);
+  const data = await res.json();
+  const json = JSON.parse(Buffer.from(data.content, "base64").toString("utf8"));
+  return {
+    secretsVersion: Number(json.secretsVersion ?? json.version),
+    donId: json.donId || "fun-ethereum-sepolia-1",
+    source: "github",
+  };
 }
 
 function epochToEtISO(epochSec: number) {
   const dt = new Date(epochSec * 1000);
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
   const parts: Record<string, string> = {};
   for (const p of fmt.formatToParts(dt)) parts[p.type] = p.value;
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
+
 function addDaysISO(iso: string, days: number) {
   const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() + days);
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
+
 function readGamesAtPath(p: string): string[] | null {
   if (!fs.existsSync(p)) return null;
   try {
     const raw = fs.readFileSync(p, "utf8");
     const grouped = JSON.parse(raw) as Record<string, Array<{ contractAddress: string }>>;
     const addrs = Object.values(grouped).flat().map((g) => g?.contractAddress).filter(Boolean);
-    return Array.from(new Set(addrs));
-  } catch {
-    return null;
+    const uniq = Array.from(new Set(addrs));
+    if (uniq.length) {
+      console.log(`Using games from ${p} (${uniq.length} contracts)`);
+      return uniq;
+    }
+  } catch (e) {
+    console.warn(`Failed to parse ${p}:`, (e as Error).message);
   }
+  return null;
 }
+
 function loadContractsFromGames(): string[] {
   if (GAMES_PATH_OVERRIDE) {
-    const data = readGamesAtPath(GAMES_PATH_OVERRIDE);
-    if (data) return data;
+    const fromOverride = readGamesAtPath(GAMES_PATH_OVERRIDE);
+    if (fromOverride) return fromOverride;
+    console.warn(`GAMES_PATH was set but not readable/usable: ${GAMES_PATH_OVERRIDE}`);
   }
   for (const p of GAMES_CANDIDATES) {
-    const data = readGamesAtPath(p);
-    if (data) return data;
+    const fromLocal = readGamesAtPath(p);
+    if (fromLocal) return fromLocal;
   }
+  const envList = (process.env.CONTRACTS || "").trim();
+  if (envList) {
+    const arr = envList.split(/[,\s]+/).filter(Boolean);
+    const filtered = arr.filter((a) => {
+      try { return ethers.isAddress(a); } catch { return false; }
+    });
+    if (filtered.length) {
+      console.log(`Using CONTRACTS from env (${filtered.length})`);
+      return Array.from(new Set(filtered));
+    }
+  }
+  console.warn("No contracts found in games.json or CONTRACTS env. Nothing to do.");
   return [];
 }
 
-// ===== Main =====
+/** Map on-chain league -> TheSportsDB label for contract SOURCE_CODE (uses &l=${L}). */
+function mapLeagueForTSDB(leagueOnChain: string): string {
+  const lk = String(leagueOnChain || "").toLowerCase();
+  const TSDB_LABEL: Record<string, string> = {
+    mlb: "MLB",
+    nfl: "NFL",
+    nba: "NBA",
+    nhl: "NHL",
+    epl: "English%20Premier%20League",
+    ucl: "UEFA%20Champions%20League",
+  };
+  return TSDB_LABEL[lk] || leagueOnChain; // pass-through if unknown
+}
+
+/* =========================
+   Main
+   ========================= */
 async function main() {
   if (!RPC_URL || !PRIVATE_KEY) throw new Error("Missing RPC_URL or PRIVATE_KEY");
   if (!process.env.SUBSCRIPTION_ID) throw new Error("Missing SUBSCRIPTION_ID");
 
-  console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN})`);
+  console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
@@ -178,15 +209,16 @@ async function main() {
   console.log(`   donId          = ${donId}`);
 
   const contracts = loadContractsFromGames();
-  if (!contracts.length) return console.log("No contracts found.");
+  if (!contracts.length) return;
 
   let submitted = 0;
+
   for (const addr of contracts) {
     if (submitted >= MAX_TX_PER_RUN) break;
 
     const pool = new ethers.Contract(addr, poolAbi, wallet);
 
-    // --- Ownership check ---
+    // Ownership check
     const botAddr = await wallet.getAddress();
     let onchainOwner = "(read failed)";
     try { onchainOwner = await pool.owner(); } catch {}
@@ -194,48 +226,111 @@ async function main() {
     console.log(`[OWN] pool=${addr} owner=${onchainOwner} bot=${botAddr} isOwner=${isOwner}`);
     if (!isOwner) continue;
 
-    // --- Read game info ---
-    const [league, tA, tB, cA, cB, locked, reqSent, winTeam, lTime] = await Promise.all([
-      pool.league(),
-      pool.teamAName(),
-      pool.teamBName(),
-      pool.teamACode(),
-      pool.teamBCode(),
-      pool.isLocked(),
-      pool.requestSent(),
-      pool.winningTeam(),
-      pool.lockTime(),
-    ]);
-    const isLocked = Boolean(locked);
-    const requestSent = Boolean(reqSent);
-    const winningTeam = Number(winTeam);
-    const lockTime = Number(lTime);
-    console.log(`[DBG] ${addr} locked=${isLocked} reqSent=${requestSent} win=${winningTeam} lockTime=${lockTime}`);
-    if (!isLocked || requestSent || winningTeam !== 0) continue;
-    if (lockTime > 0 && Date.now() / 1000 < lockTime + REQUEST_GAP_SECONDS) continue;
+    // Read state
+    let league: string, teamAName: string, teamBName: string, teamACode: string, teamBCode: string;
+    let isLocked: boolean, requestSent: boolean, winningTeam: number, lockTime: number;
 
-    const d0 = epochToEtISO(lockTime);
-    const d1 = addDaysISO(d0, 1);
-    const args = COMPAT_TSDB
-      ? [league, d0, cA.toUpperCase(), cB.toUpperCase(), tA, tB]
-      : [league, d0, d1, cA.toUpperCase(), cB.toUpperCase(), tA, tB, String(lockTime)];
-    console.log(`[ARGS] ${addr} ${JSON.stringify(args)}`);
-
-    // --- Static test ---
     try {
-      await pool.sendRequest.staticCall(args, SUBSCRIPTION_ID, FUNCTIONS_GAS_LIMIT, DON_SECRETS_SLOT, donHostedSecretsVersion, donID);
-      console.log(`[SIM OK] ${addr}`);
-    } catch (e: any) {
-      const data = e?.data ?? e?.error?.data;
-      console.error(`[SIM ERR] ${addr} selector=${data?.slice?.(0,10)}`);
+      const [lg, ta, tb, tca, tcb, locked, req, win, lt] = await Promise.all([
+        pool.league(),
+        pool.teamAName(),
+        pool.teamBName(),
+        pool.teamACode(),
+        pool.teamBCode(),
+        pool.isLocked(),
+        pool.requestSent(),
+        pool.winningTeam().then(Number),
+        pool.lockTime().then(Number),
+      ]);
+      league = String(lg || "");
+      teamAName = String(ta || "");
+      teamBName = String(tb || "");
+      teamACode = String(tca || "");
+      teamBCode = String(tcb || "");
+      isLocked = Boolean(locked);
+      requestSent = Boolean(req);
+      winningTeam = Number(win);
+      lockTime = Number(lt);
+    } catch (e) {
+      console.error(`[ERR] read state ${addr}:`, (e as Error).message);
       continue;
     }
 
-    // --- Send tx ---
+    console.log(`[DBG] ${addr} locked=${isLocked} reqSent=${requestSent} win=${winningTeam} lockTime=${lockTime}`);
+
+    // Gates
+    if (!isLocked || requestSent || winningTeam !== 0) continue;
+    if (lockTime > 0 && Date.now() / 1000 < lockTime + REQUEST_GAP_SECONDS) continue;
+
+    // Build args consistent with your contract's SOURCE_CODE (expects 8 args)
+    const d0 = epochToEtISO(lockTime);
+    const d1 = addDaysISO(d0, 1);
+    const leagueArg = mapLeagueForTSDB(league);
+    const fullArgs = [
+      leagueArg,                       // L: TSDB label
+      d0,
+      d1,
+      String(teamACode).toUpperCase(),
+      String(teamBCode).toUpperCase(),
+      teamAName,
+      teamBName,
+      String(lockTime),
+    ];
+    const compatArgs = [
+      leagueArg,
+      d0,
+      String(teamACode).toUpperCase(),
+      String(teamBCode).toUpperCase(),
+      teamAName,
+      teamBName,
+    ];
+    const args = COMPAT_TSDB ? compatArgs : fullArgs;
+    console.log(`[ARGS] ${addr} ${JSON.stringify(args)}`);
+
+    // Static-call probe (gasless simulation)
+    try {
+      await pool.sendRequest.staticCall(
+        args,
+        SUBSCRIPTION_ID,
+        FUNCTIONS_GAS_LIMIT,
+        DON_SECRETS_SLOT,
+        donHostedSecretsVersion,
+        donID
+      );
+      console.log(`[SIM OK] ${addr}`);
+    } catch (e: any) {
+      const data = e?.data ?? e?.error?.data;
+      let decoded = "unknown";
+      if (fromArtifact && data) {
+        try { decoded = iface.parseError(data).name; } catch {}
+      }
+      console.error(`[SIM ERR] ${addr} selector=${data?.slice?.(0,10)}${decoded ? ` (${decoded})` : ""}`);
+      continue;
+    }
+
+    // Send tx
     if (!DRY_RUN) {
-      const tx = await pool.sendRequest(args, SUBSCRIPTION_ID, FUNCTIONS_GAS_LIMIT, DON_SECRETS_SLOT, donHostedSecretsVersion, donID);
-      console.log(`[OK] sendRequest ${addr}: ${tx.hash}`);
-      submitted++;
+      try {
+        console.log(`[TX] sendRequest(${addr}) ...`);
+        const tx = await pool.sendRequest(
+          args,
+          SUBSCRIPTION_ID,
+          FUNCTIONS_GAS_LIMIT,
+          DON_SECRETS_SLOT,
+          donHostedSecretsVersion,
+          donID
+        );
+        console.log(`[OK] sendRequest ${addr}: ${tx.hash}`);
+        submitted++;
+      } catch (e: any) {
+        const data = e?.data ?? e?.error?.data;
+        let decoded = "unknown custom error";
+        if (fromArtifact && data) {
+          try { decoded = iface.parseError(data).name; } catch {}
+        }
+        console.error(`[ERR] sendRequest ${addr}:`, e?.reason || e?.message || e);
+        if (data) console.error(` selector = ${data.slice(0,10)} (${decoded})`);
+      }
     } else {
       console.log(`[DRY_RUN] Skipped ${addr}`);
     }
