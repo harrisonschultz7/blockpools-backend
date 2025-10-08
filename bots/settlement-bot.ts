@@ -14,8 +14,8 @@ const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000);
 const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);
 const COMPAT_TSDB = process.env.COMPAT_TSDB === "1";
 
-const TSDB_KEY = process.env.THESPORTSDB_API_KEY || "1";
-const DRY_RUN = process.env.DRY_RUN === "1";
+const TSDB_KEY = process.env.THESPORTSDB_API_KEY || "0";
+const DRY_RUN = process.env.DRY_RUN === "0";
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
