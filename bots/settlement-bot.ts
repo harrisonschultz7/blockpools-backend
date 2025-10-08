@@ -1,6 +1,6 @@
 // @ts-nocheck
+// Classic "sendRequest" settlement bot that mirrors scripts/send-request.js secret loading
 
-// Optional .env for local runs; CI uses secrets. If dotenv isn't present, this no-ops.
 try { require('dotenv').config(); } catch {}
 
 import fs from 'fs';
@@ -10,33 +10,111 @@ import { ethers } from 'ethers';
 /** ===== Env ===== */
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
+
+// Chainlink Functions params (gas/slot/sub handled via env; version + donId loaded dynamically)
+const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);        // uint64
+const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
+const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);  // uint8
+
+// Toggle arg shape (must match SOURCE_CODE)
+const COMPAT_TSDB = process.env.COMPAT_TSDB === '1';
+
+// Behavior + TSDB
 const TSDB_KEY = process.env.THESPORTSDB_API_KEY || '1';
-const DRY_RUN = process.env.DRY_RUN === '0';
+const DRY_RUN = process.env.DRY_RUN === '1';
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
-// Explicit override path (for reading games.json from another repo)
-const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
+// Active secrets pointer (same lookup order as scripts/send-request.js)
+const GITHUB_OWNER = process.env.GITHUB_OWNER || 'harrisonschultz7';
+const GITHUB_REPO  = process.env.GITHUB_REPO  || 'blockpools-backend';
+const GITHUB_REF   = process.env.GITHUB_REF   || 'main';
+const GH_PAT       = process.env.GH_PAT; // optional PAT for private repo
 
-/** ===== Local fallback candidates (if no override) ===== */
+// games.json discovery (same as earlier bot)
+const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || '';
 const GAMES_CANDIDATES = [
   path.resolve(__dirname, '..', 'src', 'data', 'games.json'),
   path.resolve(__dirname, '..', 'games.json'),
 ];
 
-/** ===== Minimal ABI (reads + requestSettlement only) ===== */
+/** ===== Minimal ABI: reads + sendRequest ===== */
 const poolAbi = [
-  { inputs: [], name: 'league', outputs: [{ internalType: 'string', type: 'string' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'teamAName', outputs: [{ internalType: 'string', type: 'string' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'teamBName', outputs: [{ internalType: 'string', type: 'string' }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'isLocked', outputs: [{ internalType: 'bool',   type: 'bool'   }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'requestSent', outputs: [{ internalType: 'bool', type: 'bool'   }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'winningTeam', outputs: [{ internalType: 'uint8',type: 'uint8'  }], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'lockTime', outputs: [{ internalType: 'uint256', type: 'uint256'}], stateMutability: 'view', type: 'function' },
-  { inputs: [], name: 'requestSettlement', outputs: [], stateMutability: 'nonpayable', type: 'function' },
+  { inputs: [], name: 'league',     outputs: [{ type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'teamAName',  outputs: [{ type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'teamBName',  outputs: [{ type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'teamACode',  outputs: [{ type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'teamBCode',  outputs: [{ type: 'string' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'isLocked',   outputs: [{ type: 'bool'   }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'requestSent',outputs: [{ type: 'bool'   }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'winningTeam',outputs: [{ type: 'uint8'  }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'lockTime',   outputs: [{ type: 'uint256'}], stateMutability: 'view', type: 'function' },
+
+  {
+    inputs: [
+      { type: 'string[]', name: 'args' },
+      { type: 'uint64',   name: 'subscriptionId' },
+      { type: 'uint32',   name: 'gasLimit' },
+      { type: 'uint8',    name: 'donHostedSecretsSlotID' },
+      { type: 'uint64',   name: 'donHostedSecretsVersion' },
+      { type: 'bytes32',  name: 'donID' },
+    ],
+    name: 'sendRequest',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function'
+  },
 ] as const;
 
-/** ===== Utils (mirror your send-request helpers) ===== */
+/** ===== Helpers: load DON pointer exactly like scripts/send-request.js ===== */
+async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: string; source: string }> {
+  // 1) Env override
+  const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
+  const envDonId = process.env.DON_ID;
+  if (envVersion && envDonId) {
+    return { secretsVersion: Number(envVersion), donId: envDonId, source: 'env' };
+  }
+
+  // 2) GitHub activeSecrets.json
+  try {
+    const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/activeSecrets.json?ref=${GITHUB_REF}`;
+    const headers = {
+      ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'settlement-bot',
+      'Accept': 'application/vnd.github+json',
+    } as any;
+
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const json = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+    return {
+      secretsVersion: Number(json.secretsVersion ?? json.version),
+      donId: json.donId || 'fun-ethereum-sepolia-1',
+      source: 'github',
+    };
+  } catch (e: any) {
+    console.warn('⚠️  Could not fetch activeSecrets.json from GitHub:', e?.message || e);
+  }
+
+  // 3) Local fallback
+  try {
+    const localPath = path.join(__dirname, '..', 'activeSecrets.json');
+    const json = JSON.parse(fs.readFileSync(localPath, 'utf8'));
+    return {
+      secretsVersion: Number(json.secretsVersion ?? json.version),
+      donId: json.donId || 'fun-ethereum-sepolia-1',
+      source: 'local',
+    };
+  } catch {
+    throw new Error('Failed to load activeSecrets.json from env, GitHub, or local.');
+  }
+}
+
+/** ===== TSDB helpers (same as earlier) ===== */
+const f = (s: string) => (s || '').trim().toLowerCase();
+
 function epochToEtISO(epochSec: number) {
   const dt = new Date(epochSec * 1000);
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -59,8 +137,6 @@ function addDaysISO(iso: string, days: number) {
   const d2 = String(dt.getUTCDate()).padStart(2, '0');
   return `${y2}-${m2}-${d2}`;
 }
-
-const f = (s: string) => (s || '').trim().toLowerCase();
 
 function statusIsFinal(evt: any) {
   const statusU = String(evt?.strStatus || '').toUpperCase();
@@ -95,7 +171,6 @@ function toEpoch(evt: any) {
   return null;
 }
 
-// Node 20: global fetch + AbortSignal.timeout
 async function fetchJSON(url: string, timeoutMs = 10000) {
   const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
@@ -137,7 +212,7 @@ function pickBestEvent(events: any[], startEpoch: number, nameA: string, nameB: 
   return candidates[0].e;
 }
 
-/** ===== Input discovery ===== */
+/** ===== games.json discovery ===== */
 function readGamesAtPath(p: string): string[] | null {
   if (!fs.existsSync(p)) return null;
   try {
@@ -156,20 +231,17 @@ function readGamesAtPath(p: string): string[] | null {
 }
 
 function loadContractsFromGames(): string[] {
-  // 0) Explicit override: use games.json from another repo/location
   if (GAMES_PATH_OVERRIDE) {
     const fromOverride = readGamesAtPath(GAMES_PATH_OVERRIDE);
     if (fromOverride) return fromOverride;
     console.warn(`GAMES_PATH was set but not readable/usable: ${GAMES_PATH_OVERRIDE}`);
   }
 
-  // 1) Local candidates (repo files)
   for (const p of GAMES_CANDIDATES) {
     const fromLocal = readGamesAtPath(p);
     if (fromLocal) return fromLocal;
   }
 
-  // 2) Env fallback (comma/space-separated addresses)
   const envList = (process.env.CONTRACTS || '').trim();
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
@@ -191,6 +263,16 @@ async function main() {
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
+  // DON pointer (same logic as scripts/send-request.js)
+  const { secretsVersion, donId, source } = await loadActiveSecrets();
+  if (!Number.isFinite(secretsVersion)) throw new Error('Invalid secretsVersion.');
+  console.log(`🔐 Loaded DON pointer from ${source}`);
+  console.log(`   secretsVersion = ${secretsVersion}`);
+  console.log(`   donId          = ${donId}`);
+
+  const donHostedSecretsVersion = BigInt(secretsVersion);
+  const donID = ethers.encodeBytes32String(donId); // same as hre.ethers.utils.formatBytes32String
+
   const contracts = loadContractsFromGames();
   if (!contracts.length) return;
 
@@ -201,21 +283,27 @@ async function main() {
 
     const pool = new ethers.Contract(addr, poolAbi, wallet);
 
-    let league: string, teamAName: string, teamBName: string;
+    let league: string, teamAName: string, teamBName: string, teamACode: string, teamBCode: string;
     let isLocked: boolean, requestSent: boolean, winningTeam: number, lockTime: number;
+
     try {
-      const [lg, ta, tb, locked, req, win, lt] = await Promise.all([
+      const [lg, ta, tb, tca, tcb, locked, req, win, lt] = await Promise.all([
         pool.league(),
         pool.teamAName(),
         pool.teamBName(),
+        pool.teamACode(),
+        pool.teamBCode(),
         pool.isLocked(),
         pool.requestSent(),
-        pool.winningTeam().then((x: any) => Number(x)),
-        pool.lockTime().then((x: any) => Number(x)),
+        pool.winningTeam().then(Number),
+        pool.lockTime().then(Number),
       ]);
+
       league = String(lg || '').toLowerCase();
       teamAName = String(ta || '');
       teamBName = String(tb || '');
+      teamACode = String(tca || '');
+      teamBCode = String(tcb || '');
       isLocked = Boolean(locked);
       requestSent = Boolean(req);
       winningTeam = Number(win);
@@ -225,19 +313,21 @@ async function main() {
       continue;
     }
 
+    // Gates
     if (!isLocked) continue;
     if (winningTeam !== 0) continue;
     if (requestSent) continue;
     if (lockTime > 0 && Date.now() / 1000 < lockTime + REQUEST_GAP_SECONDS) continue;
 
+    // Build ET window
     const d0 = epochToEtISO(lockTime);
     const d1 = addDaysISO(d0, 1);
 
-    let picked: any | null = null;
+    // Optional TSDB preflight to avoid CF request too early
     try {
       const ev0 = await fetchDay(league, d0);
       const ev1 = await fetchDay(league, d1);
-      picked = pickBestEvent([...ev0, ...ev1], lockTime, teamAName, teamBName);
+      const picked = pickBestEvent([...ev0, ...ev1], lockTime, teamAName, teamBName);
       if (!picked) continue;
       if (!statusIsFinal(picked)) continue;
     } catch (e) {
@@ -245,16 +335,44 @@ async function main() {
       continue;
     }
 
+    // Args shape toggle (mirrors scripts/send-request.js)
+    const fullArgs = [
+      league,
+      d0,
+      d1,
+      String(teamACode).toUpperCase(),
+      String(teamBCode).toUpperCase(),
+      teamAName,
+      teamBName,
+      String(lockTime),
+    ];
+    const compatArgs = [
+      league,
+      d0,
+      String(teamACode).toUpperCase(),
+      String(teamBCode).toUpperCase(),
+      teamAName,
+      teamBName,
+    ];
+    const args = COMPAT_TSDB ? compatArgs : fullArgs;
+
     try {
       if (DRY_RUN) {
-        console.log(`[DRY_RUN] Would call requestSettlement() on ${addr}  (${league.toUpperCase()} ${teamAName} vs ${teamBName})`);
+        console.log(`[DRY_RUN] Would call sendRequest(${addr}) with args=${JSON.stringify(args)}`);
       } else {
-        const tx = await pool.requestSettlement();
-        console.log(`[OK] requestSettlement sent for ${addr}: ${tx.hash}`);
+        const tx = await pool.sendRequest(
+          args,
+          SUBSCRIPTION_ID,
+          FUNCTIONS_GAS_LIMIT,
+          DON_SECRETS_SLOT,
+          donHostedSecretsVersion,
+          donID
+        );
+        console.log(`[OK] sendRequest sent for ${addr}: ${tx.hash}`);
       }
       submitted++;
     } catch (e) {
-      console.error(`[ERR] requestSettlement ${addr}:`, (e as Error).message);
+      console.error(`[ERR] sendRequest ${addr}:`, (e as Error).message);
     }
   }
 
