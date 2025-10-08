@@ -32,7 +32,8 @@ const GAMES_CANDIDATES = [
 
 // ===== ABI =====
 // Use your full artifact so custom errors can be decoded.
-import gamePoolArtifact from '../build/artifacts/contracts/GamePool.sol/GamePool.json' assert { type: 'json' };
+import gamePoolArtifact from '../../build/artifacts/contracts/GamePool.sol/GamePool.json' assert { type: 'json' };
+
 const poolAbi = gamePoolArtifact.abi;
 const iface = new ethers.Interface(poolAbi);
 
