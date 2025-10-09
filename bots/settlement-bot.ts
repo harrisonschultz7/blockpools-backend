@@ -10,9 +10,9 @@ import { ethers } from "ethers";
    ========================= */
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
-const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);           // uint64
+const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                 // uint64
 const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
-const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);     // uint8
+const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);           // uint8
 const COMPAT_TSDB = process.env.COMPAT_TSDB === "1";
 
 // DRY_RUN = "1" means simulate; anything else (unset/"0") sends real txs
@@ -34,6 +34,14 @@ const GAMES_CANDIDATES = [
   path.resolve(__dirname, "..", "games.json"),
 ];
 
+// Where Functions SOURCE lives (your Windows path + fallbacks)
+const SOURCE_CANDIDATES = [
+  "C:\\Users\\harri\\OneDrive\\functions-betting-app\\functions-hardhat-starter-kit\\blockpools-backend\\bots\\source.js",
+  path.resolve(__dirname, "source.js"),
+  path.resolve(__dirname, "..", "bots", "source.js"),
+  path.resolve(process.cwd(), "bots", "source.js"),
+];
+
 /* =========================
    ABI loader (artifact -> fallback)
    ========================= */
@@ -48,8 +56,10 @@ const FALLBACK_MIN_ABI = [
   { inputs: [], name: "winningTeam",outputs: [{ type: "uint8"  }], stateMutability: "view", type: "function" },
   { inputs: [], name: "lockTime",   outputs: [{ type: "uint256"}], stateMutability: "view", type: "function" },
   { inputs: [], name: "owner",      outputs: [{ type: "address"}], stateMutability: "view", type: "function" },
+  // NEW signature: sendRequest(source, args, subId, gas, slot, version, donID)
   {
     inputs: [
+      { type: "string",   name: "source" },
       { type: "string[]", name: "args" },
       { type: "uint64",   name: "subscriptionId" },
       { type: "uint32",   name: "gasLimit" },
@@ -117,6 +127,21 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
   };
 }
 
+function loadSourceCode(): string {
+  for (const p of SOURCE_CANDIDATES) {
+    try {
+      if (fs.existsSync(p)) {
+        const src = fs.readFileSync(p, "utf8");
+        if (src && src.trim().length > 0) {
+          console.log(`🧠 Loaded Functions source from: ${p}`);
+          return src;
+        }
+      }
+    } catch {}
+  }
+  throw new Error(`Could not find source.js. Tried:\n- ${SOURCE_CANDIDATES.join("\n- ")}`);
+}
+
 function epochToEtISO(epochSec: number) {
   const dt = new Date(epochSec * 1000);
   const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" });
@@ -174,7 +199,7 @@ function loadContractsFromGames(): string[] {
   return [];
 }
 
-/** Map on-chain league -> TheSportsDB label for contract SOURCE_CODE (uses &l=${L}). */
+/** Map on-chain league -> TheSportsDB label for contract SOURCE (uses &l=${L}). */
 function mapLeagueForTSDB(leagueOnChain: string): string {
   const lk = String(leagueOnChain || "").toLowerCase();
   const TSDB_LABEL: Record<string, string> = {
@@ -208,6 +233,8 @@ async function main() {
   console.log(`   secretsVersion = ${secretsVersion}`);
   console.log(`   donId          = ${donId}`);
 
+  const SOURCE = loadSourceCode();
+
   const contracts = loadContractsFromGames();
   if (!contracts.length) return;
 
@@ -218,7 +245,7 @@ async function main() {
 
     const pool = new ethers.Contract(addr, poolAbi, wallet);
 
-    // Ownership check
+    // Ownership check (optional)
     const botAddr = await wallet.getAddress();
     let onchainOwner = "(read failed)";
     try { onchainOwner = await pool.owner(); } catch {}
@@ -262,19 +289,19 @@ async function main() {
     if (!isLocked || requestSent || winningTeam !== 0) continue;
     if (lockTime > 0 && Date.now() / 1000 < lockTime + REQUEST_GAP_SECONDS) continue;
 
-    // Build args consistent with your contract's SOURCE_CODE (expects 8 args)
+    // Build args consistent with your Functions JS (expects 8 args)
     const d0 = epochToEtISO(lockTime);
     const d1 = addDaysISO(d0, 1);
     const leagueArg = mapLeagueForTSDB(league);
     const fullArgs = [
-      leagueArg,                       // L: TSDB label
-      d0,
-      d1,
-      String(teamACode).toUpperCase(),
-      String(teamBCode).toUpperCase(),
-      teamAName,
-      teamBName,
-      String(lockTime),
+      leagueArg,                       // L
+      d0,                              // date0
+      d1,                              // date1
+      String(teamACode).toUpperCase(), // A code
+      String(teamBCode).toUpperCase(), // B code
+      teamAName,                       // A name
+      teamBName,                       // B name
+      String(lockTime),                // kickoff epoch
     ];
     const compatArgs = [
       leagueArg,
@@ -287,9 +314,10 @@ async function main() {
     const args = COMPAT_TSDB ? compatArgs : fullArgs;
     console.log(`[ARGS] ${addr} ${JSON.stringify(args)}`);
 
-    // Static-call probe (gasless simulation)
+    // Static-call probe (gasless simulation) — NOTE: now includes SOURCE first
     try {
       await pool.sendRequest.staticCall(
+        SOURCE,
         args,
         SUBSCRIPTION_ID,
         FUNCTIONS_GAS_LIMIT,
@@ -313,6 +341,7 @@ async function main() {
       try {
         console.log(`[TX] sendRequest(${addr}) ...`);
         const tx = await pool.sendRequest(
+          SOURCE,
           args,
           SUBSCRIPTION_ID,
           FUNCTIONS_GAS_LIMIT,
