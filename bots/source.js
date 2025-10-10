@@ -83,18 +83,32 @@ function sameTeam(x,y){
   return false;
 }
 
+console.log(
+  JSON.stringify(
+    {
+      leagueLabel: L,
+      tag: TAG,
+      baseEndpoint: BASE,
+      apiKeyUsed: API ? API.slice(0, 4) + "..." + API.slice(-4) : "(missing)",
+      keySource: secrets?.THESPORTSDB_API_KEY ? "global" : TAG + "_API_KEY",
+      dates: { d0, d1 },
+    },
+    null,
+    2
+  )
+);
+
+
+
 // --- Fetch a day's events (with tiny retry on 429/5xx)
-async function fetchDay(d, attempt=0){
-  if(!d) return [];
+async function fetchDay(d, attempt = 0) {
+  if (!d) return [];
   const url = `${BASE}/${API}/eventsday.php?d=${encodeURIComponent(d)}&l=${encodeURIComponent(L)}`;
   const r = await Functions.makeHttpRequest({ url });
-  if ((r?.status >= 500 || r?.status === 429) && attempt < 1) {
-    await new Promise(res=>setTimeout(res, 250));
-    return fetchDay(d, attempt+1);
-  }
-  const ev = (r && r.data && r.data.events) || [];
-  return Array.isArray(ev) ? ev : [];
+  console.log(`fetchDay(${d}) status=${r?.status} len=${r?.data?.events?.length || 0}`);
+  return (r && r.data && Array.isArray(r.data.events)) ? r.data.events : [];
 }
+
 
 // --- Event epoch helper for proximity sort
 function ep(e){
