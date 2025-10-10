@@ -1,4 +1,4 @@
-// ---- Instrumented SOURCE for settlement ----
+// ---- Instrumented SOURCE for settlement (secret + HTTP checks) ----
 const L=(args[0]||'').trim(),
       d0=args[1],
       d1=args[2],
@@ -8,16 +8,21 @@ const L=(args[0]||'').trim(),
       b=(args[6]||'').trim(),
       t=Number(args[7]||0);
 
+// Ensure secret exists
+if (!secrets || typeof secrets.API_KEY !== "string" || !secrets.API_KEY.length) {
+  throw Error("missing API_KEY secret");
+}
+
 function norm(s){
   return (s||"")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")   // strip accents
-    .replace(/[’'`]/g,"")                              // drop apostrophes/quotes
-    .replace(/[^a-z0-9 ]/gi," ")                       // drop punctuation
-    .replace(/\s+/g," ")                               // collapse spaces
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[’'`]/g,"")
+    .replace(/[^a-z0-9 ]/gi," ")
+    .replace(/\s+/g," ")
     .trim()
     .toLowerCase();
 }
-const alias = new Map(); // add soccer aliases later if needed
+const alias = new Map();
 function sameTeam(x,y){
   const nx=norm(x), ny=norm(y);
   if (nx===ny) return true;
@@ -26,10 +31,18 @@ function sameTeam(x,y){
   return false;
 }
 
-async function fetchDay(d){
+async function fetchDay(d, attempt=0){
   if(!d) return [];
   const u=`https://www.thesportsdb.com/api/v1/json/${secrets.API_KEY}/eventsday.php?d=${encodeURIComponent(d)}&l=${encodeURIComponent(L)}`;
   const r=await Functions.makeHttpRequest({url:u});
+  // Basic diagnostics without leaking the key
+  console.log(`HTTP d=${d} status=${r?.status ?? 'no'} eventsType=${typeof r?.data?.events}`);
+
+  // Retry once on 429/5xx
+  if ((r?.status >= 500 || r?.status === 429) && attempt < 1) {
+    await new Promise(res=>setTimeout(res, 300));
+    return fetchDay(d, attempt+1);
+  }
   const ev=(r && r.data && r.data.events) || [];
   return Array.isArray(ev) ? ev : [];
 }
@@ -54,34 +67,25 @@ function epoch(e){
 const ev0 = await fetchDay(d0);
 const ev1 = await fetchDay(d1);
 
-// --- diagnostics ---
 console.log(`DBG league=${L} d0=${d0} d1=${d1} A=${A} B=${B} a=${a} b=${b} t=${t}`);
 console.log(`DBG counts: d0=${ev0.length} d1=${ev1.length}`);
-if (ev0.length) {
-  console.log(`DBG sample d0: ${ev0.slice(0,3).map(e=>`${e.strHomeTeam} vs ${e.strAwayTeam} [${e.dateEvent}]`).join(" | ")}`);
-}
-if (ev1.length) {
-  console.log(`DBG sample d1: ${ev1.slice(0,3).map(e=>`${e.strHomeTeam} vs ${e.strAwayTeam} [${e.dateEvent}]`).join(" | ")}`);
-}
+if (ev0.length) console.log(`DBG sample d0: ${ev0.slice(0,3).map(e=>`${e.strHomeTeam} vs ${e.strAwayTeam} [${e.dateEvent}]`).join(" | ")}`);
+if (ev1.length) console.log(`DBG sample d1: ${ev1.slice(0,3).map(e=>`${e.strHomeTeam} vs ${e.strAwayTeam} [${e.dateEvent}]`).join(" | ")}`);
 
 const all = [...ev0, ...ev1];
 
-const candidates = all.filter(e => {
+const candidates = all.filter(e=>{
   const h=e.strHomeTeam, w=e.strAwayTeam;
   return (sameTeam(h,a)&&sameTeam(w,b)) || (sameTeam(h,b)&&sameTeam(w,a));
 });
 
 if(!candidates.length){
-  // extra: try strEvent/Alternate as a very light fallback
-  const la = norm(a), lb = norm(b);
+  // very light fallback on title strings
+  const la=norm(a), lb=norm(b);
   const alt = all.filter(e=>{
-    const s1 = norm(e.strEvent||"");
-    const s2 = norm(e.strEventAlternate||"");
-    const hasA = s1.includes(la) || s2.includes(la);
-    const hasB = s1.includes(lb) || s2.includes(lb);
-    return hasA && hasB;
+    const s1=norm(e.strEvent||""), s2=norm(e.strEventAlternate||"");
+    return (s1.includes(la)||s2.includes(la)) && (s1.includes(lb)||s2.includes(lb));
   });
-
   if(!alt.length){
     throw Error(`no match (seen=${all.length}, a=${a}, b=${b})`);
   } else {
