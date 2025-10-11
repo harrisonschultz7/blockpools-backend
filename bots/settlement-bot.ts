@@ -10,9 +10,9 @@ import { ethers } from "ethers";
    ========================= */
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
-const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                 // uint64
+const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                  // uint64
 const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
-const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);           // uint8
+const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);            // uint8
 const COMPAT_TSDB = process.env.COMPAT_TSDB === "1";
 
 // DRY_RUN = "1" means simulate; anything else (unset/"0") sends real txs
@@ -21,20 +21,25 @@ const DRY_RUN = process.env.DRY_RUN === "1";
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
-// DON pointer (activeSecrets.json) lookup
+// Finality pre-gate config
+const THESPORTSDB_API_KEY = process.env.THESPORTSDB_API_KEY || "";
+const REQUIRE_FINAL_CHECK = process.env.REQUIRE_FINAL_CHECK !== "0";  // enable by default
+const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 300); // additional buffer after lock (sec)
+
+/* === DON pointer (activeSecrets.json) lookup === */
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
 const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
 const GITHUB_REF   = process.env.GITHUB_REF   || "main";
 const GH_PAT       = process.env.GH_PAT;
 
-// Where games.json is
+/* === Where games.json is === */
 const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
 const GAMES_CANDIDATES = [
   path.resolve(__dirname, "..", "src", "data", "games.json"),
   path.resolve(__dirname, "..", "games.json"),
 ];
 
-// Where Functions SOURCE lives (your Windows path + fallbacks)
+/* === Where Functions SOURCE lives (your Windows path + fallbacks) === */
 const SOURCE_CANDIDATES = [
   "C:\\Users\\harri\\OneDrive\\functions-betting-app\\functions-hardhat-starter-kit\\blockpools-backend\\bots\\source.js",
   path.resolve(__dirname, "source.js"),
@@ -46,16 +51,16 @@ const SOURCE_CANDIDATES = [
    ABI loader (artifact -> fallback)
    ========================= */
 const FALLBACK_MIN_ABI = [
-  { inputs: [], name: "league",     outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamAName",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamBName",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamACode",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamBCode",  outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "isLocked",   outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "requestSent",outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "winningTeam",outputs: [{ type: "uint8"  }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "lockTime",   outputs: [{ type: "uint256"}], stateMutability: "view", type: "function" },
-  { inputs: [], name: "owner",      outputs: [{ type: "address"}], stateMutability: "view", type: "function" },
+  { inputs: [], name: "league",      outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamAName",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamBName",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamACode",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamBCode",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "isLocked",    outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "requestSent", outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "winningTeam", outputs: [{ type: "uint8"  }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "lockTime",    outputs: [{ type: "uint256"}], stateMutability: "view", type: "function" },
+  { inputs: [], name: "owner",       outputs: [{ type: "address"}], stateMutability: "view", type: "function" },
   // NEW signature: sendRequest(source, args, subId, gas, slot, version, donID)
   {
     inputs: [
@@ -199,7 +204,7 @@ function loadContractsFromGames(): string[] {
   return [];
 }
 
-/** Map on-chain league -> TheSportsDB label for contract SOURCE (uses &l=${L}). */
+/** Map on-chain league -> TheSportsDB label for contract SOURCE (&l= param). */
 function mapLeagueForTSDB(leagueOnChain: string): string {
   const lk = String(leagueOnChain || "").toLowerCase();
   const TSDB_LABEL: Record<string, string> = {
@@ -210,7 +215,77 @@ function mapLeagueForTSDB(leagueOnChain: string): string {
     epl: "English%20Premier%20League",
     ucl: "UEFA%20Champions%20League",
   };
-  return TSDB_LABEL[lk] || leagueOnChain; // pass-through if unknown
+  return TSDB_LABEL[lk] || leagueOnChain;
+}
+
+/* =========================
+   Finality pre-gate (TheSportsDB)
+   ========================= */
+const FINAL_MARKERS = [
+  "final", "ft", "match finished", "ended", "game finished", "full time", "aet"
+];
+
+// Returns true if TSDB shows the game as final on dateISO (or next day)
+async function tsdbLooksFinal(opts: {
+  leagueParam: string;  // e.g. "MLB" or "English%20Premier%20League"
+  dateISO: string;      // YYYY-MM-DD (local ET ISO)
+  altDateISO?: string;  // YYYY-MM-DD next day (handles late-night finishes)
+  teamAName: string;
+  teamBName: string;
+}): Promise<{ final: boolean; rawStatus?: string; debug?: any }> {
+  if (!THESPORTSDB_API_KEY) return { final: false, rawStatus: "no_api_key" };
+
+  const q = async (d: string) => {
+    const u = `https://www.thesportsdb.com/api/v1/json/${THESPORTSDB_API_KEY}/eventsday.php?d=${d}&l=${opts.leagueParam}`;
+    const r = await fetch(u);
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    return j?.events || [];
+  };
+
+  const norm = (s: string) => (s || "").toLowerCase().trim();
+  const wantedA = norm(opts.teamAName);
+  const wantedB = norm(opts.teamBName);
+
+  const scan = (events: any[]) => {
+    for (const e of events) {
+      const h = norm(e.strHomeTeam);
+      const a = norm(e.strAwayTeam);
+      const alt = norm(e.strEventAlternate || ""); // e.g., "Away @ Home"
+      const namesMatch =
+        ((h.includes(wantedA) && a.includes(wantedB)) ||
+         (h.includes(wantedB) && a.includes(wantedA)) ||
+         (alt.includes(wantedA) && alt.includes(wantedB)));
+
+      if (!namesMatch) continue;
+
+      const status = norm(e.strStatus ?? e.strProgress ?? "");
+      const desc   = norm(e.strDescriptionEN ?? "");
+      const looksFinal =
+        FINAL_MARKERS.some(m => status.includes(m) || desc.includes(m));
+
+      // Some sports are inconsistent; also consider presence of scores at end
+      const hasScores = (e.intHomeScore != null && e.intAwayScore != null);
+      if (looksFinal || status === "ft" || hasScores && status === "") {
+        return { final: true, rawStatus: status || (hasScores ? "scores_present" : "") , debug: e };
+      }
+      return { final: false, rawStatus: status || desc, debug: e };
+    }
+    return { final: false, rawStatus: "no_match" };
+  };
+
+  const e0 = await q(opts.dateISO) || [];
+  const r0 = scan(e0);
+  if (r0.final) return r0;
+
+  if (opts.altDateISO) {
+    const e1 = await q(opts.altDateISO) || [];
+    const r1 = scan(e1);
+    if (r1.final) return r1;
+    return r1;
+  }
+
+  return r0;
 }
 
 /* =========================
@@ -222,6 +297,7 @@ async function main() {
 
   console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
+  console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
@@ -285,11 +361,50 @@ async function main() {
 
     console.log(`[DBG] ${addr} locked=${isLocked} reqSent=${requestSent} win=${winningTeam} lockTime=${lockTime}`);
 
-    // Gates
-    if (!isLocked || requestSent || winningTeam !== 0) continue;
-    if (lockTime > 0 && Date.now() / 1000 < lockTime + REQUEST_GAP_SECONDS) continue;
+    // Basic on-chain gates
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (!isLocked || requestSent || winningTeam !== 0) { console.log(`[SKIP] state gate`); continue; }
 
-    // Build args consistent with your Functions JS (expects 8 args)
+    // Ensure a small gap after scheduled lock (helps with late API flips / clock skew)
+    if (lockTime > 0 && nowSec < lockTime + REQUEST_GAP_SECONDS) {
+      console.log(`[SKIP] gap after lock: need ${lockTime + REQUEST_GAP_SECONDS - nowSec}s more`);
+      continue;
+    }
+
+    // Optional: Require additional post-game buffer AND provider finality
+    if (REQUIRE_FINAL_CHECK) {
+      const date0 = epochToEtISO(lockTime);
+      const date1 = addDaysISO(date0, 1);
+      const leagueParam = mapLeagueForTSDB(league);
+
+      // Add a small post-game buffer regardless of API status
+      if (lockTime > 0 && nowSec < lockTime + POSTGAME_MIN_ELAPSED) {
+        console.log(`[SKIP] postgame buffer (${POSTGAME_MIN_ELAPSED}s) not elapsed yet`);
+        continue;
+      }
+
+      try {
+        const finalCheck = await tsdbLooksFinal({
+          leagueParam,
+          dateISO: date0,
+          altDateISO: date1,
+          teamAName,
+          teamBName
+        });
+
+        if (!finalCheck.final) {
+          console.log(`[SKIP] not final yet by TSDB (${leagueParam} ${teamAName} vs ${teamBName}) status="${finalCheck.rawStatus}"`);
+          continue;
+        }
+
+        console.log(`[OK] Final confirmed by TSDB (${leagueParam}) status="${finalCheck.rawStatus}"`);
+      } catch (e) {
+        console.warn(`[WARN] TSDB final check failed, skipping to avoid wasted LINK: ${(e as Error).message}`);
+        continue;
+      }
+    }
+
+    // Build args consistent with your Functions JS (expects 8 args normally)
     const d0 = epochToEtISO(lockTime);
     const d1 = addDaysISO(d0, 1);
     const leagueArg = mapLeagueForTSDB(league);
@@ -314,7 +429,7 @@ async function main() {
     const args = COMPAT_TSDB ? compatArgs : fullArgs;
     console.log(`[ARGS] ${addr} ${JSON.stringify(args)}`);
 
-    // Static-call probe (gasless simulation) — NOTE: now includes SOURCE first
+    // Static-call probe (gasless simulation) — NOTE: includes SOURCE first
     try {
       await pool.sendRequest.staticCall(
         SOURCE,
