@@ -4,6 +4,7 @@ try { require("dotenv").config(); } catch {}
 import fs from "fs";
 import path from "path";
 import { ethers } from "ethers";
+import { gamePoolAbi } from "./gamepool.abi";
 
 /* =========================
    Env / configuration
@@ -31,6 +32,9 @@ const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
 const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
 const GITHUB_REF   = process.env.GITHUB_REF   || "main";
 const GH_PAT       = process.env.GH_PAT;
+
+const poolAbi = gamePoolAbi;
+const iface = new ethers.Interface(poolAbi);
 
 /* === Where games.json is === */
 const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
