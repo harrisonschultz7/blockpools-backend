@@ -3,8 +3,21 @@ try { require("dotenv").config(); } catch {}
 
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { ethers } from "ethers";
-import { gamePoolAbi } from "./gamepool.abi";
+import { gamePoolAbi as IMPORTED_GAMEPOOL_ABI } from "./gamepool.abi";
+
+/* =========================
+   ESM-safe __dirname / __filename
+   ========================= */
+const __filename =
+  typeof (globalThis as any).__filename !== "undefined"
+    ? (globalThis as any).__filename
+    : fileURLToPath(import.meta.url);
+const __dirname =
+  typeof (globalThis as any).__dirname !== "undefined"
+    ? (globalThis as any).__dirname
+    : path.dirname(__filename);
 
 /* =========================
    Env / configuration
@@ -33,9 +46,6 @@ const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
 const GITHUB_REF   = process.env.GITHUB_REF   || "main";
 const GH_PAT       = process.env.GH_PAT;
 
-const poolAbi = gamePoolAbi;
-const iface = new ethers.Interface(poolAbi);
-
 /* === Where games.json is === */
 const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
 const GAMES_CANDIDATES = [
@@ -52,7 +62,7 @@ const SOURCE_CANDIDATES = [
 ];
 
 /* =========================
-   ABI loader (artifact -> fallback)
+   ABI loader (artifact -> imported -> fallback)
    ========================= */
 const FALLBACK_MIN_ABI = [
   { inputs: [], name: "league",      outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
@@ -83,7 +93,7 @@ const FALLBACK_MIN_ABI = [
   },
 ] as const;
 
-function loadGamePoolAbi(): { abi: any; fromArtifact: boolean } {
+function loadGamePoolAbi(): { abi: any; fromArtifact: boolean; source: "artifact" | "imported" | "minimal" } {
   const ARTIFACT_PATH_ENV = process.env.ARTIFACT_PATH?.trim();
   const candidates = [
     ARTIFACT_PATH_ENV && (path.isAbsolute(ARTIFACT_PATH_ENV) ? ARTIFACT_PATH_ENV : path.resolve(process.cwd(), ARTIFACT_PATH_ENV)),
@@ -97,12 +107,18 @@ function loadGamePoolAbi(): { abi: any; fromArtifact: boolean } {
       if (fs.existsSync(p)) {
         const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
         console.log(`✅ Using ABI from ${p}`);
-        return { abi: parsed.abi, fromArtifact: true };
+        return { abi: parsed.abi, fromArtifact: true, source: "artifact" };
       }
     } catch {}
   }
-  console.warn("⚠️  Could not locate GamePool.json. Using minimal ABI.");
-  return { abi: FALLBACK_MIN_ABI, fromArtifact: false };
+
+  if (IMPORTED_GAMEPOOL_ABI && Array.isArray(IMPORTED_GAMEPOOL_ABI) && IMPORTED_GAMEPOOL_ABI.length) {
+    console.warn("⚠️  Using ABI from local import (gamepool.abi).");
+    return { abi: IMPORTED_GAMEPOOL_ABI, fromArtifact: false, source: "imported" };
+  }
+
+  console.warn("⚠️  Could not locate GamePool.json or imported ABI. Using minimal ABI.");
+  return { abi: FALLBACK_MIN_ABI, fromArtifact: false, source: "minimal" };
 }
 
 const { abi: poolAbi, fromArtifact } = loadGamePoolAbi();
@@ -268,9 +284,8 @@ async function tsdbLooksFinal(opts: {
       const looksFinal =
         FINAL_MARKERS.some(m => status.includes(m) || desc.includes(m));
 
-      // Some sports are inconsistent; also consider presence of scores at end
       const hasScores = (e.intHomeScore != null && e.intAwayScore != null);
-      if (looksFinal || status === "ft" || hasScores && status === "") {
+      if (looksFinal || status === "ft" || (hasScores && status === "")) {
         return { final: true, rawStatus: status || (hasScores ? "scores_present" : "") , debug: e };
       }
       return { final: false, rawStatus: status || desc, debug: e };
@@ -441,7 +456,7 @@ async function main() {
         SUBSCRIPTION_ID,
         FUNCTIONS_GAS_LIMIT,
         DON_SECRETS_SLOT,
-        donHostedSecretsVersion,
+        BigInt(donHostedSecretsVersion),
         donID
       );
       console.log(`[SIM OK] ${addr}`);
@@ -465,7 +480,7 @@ async function main() {
           SUBSCRIPTION_ID,
           FUNCTIONS_GAS_LIMIT,
           DON_SECRETS_SLOT,
-          donHostedSecretsVersion,
+          BigInt(donHostedSecretsVersion),
           donID
         );
         console.log(`[OK] sendRequest ${addr}: ${tx.hash}`);
