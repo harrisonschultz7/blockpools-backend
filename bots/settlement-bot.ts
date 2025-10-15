@@ -182,16 +182,25 @@ function addDaysISO(iso: string, days: number) {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
-function readGamesAtPath(p: string): string[] | null {
+/* ===== Read games.json, returning both address list and optional metadata map (tsdbEventId) ===== */
+type GameMeta = { contractAddress: string; tsdbEventId?: number | string };
+function readGamesMetaAtPath(p: string): GameMeta[] | null {
   if (!fs.existsSync(p)) return null;
   try {
     const raw = fs.readFileSync(p, "utf8");
-    const grouped = JSON.parse(raw) as Record<string, Array<{ contractAddress: string }>>;
-    const addrs = Object.values(grouped).flat().map((g) => g?.contractAddress).filter(Boolean);
-    const uniq = Array.from(new Set(addrs));
-    if (uniq.length) {
-      console.log(`Using games from ${p} (${uniq.length} contracts)`);
-      return uniq;
+    const grouped = JSON.parse(raw) as Record<string, Array<any>>;
+    const items = Object.values(grouped).flat().filter(Boolean) as any[];
+    const out: GameMeta[] = [];
+    for (const it of items) {
+      if (it?.contractAddress && typeof it.contractAddress === "string") {
+        const meta: GameMeta = { contractAddress: it.contractAddress };
+        if (it.tsdbEventId != null) meta.tsdbEventId = it.tsdbEventId;
+        out.push(meta);
+      }
+    }
+    if (out.length) {
+      console.log(`Using games from ${p} (${out.length} contracts)`);
+      return out;
     }
   } catch (e) {
     console.warn(`Failed to parse ${p}:`, (e as Error).message);
@@ -199,16 +208,17 @@ function readGamesAtPath(p: string): string[] | null {
   return null;
 }
 
-function loadContractsFromGames(): string[] {
+function loadGamesMeta(): GameMeta[] {
   if (GAMES_PATH_OVERRIDE) {
-    const fromOverride = readGamesAtPath(GAMES_PATH_OVERRIDE);
+    const fromOverride = readGamesMetaAtPath(GAMES_PATH_OVERRIDE);
     if (fromOverride) return fromOverride;
     console.warn(`GAMES_PATH was set but not readable/usable: ${GAMES_PATH_OVERRIDE}`);
   }
   for (const p of GAMES_CANDIDATES) {
-    const fromLocal = readGamesAtPath(p);
+    const fromLocal = readGamesMetaAtPath(p);
     if (fromLocal) return fromLocal;
   }
+  // Fallback to CONTRACTS env
   const envList = (process.env.CONTRACTS || "").trim();
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
@@ -217,7 +227,7 @@ function loadContractsFromGames(): string[] {
     });
     if (filtered.length) {
       console.log(`Using CONTRACTS from env (${filtered.length})`);
-      return Array.from(new Set(filtered));
+      return Array.from(new Set(filtered)).map(addr => ({ contractAddress: addr }));
     }
   }
   console.warn("No contracts found in games.json or CONTRACTS env. Nothing to do.");
@@ -245,66 +255,113 @@ const FINAL_MARKERS = [
   "final", "ft", "match finished", "ended", "game finished", "full time", "aet"
 ];
 
-// Returns true if TSDB shows the game as final on dateISO (or next day)
-async function tsdbLooksFinal(opts: {
-  leagueParam: string;  // e.g. "MLB" or "English%20Premier%20League"
-  dateISO: string;      // YYYY-MM-DD (local ET ISO)
-  altDateISO?: string;  // YYYY-MM-DD next day (handles late-night finishes)
+const cacheBust = () => `cb=${Date.now()}`;
+
+// Day list query (with/without league filter), returns events[]
+async function tsdbDayEvents(dateISO: string, leagueParam: string) {
+  const base = "https://www.thesportsdb.com/api/v1/json";
+  const key  = THESPORTSDB_API_KEY;
+  const urls = [
+    `${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&l=${leagueParam}&${cacheBust()}`,
+    `${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&${cacheBust()}`, // without league filter
+  ];
+  for (const u of urls) {
+    const r = await fetch(u);
+    if (!r.ok) continue;
+    const j = await r.json().catch(() => null);
+    if (Array.isArray(j?.events) && j.events.length) return j.events;
+  }
+  return [];
+}
+
+// By-ID query, returns single event or null
+async function tsdbEventById(eventId: number | string) {
+  if (!eventId && eventId !== 0) return null;
+  const base = "https://www.thesportsdb.com/api/v1/json";
+  const key  = THESPORTSDB_API_KEY;
+  const u = `${base}/${key}/lookupevent.php?id=${encodeURIComponent(String(eventId))}&${cacheBust()}`;
+  const r = await fetch(u);
+  if (!r.ok) return null;
+  const j = await r.json().catch(() => null);
+  const ev = j?.events;
+  if (Array.isArray(ev) && ev.length) return ev[0];
+  return null;
+}
+
+function looksFinal(ev: any) {
+  const status = String(ev?.strStatus ?? ev?.strProgress ?? "").toLowerCase();
+  const desc   = String(ev?.strDescriptionEN ?? "").toLowerCase();
+  const hasScores = (ev?.intHomeScore != null && ev?.intAwayScore != null);
+  if (FINAL_MARKERS.some(m => status.includes(m) || desc.includes(m))) return true;
+  if (status === "ft") return true;
+  // Some feeds omit status but provide final scores + no time left
+  return hasScores && !status;
+}
+
+// Returns true ONLY if by-id says final (if id provided) AND day slice agrees
+async function providerFinalConsensus(opts: {
+  leagueParam: string;
+  dateISO: string;
+  altDateISO: string;
   teamAName: string;
   teamBName: string;
-}): Promise<{ final: boolean; rawStatus?: string; debug?: any }> {
-  if (!THESPORTSDB_API_KEY) return { final: false, rawStatus: "no_api_key" };
+  tsdbEventId?: number | string;
+}) {
+  if (!THESPORTSDB_API_KEY) return { final: false, reason: "no_api_key" };
 
-  const q = async (d: string) => {
-    const u = `https://www.thesportsdb.com/api/v1/json/${THESPORTSDB_API_KEY}/eventsday.php?d=${d}&l=${opts.leagueParam}`;
-    const r = await fetch(u);
-    if (!r.ok) return null;
-    const j = await r.json().catch(() => null);
-    return j?.events || [];
-  };
-
+  const { leagueParam, dateISO, altDateISO, teamAName, teamBName, tsdbEventId } = opts;
   const norm = (s: string) => (s || "").toLowerCase().trim();
-  const wantedA = norm(opts.teamAName);
-  const wantedB = norm(opts.teamBName);
+  const wantedA = norm(teamAName);
+  const wantedB = norm(teamBName);
 
+  // By-ID check first (if available)
+  let byIdOk: boolean | null = null;
+  let byIdStatus: string | undefined;
+  if (tsdbEventId != null) {
+    const ev = await tsdbEventById(tsdbEventId);
+    if (ev) {
+      byIdOk = looksFinal(ev);
+      byIdStatus = String(ev?.strStatus ?? ev?.strProgress ?? "");
+    } else {
+      byIdOk = false;
+      byIdStatus = "id_not_found";
+    }
+  }
+
+  // Day slice check (both dateISO and altDateISO)
   const scan = (events: any[]) => {
     for (const e of events) {
-      const h = norm(e.strHomeTeam);
-      const a = norm(e.strAwayTeam);
-      const alt = norm(e.strEventAlternate || ""); // e.g., "Away @ Home"
+      const h = norm(e.strHomeTeam), a = norm(e.strAwayTeam);
+      const alt = norm(e.strEventAlternate || "");
       const namesMatch =
         ((h.includes(wantedA) && a.includes(wantedB)) ||
          (h.includes(wantedB) && a.includes(wantedA)) ||
          (alt.includes(wantedA) && alt.includes(wantedB)));
-
       if (!namesMatch) continue;
-
-      const status = norm(e.strStatus ?? e.strProgress ?? "");
-      const desc   = norm(e.strDescriptionEN ?? "");
-      const looksFinal =
-        FINAL_MARKERS.some(m => status.includes(m) || desc.includes(m));
-
-      const hasScores = (e.intHomeScore != null && e.intAwayScore != null);
-      if (looksFinal || status === "ft" || (hasScores && status === "")) {
-        return { final: true, rawStatus: status || (hasScores ? "scores_present" : "") , debug: e };
-      }
-      return { final: false, rawStatus: status || desc, debug: e };
+      return { final: looksFinal(e), status: String(e?.strStatus ?? e?.strProgress ?? "") };
     }
-    return { final: false, rawStatus: "no_match" };
+    return { final: false, status: "no_match" };
   };
 
-  const e0 = await q(opts.dateISO) || [];
+  const e0 = await tsdbDayEvents(dateISO, leagueParam);
   const r0 = scan(e0);
-  if (r0.final) return r0;
-
-  if (opts.altDateISO) {
-    const e1 = await q(opts.altDateISO) || [];
+  if (!r0.final && altDateISO) {
+    const e1 = await tsdbDayEvents(altDateISO, leagueParam);
     const r1 = scan(e1);
-    if (r1.final) return r1;
-    return r1;
+    // Use the better of the two
+    if (r1.final) {
+      // Consensus with byId (if present)
+      if (byIdOk === null) return { final: true, status: r1.status }; // no id, day says final
+      return { final: Boolean(byIdOk && r1.final), status: `id:${byIdStatus}|day:${r1.status}` };
+    }
+    // Neither date shows final
+    if (byIdOk === null) return { final: false, status: r1.status };
+    return { final: Boolean(byIdOk && r1.final), status: `id:${byIdStatus}|day:${r1.status}` };
   }
 
-  return r0;
+  // We have r0 from dateISO
+  if (byIdOk === null) return { final: r0.final, status: r0.status };       // no id; rely on day list
+  return { final: Boolean(byIdOk && r0.final), status: `id:${byIdStatus}|day:${r0.status}` };
 }
 
 /* =========================
@@ -330,14 +387,21 @@ async function main() {
 
   const SOURCE = loadSourceCode();
 
-  const contracts = loadContractsFromGames();
-  if (!contracts.length) return;
+  const gamesMeta = loadGamesMeta();
+  if (!gamesMeta.length) return;
+
+  // Quick map: address -> tsdbEventId (if present)
+  const metaByAddr = new Map<string, { tsdbEventId?: number | string }>();
+  for (const g of gamesMeta) {
+    metaByAddr.set(g.contractAddress.toLowerCase(), { tsdbEventId: g.tsdbEventId });
+  }
 
   let submitted = 0;
 
-  for (const addr of contracts) {
+  for (const { contractAddress } of gamesMeta) {
     if (submitted >= MAX_TX_PER_RUN) break;
 
+    const addr = contractAddress;
     const pool = new ethers.Contract(addr, poolAbi, wallet);
 
     // Ownership check (optional)
@@ -384,75 +448,86 @@ async function main() {
     const nowSec = Math.floor(Date.now() / 1000);
     if (!isLocked || requestSent || winningTeam !== 0) { console.log(`[SKIP] state gate`); continue; }
 
-    // Ensure a small gap after scheduled lock (helps with late API flips / clock skew)
+    // Ensure a small gap after scheduled lock
     if (lockTime > 0 && nowSec < lockTime + REQUEST_GAP_SECONDS) {
       console.log(`[SKIP] gap after lock: need ${lockTime + REQUEST_GAP_SECONDS - nowSec}s more`);
       continue;
     }
 
-    // Optional: Require additional post-game buffer AND provider finality
+    // Optional: post-game buffer + provider finality consensus
     if (REQUIRE_FINAL_CHECK) {
       const date0 = epochToEtISO(lockTime);
       const date1 = addDaysISO(date0, 1);
       const leagueParam = mapLeagueForTSDB(league);
 
-      // Add a small post-game buffer regardless of API status
       if (lockTime > 0 && nowSec < lockTime + POSTGAME_MIN_ELAPSED) {
         console.log(`[SKIP] postgame buffer (${POSTGAME_MIN_ELAPSED}s) not elapsed yet`);
         continue;
       }
 
       try {
-        const finalCheck = await tsdbLooksFinal({
+        const meta = metaByAddr.get(addr.toLowerCase()) || {};
+        const tsdbEventId = meta.tsdbEventId;
+
+        const consensus = await providerFinalConsensus({
           leagueParam,
           dateISO: date0,
           altDateISO: date1,
           teamAName,
-          teamBName
+          teamBName,
+          tsdbEventId
         });
 
-        if (!finalCheck.final) {
-          console.log(`[SKIP] not final yet by TSDB (${leagueParam} ${teamAName} vs ${teamBName}) status="${finalCheck.rawStatus}"`);
+        if (!consensus.final) {
+          console.log(`[SKIP] not final yet by TSDB (${leagueParam} ${teamAName} vs ${teamBName}) status="${consensus.status}"`);
           continue;
         }
 
-        console.log(`[OK] Final confirmed by TSDB (${leagueParam}) status="${finalCheck.rawStatus}"`);
+        console.log(`[OK] Final confirmed (consensus) by TSDB (${leagueParam}) status="${consensus.status}"`);
       } catch (e) {
         console.warn(`[WARN] TSDB final check failed, skipping to avoid wasted LINK: ${(e as Error).message}`);
         continue;
       }
     }
 
-    // Build args consistent with your Functions JS (expects 8 args normally)
+    // Build args for Functions (supports optional tsdbEventId as 9th arg)
     const d0 = epochToEtISO(lockTime);
     const d1 = addDaysISO(d0, 1);
     const leagueArg = mapLeagueForTSDB(league);
-    const fullArgs = [
-      leagueArg,                       // L
-      d0,                              // date0
-      d1,                              // date1
-      String(teamACode).toUpperCase(), // A code
-      String(teamBCode).toUpperCase(), // B code
-      teamAName,                       // A name
-      teamBName,                       // B name
-      String(lockTime),                // kickoff epoch
+    const baseArgs = [
+      leagueArg,                       // 0: L
+      d0,                              // 1: date0
+      d1,                              // 2: date1
+      String(teamACode).toUpperCase(), // 3: A code
+      String(teamBCode).toUpperCase(), // 4: B code
+      teamAName,                       // 5: A name
+      teamBName,                       // 6: B name
+      String(lockTime),                // 7: kickoff epoch
     ];
+
+    // If we have a tsdbEventId from games.json, append as arg[8]
+    const meta = metaByAddr.get(addr.toLowerCase()) || {};
+    const tsdbEventId = meta.tsdbEventId;
+    const args = (tsdbEventId != null)
+      ? [...baseArgs, String(tsdbEventId)]
+      : baseArgs;
+
+    // Legacy compact mode, if you toggle COMPAT_TSDB
     const compatArgs = [
-      leagueArg,
-      d0,
+      leagueArg, d0,
       String(teamACode).toUpperCase(),
       String(teamBCode).toUpperCase(),
-      teamAName,
-      teamBName,
+      teamAName, teamBName,
     ];
-    const args = COMPAT_TSDB ? compatArgs : fullArgs;
-    console.log(`[ARGS] ${addr} ${JSON.stringify(args)}`);
+    const finalArgs = COMPAT_TSDB ? compatArgs : args;
+
+    console.log(`[ARGS] ${addr} ${JSON.stringify(finalArgs)}`);
 
     // Static-call probe (gasless simulation) — NOTE: includes SOURCE first
     try {
       await pool.sendRequest.staticCall(
         SOURCE,
-        args,
+        finalArgs,
         SUBSCRIPTION_ID,
         FUNCTIONS_GAS_LIMIT,
         DON_SECRETS_SLOT,
@@ -476,7 +551,7 @@ async function main() {
         console.log(`[TX] sendRequest(${addr}) ...`);
         const tx = await pool.sendRequest(
           SOURCE,
-          args,
+          finalArgs,
           SUBSCRIPTION_ID,
           FUNCTIONS_GAS_LIMIT,
           DON_SECRETS_SLOT,
