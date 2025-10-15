@@ -2,22 +2,26 @@ name: Settlement Bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (UTC)
+    # Run every 5 minutes at fixed marks (UTC): :00, :05, :10, ...
+    - cron: "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
   workflow_dispatch: {}
 
 jobs:
   run:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 4
     permissions:
       contents: read
     concurrency:
       group: settlement-bot
-      cancel-in-progress: false
+      cancel-in-progress: true
 
     steps:
       - name: Checkout backend repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Checkout frontend repo (for games.json)
         uses: actions/checkout@v4
@@ -25,6 +29,7 @@ jobs:
           repository: harrisonschultz7/blockpools-frontend
           path: frontend-src
           token: ${{ secrets.FRONTEND_READ_TOKEN }}
+          fetch-depth: 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -36,17 +41,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: bot-runner/node_modules
-          key: ${{ runner.os }}-bot-deps-${{ hashFiles('bot-runner/package.json') }}
+          key: ${{ runner.os }}-bot-deps-${{ hashFiles('bot-runner/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-bot-deps-
 
       - name: Install bot deps (if cache miss)
         if: steps.bot_cache.outputs.cache-hit != 'true'
-        run: npm install --omit=optional --no-audit --no-fund
+        run: npm ci --omit=optional --no-audit --no-fund
         working-directory: bot-runner
 
       - name: Link cached deps at repo root
         run: ln -sfn bot-runner/node_modules node_modules
+
+      # Optional: small jitter to avoid API/CDN thundering herd at :00/:05...
+      - name: Stagger start slightly
+        run: sleep 12
 
       - name: Run settlement bot (send on-chain)
         env:
@@ -67,11 +76,12 @@ jobs:
 
           # Sports API + runtime
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "0"  # ✅ send real transactions
+          DRY_RUN: "0"                 # ✅ send real transactions
           MAX_TX_PER_RUN: "8"
-          REQUEST_GAP_SECONDS: "120"
+          REQUEST_GAP_SECONDS: "180"   # 3m after lock before attempting
+          REQUIRE_FINAL_CHECK: "1"     # require provider finality
+          POSTGAME_MIN_ELAPSED: "600"  # 10m buffer after lock (playoffs-safe)
 
           # Frontend games.json source
           GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
-
         run: ./bot-runner/node_modules/.bin/tsx bots/settlement-bot.ts
