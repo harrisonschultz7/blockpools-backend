@@ -22,26 +22,28 @@ jobs:
         with:
           fetch-depth: 1
 
-      # Only sanitize if fsevents is actually present (avoids touching files and keeps cache hot)
-      - name: Sanitize package.json (remove fsevents if present)
+      # 🧹 Remove mac-only fsevents safely (no-op if missing)
+      - name: Strip fsevents (mac-only dep)
         shell: bash
         run: |
           set -euo pipefail
-          if node -e 'const p=require("./package.json");process.exit(!((p.dependencies&&p.dependencies.fsevents)||(p.devDependencies&&p.devDependencies.fsevents)));'; then
-            node -e '
-              const fs = require("fs");
-              const p = JSON.parse(fs.readFileSync("package.json","utf8"));
-              for (const k of ["dependencies","devDependencies"]) {
-                if (p[k] && p[k].fsevents) delete p[k].fsevents;
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            let changed = false;
+            for (const k of ["dependencies", "devDependencies", "optionalDependencies"]) {
+              if (p[k] && p[k].fsevents) {
+                delete p[k].fsevents;
+                changed = true;
               }
-              if (!p.optionalDependencies) p.optionalDependencies = {};
-              p.optionalDependencies.fsevents = "^2.3.2";
+            }
+            if (changed) {
               fs.writeFileSync("package.json", JSON.stringify(p, null, 2));
-              console.log("✅ fsevents sanitized");
-            '
-          else
-            echo "fsevents not present — no sanitize needed."
-          fi
+              console.log("✅ Removed fsevents from package.json");
+            } else {
+              console.log("ℹ️ No fsevents found");
+            }
+          '
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -50,7 +52,7 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      # Cache node_modules so we skip installs unless package-lock.json changes
+      # ✅ Cache node_modules (only reinstall when lockfile changes)
       - name: Cache node_modules
         id: cache-nm
         uses: actions/cache@v4
@@ -60,13 +62,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node20-nm-
 
+      # ✅ Install only if cache miss (and skip all platform-specific optional deps)
       - name: Install dependencies (cache miss only)
         if: steps.cache-nm.outputs.cache-hit != 'true'
-        env:
-          npm_config_optional: "false"
-        run: npm ci --omit=optional --no-audit --no-fund
+        run: npm ci --no-optional --ignore-scripts --no-audit --no-fund
 
-      # Fetch ONLY games.json (no full frontend checkout)
+      # 🎯 Fetch ONLY games.json (no full frontend checkout)
       - name: Fetch games.json from frontend (no checkout)
         env:
           TOKEN: ${{ secrets.FRONTEND_READ_TOKEN || github.token }}
@@ -98,7 +99,7 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
           DRY_RUN: "0"
-          # Speed knobs
+          # Performance knobs
           READ_CONCURRENCY: "50"
           TSDB_CONCURRENCY: "8"
           TX_SIM_CONCURRENCY: "20"
@@ -108,6 +109,5 @@ jobs:
           REQUIRE_FINAL_CHECK: "1"
           POSTGAME_MIN_ELAPSED: "600"
           REQUEST_DELAY_MS: "0"
-          # Point the bot at the downloaded file:
           GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
         run: npx tsx bots/settlement-bot.ts
