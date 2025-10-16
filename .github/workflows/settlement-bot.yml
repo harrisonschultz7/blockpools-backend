@@ -22,40 +22,25 @@ jobs:
         with:
           fetch-depth: 1
 
-      # 1) Strip mac-only fsevents from ALL dep blocks if present
-      - name: Sanitize package.json (remove fsevents if present)
-        id: sanitize
+      # 🧹 Full cleanup: remove fsevents everywhere and rebuild a Linux-safe lockfile
+      - name: Sanitize deps (remove fsevents and rebuild lockfile)
         shell: bash
         run: |
           set -euo pipefail
-          BEFORE_SHA="$(sha256sum package.json | awk '{print $1}')"
+          echo "🔧 Cleaning up mac-only fsevents..."
           node -e '
             const fs = require("fs");
-            const p = JSON.parse(fs.readFileSync("package.json","utf8"));
+            const pkg = JSON.parse(fs.readFileSync("package.json","utf8"));
             let changed = false;
             for (const k of ["dependencies","devDependencies","optionalDependencies"]) {
-              if (p[k] && p[k].fsevents) { delete p[k].fsevents; changed = true; }
+              if (pkg[k] && pkg[k].fsevents) { delete pkg[k].fsevents; changed = true; }
             }
-            if (changed) {
-              fs.writeFileSync("package.json", JSON.stringify(p, null, 2));
-              console.log("✅ Removed fsevents from package.json");
-            } else {
-              console.log("ℹ️ No fsevents found in package.json");
-            }
+            if (changed) fs.writeFileSync("package.json", JSON.stringify(pkg,null,2));
           '
-          AFTER_SHA="$(sha256sum package.json | awk '{print $1}')"
-          if [ "$BEFORE_SHA" != "$AFTER_SHA" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          rm -f package-lock.json
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          echo "✅ Lockfile regenerated cleanly without fsevents"
 
-      # 2) If package.json changed, regenerate lockfile ONCE so npm ci never sees fsevents
-      - name: Regenerate lockfile (only if sanitized)
-        if: steps.sanitize.outputs.changed == 'true'
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-
-      # 3) Setup Node with npm cache
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -63,7 +48,7 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      # 4) Cache node_modules keyed to lockfile
+      # Cache node_modules (keyed by fresh lockfile)
       - name: Cache node_modules
         id: cache-nm
         uses: actions/cache@v4
@@ -73,12 +58,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-node20-nm-
 
-      # 5) Install only on cache miss (omit optional deps to be extra safe)
-      - name: Install dependencies (cache miss only)
+      - name: Install dependencies (only if cache miss)
         if: steps.cache-nm.outputs.cache-hit != 'true'
         run: npm ci --omit=optional --ignore-scripts --no-audit --no-fund
 
-      # 6) Fetch ONLY games.json (no full frontend checkout)
       - name: Fetch games.json from frontend (no checkout)
         env:
           TOKEN: ${{ secrets.FRONTEND_READ_TOKEN || github.token }}
@@ -110,7 +93,6 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
           DRY_RUN: "0"
-          # performance knobs
           READ_CONCURRENCY: "50"
           TSDB_CONCURRENCY: "8"
           TX_SIM_CONCURRENCY: "20"
