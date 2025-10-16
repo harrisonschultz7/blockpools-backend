@@ -22,24 +22,36 @@ jobs:
         with:
           fetch-depth: 1
 
-      # 🧹 Full cleanup: remove fsevents everywhere and rebuild a Linux-safe lockfile
-      - name: Sanitize deps (remove fsevents and rebuild lockfile)
+      - name: Checkout frontend repo (for games.json)
+        uses: actions/checkout@v4
+        with:
+          repository: harrisonschultz7/blockpools-frontend
+          path: frontend-src
+          token: ${{ secrets.FRONTEND_READ_TOKEN }}
+          fetch-depth: 1
+
+      # 🔧 Make sure fsevents is NOT in deps/devDeps; keep it only as optional.
+      # Then regenerate a Linux-friendly lockfile BEFORE caching.
+      - name: Sanitize package.json & regenerate lockfile
         shell: bash
         run: |
-          set -euo pipefail
-          echo "🔧 Cleaning up mac-only fsevents..."
           node -e '
             const fs = require("fs");
-            const pkg = JSON.parse(fs.readFileSync("package.json","utf8"));
+            const p = JSON.parse(fs.readFileSync("package.json","utf8"));
             let changed = false;
-            for (const k of ["dependencies","devDependencies","optionalDependencies"]) {
-              if (pkg[k] && pkg[k].fsevents) { delete pkg[k].fsevents; changed = true; }
+            for (const k of ["dependencies","devDependencies"]) {
+              if (p[k] && p[k].fsevents) { delete p[k].fsevents; changed = true; }
             }
-            if (changed) fs.writeFileSync("package.json", JSON.stringify(pkg,null,2));
+            if (!p.optionalDependencies) p.optionalDependencies = {};
+            if (!p.optionalDependencies.fsevents) p.optionalDependencies.fsevents = "^2.3.2";
+            if (changed) {
+              fs.writeFileSync("package.json", JSON.stringify(p, null, 2));
+              console.log("package.json sanitized: removed fsevents from deps/devDeps");
+            } else {
+              console.log("package.json OK: fsevents not in deps/devDeps");
+            }
           '
-          rm -f package-lock.json
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-          echo "✅ Lockfile regenerated cleanly without fsevents"
+          npm install --package-lock-only --ignore-scripts
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -48,37 +60,23 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      # Cache node_modules (keyed by fresh lockfile)
       - name: Cache node_modules
-        id: cache-nm
+        id: cache-node-modules
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: ${{ runner.os }}-node20-nm-${{ hashFiles('package-lock.json') }}
+          key: ${{ runner.os }}-nm-${{ hashFiles('package-lock.json') }}
           restore-keys: |
-            ${{ runner.os }}-node20-nm-
+            ${{ runner.os }}-nm-
 
-      - name: Install dependencies (only if cache miss)
-        if: steps.cache-nm.outputs.cache-hit != 'true'
-        run: npm ci --omit=optional --ignore-scripts --no-audit --no-fund
-
-      - name: Fetch games.json from frontend (no checkout)
+      - name: Install dependencies (root; ignore optional deps)
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         env:
-          TOKEN: ${{ secrets.FRONTEND_READ_TOKEN || github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ./frontend-src/src/data
-          OWNER="harrisonschultz7"
-          REPO="blockpools-frontend"
-          REF="main"
-          FILE_PATH="src/data/games.json"
-          RAW_URL="https://raw.githubusercontent.com/${OWNER}/${REPO}/${REF}/${FILE_PATH}"
-          curl -sSfL -H "Authorization: Bearer ${TOKEN}" "${RAW_URL}" -o ./frontend-src/src/data/games.json
-          echo "Fetched games.json -> ./frontend-src/src/data/games.json"
+          npm_config_optional: "false"
+        run: npm ci --omit=optional --no-audit --no-fund
 
       - name: Stagger start slightly
-        run: sleep 3
+        run: sleep 5
 
       - name: Run settlement bot (send on-chain)
         env:
@@ -93,14 +91,9 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
           DRY_RUN: "0"
-          READ_CONCURRENCY: "50"
-          TSDB_CONCURRENCY: "8"
-          TX_SIM_CONCURRENCY: "20"
-          TX_SEND_CONCURRENCY: "3"
           MAX_TX_PER_RUN: "8"
           REQUEST_GAP_SECONDS: "180"
           REQUIRE_FINAL_CHECK: "1"
           POSTGAME_MIN_ELAPSED: "600"
-          REQUEST_DELAY_MS: "0"
           GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
         run: npx tsx bots/settlement-bot.ts
