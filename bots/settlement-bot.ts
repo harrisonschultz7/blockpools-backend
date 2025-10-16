@@ -363,6 +363,37 @@ async function providerFinalConsensus(opts: {
   if (byIdOk === null) return { final: r0.final, status: r0.status };       // no id; rely on day list
   return { final: Boolean(byIdOk && r0.final), status: `id:${byIdStatus}|day:${r0.status}` };
 }
+// Add after: const iface = new ethers.utils.Interface(poolAbi);
+const FUNCTIONS_ROUTER_ERRORS = [
+  "error EmptyArgs()",
+  "error EmptySource()",
+  "error InsufficientBalance()",
+  "error InvalidConsumer(address consumer)",
+  "error InvalidSubscription()",
+  "error SubscriptionIsPaused()",
+  "error OnlyRouterCanFulfill()",
+  "error RequestIsAlreadyPending()",
+  "error UnsupportedDON()"
+];
+const routerIface = new ethers.utils.Interface(FUNCTIONS_ROUTER_ERRORS);
+
+// helper to decode Error(string) payload too
+function decodeRevert(data?: string) {
+  if (!data || typeof data !== "string" || !data.startsWith("0x") || data.length < 10) return "unknown";
+  // try pool custom errors
+  try { return iface.parseError(data).name; } catch {}
+  // try known router errors
+  try { return routerIface.parseError(data).name; } catch {}
+  // try Error(string)
+  try {
+    if (data.slice(0,10) === "0x08c379a0") {
+      const [msg] = ethers.utils.defaultAbiCoder.decode(["string"], "0x"+data.slice(10));
+      return `Error("${msg}")`;
+    }
+  } catch {}
+  return "unknown";
+}
+
 
 /* =========================
    Main
