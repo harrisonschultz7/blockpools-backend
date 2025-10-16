@@ -567,14 +567,12 @@ async function main() {
       );
       console.log(`[SIM OK] ${addr}`);
     } catch (e: any) {
-      const data = e?.data ?? e?.error?.data;
-      let decoded = "unknown";
-      if (fromArtifact && data) {
-        try { decoded = iface.parseError(data).name; } catch {}
-      }
-      console.error(`[SIM ERR] ${addr} selector=${data?.slice?.(0,10)}${decoded ? ` (${decoded})` : ""}`);
-      continue;
-    }
+  const data = e?.data ?? e?.error?.data;
+  const decoded = decodeRevert(data);
+  console.error(`[SIM ERR] ${addr} selector=${data?.slice?.(0,10)} ${decoded}`);
+  continue;
+}
+
 
     // Send tx
     if (!DRY_RUN) {
