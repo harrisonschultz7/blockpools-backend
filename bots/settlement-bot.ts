@@ -7,9 +7,9 @@ import { fileURLToPath } from "url";
 import { ethers } from "ethers";
 import { gamePoolAbi as IMPORTED_GAMEPOOL_ABI } from "./gamepool.abi";
 
-/* =========================
+/* ──────────────────────────────────────────────────────────────────────────────
    ESM-safe __dirname / __filename
-   ========================= */
+────────────────────────────────────────────────────────────────────────────── */
 const __filename =
   typeof (globalThis as any).__filename !== "undefined"
     ? (globalThis as any).__filename
@@ -19,41 +19,47 @@ const __dirname =
     ? (globalThis as any).__dirname
     : path.dirname(__filename);
 
-/* =========================
-   Env / configuration
-   ========================= */
+/* ──────────────────────────────────────────────────────────────────────────────
+   Config / ENV
+────────────────────────────────────────────────────────────────────────────── */
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
 const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                  // uint64
 const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
 const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);            // uint8
-const COMPAT_TSDB = process.env.COMPAT_TSDB === "1";
 
-// DRY_RUN = "1" means simulate; anything else (unset/"0") sends real txs
 const DRY_RUN = process.env.DRY_RUN === "1";
 
+const REQUIRE_FINAL_CHECK = process.env.REQUIRE_FINAL_CHECK !== "0";
+const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);  // sec after lock
+const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);    // sec after lock before request
+
+// Concurrency controls (tune to your RPC rate-limits)
+const READ_CONCURRENCY = Number(process.env.READ_CONCURRENCY || 25);
+const TSDB_CONCURRENCY = Number(process.env.TSDB_CONCURRENCY || 8);
+const TX_SIM_CONCURRENCY = Number(process.env.TX_SIM_CONCURRENCY || 10);
+const TX_SEND_CONCURRENCY = Number(process.env.TX_SEND_CONCURRENCY || 3);
+
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
-const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
+const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0); // optional inter-tx delay
 
-// Finality pre-gate config
+// TheSportsDB
 const THESPORTSDB_API_KEY = process.env.THESPORTSDB_API_KEY || "";
-const REQUIRE_FINAL_CHECK = process.env.REQUIRE_FINAL_CHECK !== "0";           // enable by default
-const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 300);  // additional buffer after lock (sec)
 
-/* === DON pointer (activeSecrets.json) lookup === */
+// DON pointer (activeSecrets.json) lookup
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
 const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
 const GITHUB_REF   = process.env.GITHUB_REF   || "main";
 const GH_PAT       = process.env.GH_PAT;
 
-/* === Where games.json is === */
+// games.json discovery
 const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
 const GAMES_CANDIDATES = [
   path.resolve(__dirname, "..", "src", "data", "games.json"),
   path.resolve(__dirname, "..", "games.json"),
 ];
 
-/* === Where Functions SOURCE lives (your Windows path + fallbacks) === */
+// Functions source discovery
 const SOURCE_CANDIDATES = [
   "C:\\Users\\harri\\OneDrive\\functions-betting-app\\functions-hardhat-starter-kit\\blockpools-backend\\bots\\source.js",
   path.resolve(__dirname, "source.js"),
@@ -61,9 +67,9 @@ const SOURCE_CANDIDATES = [
   path.resolve(process.cwd(), "bots", "source.js"),
 ];
 
-/* =========================
-   ABI loader (artifact -> imported -> fallback)
-   ========================= */
+/* ──────────────────────────────────────────────────────────────────────────────
+   ABI loader
+────────────────────────────────────────────────────────────────────────────── */
 const FALLBACK_MIN_ABI = [
   { inputs: [], name: "league",      outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
   { inputs: [], name: "teamAName",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
@@ -75,7 +81,6 @@ const FALLBACK_MIN_ABI = [
   { inputs: [], name: "winningTeam", outputs: [{ type: "uint8"  }], stateMutability: "view", type: "function" },
   { inputs: [], name: "lockTime",    outputs: [{ type: "uint256"}], stateMutability: "view", type: "function" },
   { inputs: [], name: "owner",       outputs: [{ type: "address"}], stateMutability: "view", type: "function" },
-  // NEW signature: sendRequest(source, args, subId, gas, slot, version, donID)
   {
     inputs: [
       { type: "string",   name: "source" },
@@ -93,7 +98,7 @@ const FALLBACK_MIN_ABI = [
   },
 ] as const;
 
-function loadGamePoolAbi(): { abi: any; fromArtifact: boolean; source: "artifact" | "imported" | "minimal" } {
+function loadGamePoolAbi(): { abi: any; source: "artifact" | "imported" | "minimal" } {
   const ARTIFACT_PATH_ENV = process.env.ARTIFACT_PATH?.trim();
   const candidates = [
     ARTIFACT_PATH_ENV && (path.isAbsolute(ARTIFACT_PATH_ENV) ? ARTIFACT_PATH_ENV : path.resolve(process.cwd(), ARTIFACT_PATH_ENV)),
@@ -107,64 +112,41 @@ function loadGamePoolAbi(): { abi: any; fromArtifact: boolean; source: "artifact
       if (fs.existsSync(p)) {
         const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
         console.log(`✅ Using ABI from ${p}`);
-        return { abi: parsed.abi, fromArtifact: true, source: "artifact" };
+        return { abi: parsed.abi, source: "artifact" };
       }
     } catch {}
   }
 
   if (IMPORTED_GAMEPOOL_ABI && Array.isArray(IMPORTED_GAMEPOOL_ABI) && IMPORTED_GAMEPOOL_ABI.length) {
     console.warn("⚠️  Using ABI from local import (gamepool.abi).");
-    return { abi: IMPORTED_GAMEPOOL_ABI, fromArtifact: false, source: "imported" };
+    return { abi: IMPORTED_GAMEPOOL_ABI, source: "imported" };
   }
 
   console.warn("⚠️  Could not locate GamePool.json or imported ABI. Using minimal ABI.");
-  return { abi: FALLBACK_MIN_ABI, fromArtifact: false, source: "minimal" };
+  return { abi: FALLBACK_MIN_ABI, source: "minimal" };
 }
 
-const { abi: poolAbi, fromArtifact } = loadGamePoolAbi();
+const { abi: poolAbi } = loadGamePoolAbi();
 const iface = new ethers.utils.Interface(poolAbi); // v5
 
-/* =========================
-   Helpers
-   ========================= */
-async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: string; source: string }> {
-  const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
-  const envDonId = process.env.DON_ID;
-  if (envVersion && envDonId) {
-    return { secretsVersion: Number(envVersion), donId: envDonId, source: "env" };
-  }
+/* ──────────────────────────────────────────────────────────────────────────────
+   Small utils
+────────────────────────────────────────────────────────────────────────────── */
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/activeSecrets.json?ref=${GITHUB_REF}`;
-  const headers: any = {
-    ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
-    "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "settlement-bot",
-    Accept: "application/vnd.github+json",
+function limiter(concurrency: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const next = () => {
+    active--;
+    if (queue.length) queue.shift()!();
   };
-  const res = await fetch(url, { headers });
-  if (!res.ok) throw new Error(`activeSecrets.json HTTP ${res.status}`);
-  const data = await res.json();
-  const json = JSON.parse(Buffer.from(data.content, "base64").toString("utf8"));
-  return {
-    secretsVersion: Number(json.secretsVersion ?? json.version),
-    donId: json.donId || "fun-ethereum-sepolia-1",
-    source: "github",
+  return async function run<T>(fn: () => Promise<T>): Promise<T> {
+    if (active >= concurrency) await new Promise<void>(res => queue.push(res));
+    active++;
+    try { return await fn(); }
+    finally { next(); }
   };
-}
-
-function loadSourceCode(): string {
-  for (const p of SOURCE_CANDIDATES) {
-    try {
-      if (fs.existsSync(p)) {
-        const src = fs.readFileSync(p, "utf8");
-        if (src && src.trim().length > 0) {
-          console.log(`🧠 Loaded Functions source from: ${p}`);
-          return src;
-        }
-      }
-    } catch {}
-  }
-  throw new Error(`Could not find source.js. Tried:\n- ${SOURCE_CANDIDATES.join("\n- ")}`);
 }
 
 function epochToEtISO(epochSec: number) {
@@ -182,7 +164,6 @@ function addDaysISO(iso: string, days: number) {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
-/* ===== Read games.json, returning both address list and optional metadata map (tsdbEventId) ===== */
 type GameMeta = { contractAddress: string; tsdbEventId?: number | string };
 function readGamesMetaAtPath(p: string): GameMeta[] | null {
   if (!fs.existsSync(p)) return null;
@@ -218,12 +199,11 @@ function loadGamesMeta(): GameMeta[] {
     const fromLocal = readGamesMetaAtPath(p);
     if (fromLocal) return fromLocal;
   }
-  // Fallback to CONTRACTS env
   const envList = (process.env.CONTRACTS || "").trim();
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
     const filtered = arr.filter((a) => {
-      try { return ethers.utils.isAddress(a); } catch { return false; } // v5
+      try { return ethers.utils.isAddress(a); } catch { return false; }
     });
     if (filtered.length) {
       console.log(`Using CONTRACTS from env (${filtered.length})`);
@@ -234,7 +214,52 @@ function loadGamesMeta(): GameMeta[] {
   return [];
 }
 
-/** Map on-chain league -> TheSportsDB label for contract SOURCE (&l= param). */
+function loadSourceCode(): string {
+  for (const p of SOURCE_CANDIDATES) {
+    try {
+      if (fs.existsSync(p)) {
+        const src = fs.readFileSync(p, "utf8");
+        if (src && src.trim().length > 0) {
+          console.log(`🧠 Loaded Functions source from: ${p}`);
+          return src;
+        }
+      }
+    } catch {}
+  }
+  throw new Error(`Could not find source.js. Tried:\n- ${SOURCE_CANDIDATES.join("\n- ")}`);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   DON pointer (activeSecrets.json)
+────────────────────────────────────────────────────────────────────────────── */
+async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: string; source: string }> {
+  const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
+  const envDonId = process.env.DON_ID;
+  if (envVersion && envDonId) {
+    return { secretsVersion: Number(envVersion), donId: envDonId, source: "env" };
+  }
+
+  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/activeSecrets.json?ref=${GITHUB_REF}`;
+  const headers: any = {
+    ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "settlement-bot",
+    Accept: "application/vnd.github+json",
+  };
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`activeSecrets.json HTTP ${res.status}`);
+  const data = await res.json();
+  const json = JSON.parse(Buffer.from(data.content, "base64").toString("utf8"));
+  return {
+    secretsVersion: Number(json.secretsVersion ?? json.version),
+    donId: json.donId || "fun-ethereum-sepolia-1",
+    source: "github",
+  };
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   TheSportsDB consolidation
+────────────────────────────────────────────────────────────────────────────── */
 function mapLeagueForTSDB(leagueOnChain: string): string {
   const lk = String(leagueOnChain || "").toLowerCase();
   const TSDB_LABEL: Record<string, string> = {
@@ -248,23 +273,28 @@ function mapLeagueForTSDB(leagueOnChain: string): string {
   return TSDB_LABEL[lk] || leagueOnChain;
 }
 
-/* =========================
-   Finality pre-gate (TheSportsDB)
-   ========================= */
-const FINAL_MARKERS = [
-  "final", "ft", "match finished", "ended", "game finished", "full time", "aet"
-];
-
+const FINAL_MARKERS = ["final", "ft", "match finished", "ended", "game finished", "full time", "aet"];
 const cacheBust = () => `cb=${Date.now()}`;
 
-// Day list query (with/without league filter), returns events[]
-async function tsdbDayEvents(dateISO: string, leagueParam: string) {
+function looksFinal(ev: any) {
+  const status = String(ev?.strStatus ?? ev?.strProgress ?? "").toLowerCase();
+  const desc   = String(ev?.strDescriptionEN ?? "").toLowerCase();
+  const hasScores = (ev?.intHomeScore != null && ev?.intAwayScore != null);
+  if (FINAL_MARKERS.some(m => status.includes(m) || desc.includes(m))) return true;
+  if (status === "ft") return true;
+  return hasScores && !status; // fallback heuristic
+}
+
+async function tsdbDayEvents(dateISO: string, leagueParam?: string) {
   const base = "https://www.thesportsdb.com/api/v1/json";
   const key  = THESPORTSDB_API_KEY;
-  const urls = [
-    `${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&l=${leagueParam}&${cacheBust()}`,
-    `${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&${cacheBust()}`, // without league filter
-  ];
+  const urls = leagueParam
+    ? [
+        `${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&l=${leagueParam}&${cacheBust()}`,
+        `${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&${cacheBust()}`,
+      ]
+    : [`${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&${cacheBust()}`];
+
   for (const u of urls) {
     const r = await fetch(u);
     if (!r.ok) continue;
@@ -274,9 +304,7 @@ async function tsdbDayEvents(dateISO: string, leagueParam: string) {
   return [];
 }
 
-// By-ID query, returns single event or null
 async function tsdbEventById(eventId: number | string) {
-  if (!eventId && eventId !== 0) return null;
   const base = "https://www.thesportsdb.com/api/v1/json";
   const key  = THESPORTSDB_API_KEY;
   const u = `${base}/${key}/lookupevent.php?id=${encodeURIComponent(String(eventId))}&${cacheBust()}`;
@@ -288,82 +316,78 @@ async function tsdbEventById(eventId: number | string) {
   return null;
 }
 
-function looksFinal(ev: any) {
-  const status = String(ev?.strStatus ?? ev?.strProgress ?? "").toLowerCase();
-  const desc   = String(ev?.strDescriptionEN ?? "").toLowerCase();
-  const hasScores = (ev?.intHomeScore != null && ev?.intAwayScore != null);
-  if (FINAL_MARKERS.some(m => status.includes(m) || desc.includes(m))) return true;
-  if (status === "ft") return true;
-  // Some feeds omit status but provide final scores + no time left
-  return hasScores && !status;
+/** Build a fast lookup table for a day slice */
+function indexDayEvents(events: any[]) {
+  const norm = (s: string) => (s || "").toLowerCase().trim();
+  const keyFrom = (a: string, b: string) => `${norm(a)}|${norm(b)}`;
+  const map = new Map<string, any>();
+  for (const e of events) {
+    const h = e?.strHomeTeam || "";
+    const a = e?.strAwayTeam || "";
+    const alt = e?.strEventAlternate || "";
+    map.set(keyFrom(h, a), e);
+    if (alt) map.set(`alt|${(alt || "").toLowerCase()}`, e);
+  }
+  return {
+    getMatch(teamAName: string, teamBName: string) {
+      const k1 = keyFrom(teamAName, teamBName);
+      const k2 = keyFrom(teamBName, teamAName);
+      const e1 = map.get(k1);
+      if (e1) return e1;
+      const e2 = map.get(k2);
+      if (e2) return e2;
+      for (const [k, e] of map) {
+        if (!k.startsWith("alt|")) continue;
+        const alt = k.slice(4);
+        if (alt.includes((teamAName || "").toLowerCase()) && alt.includes((teamBName || "").toLowerCase())) {
+          return e;
+        }
+      }
+      return null;
+    }
+  };
 }
 
-// Returns true ONLY if by-id says final (if id provided) AND day slice agrees
-async function providerFinalConsensus(opts: {
-  leagueParam: string;
-  dateISO: string;
-  altDateISO: string;
+/** Consolidated consensus check using pre-fetched caches */
+function consensusFromCaches(params: {
   teamAName: string;
   teamBName: string;
-  tsdbEventId?: number | string;
+  date0Idx?: ReturnType<typeof indexDayEvents>;
+  date1Idx?: ReturnType<typeof indexDayEvents>;
+  byIdEvent?: any | null; // null if looked up and missing; undefined if not provided
 }) {
-  if (!THESPORTSDB_API_KEY) return { final: false, reason: "no_api_key" };
+  const { teamAName, teamBName, date0Idx, date1Idx, byIdEvent } = params;
 
-  const { leagueParam, dateISO, altDateISO, teamAName, teamBName, tsdbEventId } = opts;
-  const norm = (s: string) => (s || "").toLowerCase().trim();
-  const wantedA = norm(teamAName);
-  const wantedB = norm(teamBName);
-
-  // By-ID check first (if available)
   let byIdOk: boolean | null = null;
-  let byIdStatus: string | undefined;
-  if (tsdbEventId != null) {
-    const ev = await tsdbEventById(tsdbEventId);
-    if (ev) {
-      byIdOk = looksFinal(ev);
-      byIdStatus = String(ev?.strStatus ?? ev?.strProgress ?? "");
+  let byIdStatus: string | undefined = undefined;
+  if (byIdEvent !== undefined) {
+    if (byIdEvent) {
+      byIdOk = looksFinal(byIdEvent);
+      byIdStatus = String(byIdEvent?.strStatus ?? byIdEvent?.strProgress ?? "");
     } else {
       byIdOk = false;
       byIdStatus = "id_not_found";
     }
   }
 
-  // Day slice check (both dateISO and altDateISO)
-  const scan = (events: any[]) => {
-    for (const e of events) {
-      const h = norm(e.strHomeTeam), a = norm(e.strAwayTeam);
-      const alt = norm(e.strEventAlternate || "");
-      const namesMatch =
-        ((h.includes(wantedA) && a.includes(wantedB)) ||
-         (h.includes(wantedB) && a.includes(wantedA)) ||
-         (alt.includes(wantedA) && alt.includes(wantedB)));
-      if (!namesMatch) continue;
-      return { final: looksFinal(e), status: String(e?.strStatus ?? e?.strProgress ?? "") };
-    }
-    return { final: false, status: "no_match" };
-  };
-
-  const e0 = await tsdbDayEvents(dateISO, leagueParam);
-  const r0 = scan(e0);
-  if (!r0.final && altDateISO) {
-    const e1 = await tsdbDayEvents(altDateISO, leagueParam);
-    const r1 = scan(e1);
-    // Use the better of the two
-    if (r1.final) {
-      // Consensus with byId (if present)
-      if (byIdOk === null) return { final: true, status: r1.status }; // no id, day says final
-      return { final: Boolean(byIdOk && r1.final), status: `id:${byIdStatus}|day:${r1.status}` };
-    }
-    // Neither date shows final
-    if (byIdOk === null) return { final: false, status: r1.status };
-    return { final: Boolean(byIdOk && r1.final), status: `id:${byIdStatus}|day:${r1.status}` };
+  function scan(idx?: ReturnType<typeof indexDayEvents>) {
+    if (!idx) return { final: false, status: "no_slice" };
+    const m = idx.getMatch(teamAName, teamBName);
+    if (!m) return { final: false, status: "no_match" };
+    return { final: looksFinal(m), status: String(m?.strStatus ?? m?.strProgress ?? "") };
   }
 
-  // We have r0 from dateISO
-  if (byIdOk === null) return { final: r0.final, status: r0.status };       // no id; rely on day list
-  return { final: Boolean(byIdOk && r0.final), status: `id:${byIdStatus}|day:${r0.status}` };
+  const r0 = scan(date0Idx);
+  const r1 = scan(date1Idx);
+  const best = r0.final ? r0 : (r1.final ? r1 : (r0.status !== "no_slice" ? r0 : r1));
+
+  if (byIdOk === null) return { final: best.final, status: best.status };
+  return { final: Boolean(byIdOk && best.final), status: `id:${byIdStatus}|day:${best.status}` };
 }
-// Add after: const iface = new ethers.utils.Interface(poolAbi);
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Error decoding (clearer SIM/tx logs)
+────────────────────────────────────────────────────────────────────────────── */
 const FUNCTIONS_ROUTER_ERRORS = [
   "error EmptyArgs()",
   "error EmptySource()",
@@ -376,15 +400,10 @@ const FUNCTIONS_ROUTER_ERRORS = [
   "error UnsupportedDON()"
 ];
 const routerIface = new ethers.utils.Interface(FUNCTIONS_ROUTER_ERRORS);
-
-// helper to decode Error(string) payload too
 function decodeRevert(data?: string) {
   if (!data || typeof data !== "string" || !data.startsWith("0x") || data.length < 10) return "unknown";
-  // try pool custom errors
   try { return iface.parseError(data).name; } catch {}
-  // try known router errors
   try { return routerIface.parseError(data).name; } catch {}
-  // try Error(string)
   try {
     if (data.slice(0,10) === "0x08c379a0") {
       const [msg] = ethers.utils.defaultAbiCoder.decode(["string"], "0x"+data.slice(10));
@@ -394,10 +413,9 @@ function decodeRevert(data?: string) {
   return "unknown";
 }
 
-
-/* =========================
-   Main
-   ========================= */
+/* ──────────────────────────────────────────────────────────────────────────────
+   MAIN
+────────────────────────────────────────────────────────────────────────────── */
 async function main() {
   if (!RPC_URL || !PRIVATE_KEY) throw new Error("Missing RPC_URL or PRIVATE_KEY");
   if (!process.env.SUBSCRIPTION_ID) throw new Error("Missing SUBSCRIPTION_ID");
@@ -411,7 +429,7 @@ async function main() {
 
   const { secretsVersion, donId, source } = await loadActiveSecrets();
   const donHostedSecretsVersion = BigInt(secretsVersion);
-  const donID = ethers.utils.formatBytes32String(donId);          // v5
+  const donBytes = ethers.utils.formatBytes32String(donId);        // v5
   console.log(`🔐 Loaded DON pointer from ${source}`);
   console.log(`   secretsVersion = ${secretsVersion}`);
   console.log(`   donId          = ${donId}`);
@@ -421,185 +439,262 @@ async function main() {
   const gamesMeta = loadGamesMeta();
   if (!gamesMeta.length) return;
 
-  // Quick map: address -> tsdbEventId (if present)
   const metaByAddr = new Map<string, { tsdbEventId?: number | string }>();
-  for (const g of gamesMeta) {
-    metaByAddr.set(g.contractAddress.toLowerCase(), { tsdbEventId: g.tsdbEventId });
+  for (const g of gamesMeta) metaByAddr.set(g.contractAddress.toLowerCase(), { tsdbEventId: g.tsdbEventId });
+
+  const readLimit = limiter(READ_CONCURRENCY);
+  const simLimit  = limiter(TX_SIM_CONCURRENCY);
+  const sendLimit = limiter(TX_SEND_CONCURRENCY);
+
+  const botAddr = (await wallet.getAddress()).toLowerCase();
+
+  /* STEP 1: Read all pools concurrently (capped) and prefilter candidates */
+  type PoolState = {
+    addr: string;
+    league: string;
+    teamAName: string;
+    teamBName: string;
+    teamACode: string;
+    teamBCode: string;
+    isLocked: boolean;
+    requestSent: boolean;
+    winningTeam: number;
+    lockTime: number;
+    isOwner: boolean;
+    tsdbEventId?: number | string;
+  };
+
+  const states: PoolState[] = [];
+  await Promise.all(
+    gamesMeta.map(({ contractAddress }) =>
+      readLimit(async () => {
+        const addr = contractAddress;
+        const pool = new ethers.Contract(addr, poolAbi, wallet);
+
+        let onchainOwner = "(read failed)";
+        try { onchainOwner = await pool.owner(); } catch {}
+        const isOwner = onchainOwner !== "(read failed)" && onchainOwner.toLowerCase() === botAddr;
+        if (!isOwner) return;
+
+        try {
+          const [lg, ta, tb, tca, tcb, locked, req, win, lt] = await Promise.all([
+            pool.league(),
+            pool.teamAName(),
+            pool.teamBName(),
+            pool.teamACode(),
+            pool.teamBCode(),
+            pool.isLocked(),
+            pool.requestSent(),
+            pool.winningTeam().then(Number),
+            pool.lockTime().then(Number),
+          ]);
+
+          states.push({
+            addr,
+            league: String(lg || ""),
+            teamAName: String(ta || ""),
+            teamBName: String(tb || ""),
+            teamACode: String(tca || ""),
+            teamBCode: String(tcb || ""),
+            isLocked: Boolean(locked),
+            requestSent: Boolean(req),
+            winningTeam: Number(win),
+            lockTime: Number(lt),
+            isOwner,
+            tsdbEventId: metaByAddr.get(addr.toLowerCase())?.tsdbEventId
+          });
+        } catch (e) {
+          console.warn(`[READ FAIL] ${addr}:`, (e as Error).message);
+        }
+      })
+    )
+  );
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const gated = states.filter(s => s.isOwner && s.isLocked && !s.requestSent && s.winningTeam === 0);
+  const timeGated = gated.filter(s =>
+    (s.lockTime === 0 || nowSec >= s.lockTime + REQUEST_GAP_SECONDS) &&
+    (s.lockTime === 0 || !REQUIRE_FINAL_CHECK || nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED)
+  );
+
+  if (!timeGated.length) {
+    console.log("No eligible pools after gates. Submitted 0 transaction(s).");
+    return;
+  }
+
+  /* STEP 2: CONSOLIDATED TheSportsDB fetches (only if REQUIRE_FINAL_CHECK) */
+  let finalEligible: PoolState[] = timeGated;
+  if (REQUIRE_FINAL_CHECK) {
+    if (!THESPORTSDB_API_KEY) {
+      console.log("REQUIRE_FINAL_CHECK=1 but no THESPORTSDB_API_KEY set. Skipping to avoid wasted LINK.");
+      return;
+    }
+
+    type DayKey = string; // leagueParam|dateISO
+    const dayKeys = new Set<DayKey>();
+    const idKeys = new Set<string>();
+
+    const plan: Array<{
+      addr: string;
+      leagueParam: string;
+      teamAName: string;
+      teamBName: string;
+      date0: string;
+      date1: string;
+      tsdbEventId?: number | string;
+    }> = [];
+
+    for (const s of timeGated) {
+      const leagueParam = mapLeagueForTSDB(s.league);
+      const date0 = epochToEtISO(s.lockTime);
+      const date1 = addDaysISO(date0, 1);
+      plan.push({
+        addr: s.addr,
+        leagueParam,
+        teamAName: s.teamAName,
+        teamBName: s.teamBName,
+        date0, date1,
+        tsdbEventId: s.tsdbEventId
+      });
+      dayKeys.add(`${leagueParam}|${date0}`);
+      dayKeys.add(`${leagueParam}|${date1}`);
+      if (s.tsdbEventId != null && s.tsdbEventId !== "") idKeys.add(String(s.tsdbEventId));
+    }
+
+    const dayCache = new Map<DayKey, ReturnType<typeof indexDayEvents> | undefined>();
+    await Promise.all(
+      Array.from(dayKeys).map(key =>
+        limiter(TSDB_CONCURRENCY)(async () => {
+          const [leagueParam, dateISO] = key.split("|");
+          const events = await tsdbDayEvents(dateISO, leagueParam);
+          dayCache.set(key, events.length ? indexDayEvents(events) : undefined);
+        })
+      )
+    );
+
+    const idCache = new Map<string, any | null>();
+    await Promise.all(
+      Array.from(idKeys).map(id =>
+        limiter(TSDB_CONCURRENCY)(async () => {
+          const ev = await tsdbEventById(id);
+          idCache.set(id, ev || null);
+        })
+      )
+    );
+
+    const eligible: PoolState[] = [];
+    for (const s of timeGated) {
+      const leagueParam = mapLeagueForTSDB(s.league);
+      const date0 = epochToEtISO(s.lockTime);
+      const date1 = addDaysISO(date0, 1);
+      const date0Idx = dayCache.get(`${leagueParam}|${date0}`);
+      const date1Idx = dayCache.get(`${leagueParam}|${date1}`);
+
+      const byIdEvent = (s.tsdbEventId != null && s.tsdbEventId !== "")
+        ? idCache.get(String(s.tsdbEventId))
+        : undefined;
+
+      const c = consensusFromCaches({
+        teamAName: s.teamAName,
+        teamBName: s.teamBName,
+        date0Idx,
+        date1Idx,
+        byIdEvent
+      });
+
+      if (c.final) {
+        eligible.push(s);
+      } else {
+        console.log(`[SKIP] Not final yet by TSDB (${leagueParam} ${s.teamAName} vs ${s.teamBName}) status="${c.status}"`);
+      }
+    }
+
+    finalEligible = eligible;
+    if (!finalEligible.length) {
+      console.log("No games confirmed final by provider consensus. Submitted 0 transaction(s).");
+      return;
+    }
+
+    console.log(`✅ Provider consensus final for ${finalEligible.length} pool(s).`);
+  }
+
+  /* STEP 3: Simulate & send (concurrent + limited) — ALWAYS 9 ARGS */
+  const { secretsVersion: sv } = await loadActiveSecrets();
+  const donHostedSecretsVersion2 = BigInt(sv); // keep in sync if rotated during run
+
+  function buildArgs9(s: PoolState): string[] {
+    const d0 = epochToEtISO(s.lockTime);
+    const d1 = addDaysISO(d0, 1);
+    const leagueArg = mapLeagueForTSDB(s.league);
+    const id = (s.tsdbEventId != null && s.tsdbEventId !== "") ? String(s.tsdbEventId) : "";
+    return [
+      leagueArg,                       // 0
+      d0,                              // 1
+      d1,                              // 2
+      String(s.teamACode).toUpperCase(), // 3
+      String(s.teamBCode).toUpperCase(), // 4
+      s.teamAName,                     // 5
+      s.teamBName,                     // 6
+      String(s.lockTime),              // 7
+      id                               // 8  (may be "")
+    ];
   }
 
   let submitted = 0;
 
-  for (const { contractAddress } of gamesMeta) {
+  for (const s of finalEligible) {
     if (submitted >= MAX_TX_PER_RUN) break;
 
-    const addr = contractAddress;
-    const pool = new ethers.Contract(addr, poolAbi, wallet);
+    const pool = new ethers.Contract(s.addr, poolAbi, wallet);
+    const args = buildArgs9(s);
 
-    // Ownership check (optional)
-    const botAddr = await wallet.getAddress();
-    let onchainOwner = "(read failed)";
-    try { onchainOwner = await pool.owner(); } catch {}
-    const isOwner = onchainOwner !== "(read failed)" && onchainOwner.toLowerCase() === botAddr.toLowerCase();
-    console.log(`[OWN] pool=${addr} owner=${onchainOwner} bot=${botAddr} isOwner=${isOwner}`);
-    if (!isOwner) continue;
-
-    // Read state
-    let league: string, teamAName: string, teamBName: string, teamACode: string, teamBCode: string;
-    let isLocked: boolean, requestSent: boolean, winningTeam: number, lockTime: number;
-
-    try {
-      const [lg, ta, tb, tca, tcb, locked, req, win, lt] = await Promise.all([
-        pool.league(),
-        pool.teamAName(),
-        pool.teamBName(),
-        pool.teamACode(),
-        pool.teamBCode(),
-        pool.isLocked(),
-        pool.requestSent(),
-        pool.winningTeam().then(Number),
-        pool.lockTime().then(Number),
-      ]);
-      league = String(lg || "");
-      teamAName = String(ta || "");
-      teamBName = String(tb || "");
-      teamACode = String(tca || "");
-      teamBCode = String(tcb || "");
-      isLocked = Boolean(locked);
-      requestSent = Boolean(req);
-      winningTeam = Number(win);
-      lockTime = Number(lt);
-    } catch (e) {
-      console.error(`[ERR] read state ${addr}:`, (e as Error).message);
-      continue;
-    }
-
-    console.log(`[DBG] ${addr} locked=${isLocked} reqSent=${requestSent} win=${winningTeam} lockTime=${lockTime}`);
-
-    // Basic on-chain gates
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (!isLocked || requestSent || winningTeam !== 0) { console.log(`[SKIP] state gate`); continue; }
-
-    // Ensure a small gap after scheduled lock
-    if (lockTime > 0 && nowSec < lockTime + REQUEST_GAP_SECONDS) {
-      console.log(`[SKIP] gap after lock: need ${lockTime + REQUEST_GAP_SECONDS - nowSec}s more`);
-      continue;
-    }
-
-    // Optional: post-game buffer + provider finality consensus
-    if (REQUIRE_FINAL_CHECK) {
-      const date0 = epochToEtISO(lockTime);
-      const date1 = addDaysISO(date0, 1);
-      const leagueParam = mapLeagueForTSDB(league);
-
-      if (lockTime > 0 && nowSec < lockTime + POSTGAME_MIN_ELAPSED) {
-        console.log(`[SKIP] postgame buffer (${POSTGAME_MIN_ELAPSED}s) not elapsed yet`);
-        continue;
-      }
-
+    const simOk = await simLimit(async () => {
       try {
-        const meta = metaByAddr.get(addr.toLowerCase()) || {};
-        const tsdbEventId = meta.tsdbEventId;
-
-        const consensus = await providerFinalConsensus({
-          leagueParam,
-          dateISO: date0,
-          altDateISO: date1,
-          teamAName,
-          teamBName,
-          tsdbEventId
-        });
-
-        if (!consensus.final) {
-          console.log(`[SKIP] not final yet by TSDB (${leagueParam} ${teamAName} vs ${teamBName}) status="${consensus.status}"`);
-          continue;
-        }
-
-        console.log(`[OK] Final confirmed (consensus) by TSDB (${leagueParam}) status="${consensus.status}"`);
-      } catch (e) {
-        console.warn(`[WARN] TSDB final check failed, skipping to avoid wasted LINK: ${(e as Error).message}`);
-        continue;
-      }
-    }
-
-    // Build args for Functions (supports optional tsdbEventId as 9th arg)
-    const d0 = epochToEtISO(lockTime);
-    const d1 = addDaysISO(d0, 1);
-    const leagueArg = mapLeagueForTSDB(league);
-    const baseArgs = [
-      leagueArg,                       // 0: L
-      d0,                              // 1: date0
-      d1,                              // 2: date1
-      String(teamACode).toUpperCase(), // 3: A code
-      String(teamBCode).toUpperCase(), // 4: B code
-      teamAName,                       // 5: A name
-      teamBName,                       // 6: B name
-      String(lockTime),                // 7: kickoff epoch
-    ];
-
-    // If we have a tsdbEventId from games.json, append as arg[8]
-    const meta = metaByAddr.get(addr.toLowerCase()) || {};
-    const tsdbEventId = meta.tsdbEventId;
-    const args = (tsdbEventId != null)
-      ? [...baseArgs, String(tsdbEventId)]
-      : baseArgs;
-
-    // Legacy compact mode, if you toggle COMPAT_TSDB
-    const compatArgs = [
-      leagueArg, d0,
-      String(teamACode).toUpperCase(),
-      String(teamBCode).toUpperCase(),
-      teamAName, teamBName,
-    ];
-    const finalArgs = COMPAT_TSDB ? compatArgs : args;
-
-    console.log(`[ARGS] ${addr} ${JSON.stringify(finalArgs)}`);
-
-    // Static-call probe (gasless simulation) — NOTE: v5 uses callStatic
-    try {
-      await pool.callStatic.sendRequest(
-        SOURCE,
-        finalArgs,
-        SUBSCRIPTION_ID,
-        FUNCTIONS_GAS_LIMIT,
-        DON_SECRETS_SLOT,
-        BigInt(donHostedSecretsVersion),
-        donID
-      );
-      console.log(`[SIM OK] ${addr}`);
-    } catch (e: any) {
-  const data = e?.data ?? e?.error?.data;
-  const decoded = decodeRevert(data);
-  console.error(`[SIM ERR] ${addr} selector=${data?.slice?.(0,10)} ${decoded}`);
-  continue;
-}
-
-
-    // Send tx
-    if (!DRY_RUN) {
-      try {
-        console.log(`[TX] sendRequest(${addr}) ...`);
-        const tx = await pool.sendRequest(
+        await pool.callStatic.sendRequest(
           SOURCE,
-          finalArgs,
+          args,
           SUBSCRIPTION_ID,
           FUNCTIONS_GAS_LIMIT,
           DON_SECRETS_SLOT,
-          BigInt(donHostedSecretsVersion),
-          donID
+          donHostedSecretsVersion2,
+          donBytes
         );
-        console.log(`[OK] sendRequest ${addr}: ${tx.hash}`);
-        submitted++;
+        return true;
       } catch (e: any) {
         const data = e?.data ?? e?.error?.data;
-        let decoded = "unknown custom error";
-        if (fromArtifact && data) {
-          try { decoded = iface.parseError(data).name; } catch {}
-        }
-        console.error(`[ERR] sendRequest ${addr}:`, e?.reason || e?.message || e);
-        if (data) console.error(` selector = ${data.slice(0,10)} (${decoded})`);
+        const decoded = decodeRevert(data);
+        console.error(`[SIM ERR] ${s.addr} selector=${data?.slice?.(0,10)} ${decoded}`);
+        return false;
       }
+    });
+
+    if (!simOk) continue;
+
+    if (!DRY_RUN) {
+      await sendLimit(async () => {
+        try {
+          if (REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
+          const tx = await pool.sendRequest(
+            SOURCE,
+            args,
+            SUBSCRIPTION_ID,
+            FUNCTIONS_GAS_LIMIT,
+            DON_SECRETS_SLOT,
+            donHostedSecretsVersion2,
+            donBytes
+          );
+          console.log(`[OK] sendRequest ${s.addr}: ${tx.hash}`);
+          submitted++;
+        } catch (e: any) {
+          const data = e?.data ?? e?.error?.data;
+          let decoded = "unknown";
+          try { decoded = iface.parseError(data).name; } catch {}
+          console.error(`[ERR] sendRequest ${s.addr}:`, e?.reason || e?.message || e);
+          if (data) console.error(` selector = ${data.slice?.(0,10)} (${decoded})`);
+        }
+      });
     } else {
-      console.log(`[DRY_RUN] Skipped ${addr}`);
+      console.log(`[DRY_RUN] Would sendRequest ${s.addr} with 9 args`);
     }
   }
 
