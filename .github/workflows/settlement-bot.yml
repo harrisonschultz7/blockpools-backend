@@ -2,7 +2,7 @@ name: Settlement Bot
 
 on:
   schedule:
-    # Run every 5 minutes at fixed marks (UTC): :00, :05, :10, ...
+    # Run exactly on the 5-minute marks (UTC)
     - cron: "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
   workflow_dispatch: {}
 
@@ -13,9 +13,10 @@ jobs:
     timeout-minutes: 4
     permissions:
       contents: read
+    # Keep your previous behavior: do NOT cancel an in-progress run
     concurrency:
       group: settlement-bot
-      cancel-in-progress: true
+      cancel-in-progress: false
 
     steps:
       - name: Checkout backend repo
@@ -38,8 +39,7 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      # --- Strip macOS-only fsevents if it was promoted to a normal dep ---
-      # We edit package.json in the runner (not committed) and regenerate a Linux lockfile.
+      # --- CI-only hardening so macOS-only fsevents can't break Linux runners ---
       - name: Sanitize package.json (remove fsevents from deps/devDeps; keep optional)
         shell: bash
         run: |
@@ -50,7 +50,6 @@ jobs:
             for (const k of ["dependencies","devDependencies"]) {
               if (p[k] && p[k].fsevents) { delete p[k].fsevents; changed = true; }
             }
-            // ensure optionalDependencies keeps fsevents (harmless on Linux)
             if (!p.optionalDependencies) p.optionalDependencies = {};
             if (!p.optionalDependencies.fsevents) p.optionalDependencies.fsevents = "^2.3.2";
             if (changed) {
@@ -60,15 +59,14 @@ jobs:
               console.log("package.json OK: fsevents not in deps/devDeps");
             }
           '
-          # Regenerate lockfile for Linux so npm stops treating fsevents as required.
           npm install --package-lock-only --ignore-scripts
 
-      - name: Install dependencies (root)
+      - name: Install dependencies (root; ignore optional deps)
         env:
-          npm_config_optional: "false"   # hard-disable optional deps just in case
+          npm_config_optional: "false"
         run: npm ci --omit=optional --no-audit --no-fund
 
-      # Optional: small jitter to avoid API/CDN thundering herd at :00/:05...
+      # Optional: small jitter to avoid thundering herd at :00/:05, etc.
       - name: Stagger start slightly
         run: sleep 12
 
@@ -93,9 +91,9 @@ jobs:
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
           DRY_RUN: "0"                 # ✅ send real transactions
           MAX_TX_PER_RUN: "8"
-          REQUEST_GAP_SECONDS: "180"   # 3m after lock before attempting
-          REQUIRE_FINAL_CHECK: "1"     # require provider finality
-          POSTGAME_MIN_ELAPSED: "600"  # 10m buffer after lock (playoffs-safe)
+          REQUEST_GAP_SECONDS: "180"   # ⬆️ from 120 → 180 for safety
+          REQUIRE_FINAL_CHECK: "1"     # ✅ require provider finality
+          POSTGAME_MIN_ELAPSED: "600"  # ✅ 10m buffer after "final"
 
           # Frontend games.json source
           GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
