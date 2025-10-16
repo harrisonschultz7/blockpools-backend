@@ -2,7 +2,6 @@ name: Settlement Bot
 
 on:
   schedule:
-    # Run exactly on the 5-minute marks (UTC)
     - cron: "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
   workflow_dispatch: {}
 
@@ -13,7 +12,6 @@ jobs:
     timeout-minutes: 4
     permissions:
       contents: read
-    # Keep your previous behavior: do NOT cancel an in-progress run
     concurrency:
       group: settlement-bot
       cancel-in-progress: false
@@ -32,14 +30,7 @@ jobs:
           token: ${{ secrets.FRONTEND_READ_TOKEN }}
           fetch-depth: 1
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      # --- CI-only hardening so macOS-only fsevents can't break Linux runners ---
+      # ⬇️ Do sanitize FIRST so the cache key sees the final lockfile
       - name: Sanitize package.json (remove fsevents from deps/devDeps; keep optional)
         shell: bash
         run: |
@@ -59,42 +50,51 @@ jobs:
               console.log("package.json OK: fsevents not in deps/devDeps");
             }
           '
+          # produce a Linux-friendly lockfile ONCE, before caching
           npm install --package-lock-only --ignore-scripts
 
+      # npm cache (downloads) AND node_modules cache (installed tree)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-nm-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nm-
+
       - name: Install dependencies (root; ignore optional deps)
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
         env:
           npm_config_optional: "false"
         run: npm ci --omit=optional --no-audit --no-fund
 
-      # Optional: small jitter to avoid thundering herd at :00/:05, etc.
       - name: Stagger start slightly
         run: sleep 12
 
       - name: Run settlement bot (send on-chain)
         env:
-          # RPC + signer (must be deployer/owner EOA)
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-
-          # Chainlink Functions config
           SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}
           FUNCTIONS_GAS_LIMIT: "300000"
           DON_SECRETS_SLOT: "0"
-
-          # DON pointer loader
           GITHUB_OWNER: "harrisonschultz7"
           GITHUB_REPO: "blockpools-backend"
           GITHUB_REF: "main"
           GH_PAT: ${{ secrets.GH_PAT }}
-
-          # Sports API + runtime
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "0"                 # ✅ send real transactions
+          DRY_RUN: "0"
           MAX_TX_PER_RUN: "8"
-          REQUEST_GAP_SECONDS: "180"   # ⬆️ from 120 → 180 for safety
-          REQUIRE_FINAL_CHECK: "1"     # ✅ require provider finality
-          POSTGAME_MIN_ELAPSED: "600"  # ✅ 10m buffer after "final"
-
-          # Frontend games.json source
+          REQUEST_GAP_SECONDS: "180"
+          REQUIRE_FINAL_CHECK: "1"
+          POSTGAME_MIN_ELAPSED: "600"
           GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
         run: npx tsx bots/settlement-bot.ts
