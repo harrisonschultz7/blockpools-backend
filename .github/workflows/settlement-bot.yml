@@ -2,7 +2,6 @@ name: Settlement Bot
 
 on:
   schedule:
-    # Run every 5 minutes at fixed marks (UTC): :00, :05, :10, ...
     - cron: "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
   workflow_dispatch: {}
 
@@ -31,57 +30,36 @@ jobs:
           token: ${{ secrets.FRONTEND_READ_TOKEN }}
           fetch-depth: 1
 
-      - name: Setup Node.js
+      - name: Use Node 20 (cache npm via root lockfile)
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      - name: Cache bot dependencies
-        id: bot_cache
-        uses: actions/cache@v4
-        with:
-          path: bot-runner/node_modules
-          key: ${{ runner.os }}-bot-deps-${{ hashFiles('bot-runner/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-bot-deps-
-
-      - name: Install bot deps (if cache miss)
-        if: steps.bot_cache.outputs.cache-hit != 'true'
+      - name: Install deps (root)
         run: npm ci --omit=optional --no-audit --no-fund
-        working-directory: bot-runner
 
-      - name: Link cached deps at repo root
-        run: ln -sfn bot-runner/node_modules node_modules
-
-      # Optional: small jitter to avoid API/CDN thundering herd at :00/:05...
+      # Optional: small jitter to avoid thundering herd
       - name: Stagger start slightly
         run: sleep 12
 
       - name: Run settlement bot (send on-chain)
         env:
-          # RPC + signer (must be deployer/owner EOA)
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-
-          # Chainlink Functions config
           SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}
           FUNCTIONS_GAS_LIMIT: "300000"
           DON_SECRETS_SLOT: "0"
-
-          # DON pointer loader
           GITHUB_OWNER: "harrisonschultz7"
           GITHUB_REPO: "blockpools-backend"
           GITHUB_REF: "main"
           GH_PAT: ${{ secrets.GH_PAT }}
-
-          # Sports API + runtime
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-          DRY_RUN: "0"                 # ✅ send real transactions
+          DRY_RUN: "0"
           MAX_TX_PER_RUN: "8"
-          REQUEST_GAP_SECONDS: "180"   # 3m after lock before attempting
-          REQUIRE_FINAL_CHECK: "1"     # require provider finality
-          POSTGAME_MIN_ELAPSED: "600"  # 10m buffer after lock (playoffs-safe)
-
-          # Frontend games.json source
+          REQUEST_GAP_SECONDS: "180"
+          REQUIRE_FINAL_CHECK: "1"
+          POSTGAME_MIN_ELAPSED: "600"
           GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
-        run: ./bot-runner/node_modules/.bin/tsx bots/settlement-bot.ts
+        run: npx tsx bots/settlement-bot.ts
