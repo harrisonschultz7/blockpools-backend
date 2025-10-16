@@ -17,13 +17,27 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      # Backend repo only (bots + code)
       - name: Checkout backend repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # Use setup-node's built-in npm cache to keep installs snappy
+      # ⚙️ Quick sanitize to strip mac-only fsevents before install
+      - name: Sanitize package.json (remove fsevents)
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("package.json","utf8"));
+            for (const k of ["dependencies","devDependencies"]) {
+              if (p[k] && p[k].fsevents) delete p[k].fsevents;
+            }
+            if (!p.optionalDependencies) p.optionalDependencies = {};
+            p.optionalDependencies.fsevents = "^2.3.2";
+            fs.writeFileSync("package.json", JSON.stringify(p, null, 2));
+            console.log("✅ fsevents sanitized");
+          '
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -32,9 +46,11 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies (no optional deps)
+        env:
+          npm_config_optional: "false"
         run: npm ci --omit=optional --no-audit --no-fund
 
-      # Fetch ONLY games.json (no full frontend checkout)
+      # 🎯 Fetch ONLY games.json (no full frontend checkout)
       - name: Fetch games.json from frontend (no checkout)
         env:
           TOKEN: ${{ secrets.FRONTEND_READ_TOKEN || github.token }}
@@ -50,7 +66,6 @@ jobs:
           curl -sSfL -H "Authorization: Bearer ${TOKEN}" "${RAW_URL}" -o ./frontend-src/src/data/games.json
           echo "Fetched games.json -> ./frontend-src/src/data/games.json"
 
-      # Optional slight stagger if you run multiple crons in parallel
       - name: Stagger start slightly
         run: sleep 3
 
@@ -67,7 +82,6 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
           DRY_RUN: "0"
-          # Bot speed knobs (tune as you scale):
           READ_CONCURRENCY: "50"
           TSDB_CONCURRENCY: "8"
           TX_SIM_CONCURRENCY: "20"
@@ -77,11 +91,5 @@ jobs:
           REQUIRE_FINAL_CHECK: "1"
           POSTGAME_MIN_ELAPSED: "600"
           REQUEST_DELAY_MS: "0"
-          # If you later enable Multicall, pass its address here:
-          # MULTICALL3_ADDR: "0x..."
-          # (Optional future sharding)
-          # SHARD_TOTAL: "1"
-          # SHARD_INDEX: "0"
-          # Point the bot at the downloaded file:
           GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
         run: npx tsx bots/settlement-bot.ts
