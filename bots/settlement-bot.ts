@@ -37,8 +37,8 @@ const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
 // Finality pre-gate config
 const THESPORTSDB_API_KEY = process.env.THESPORTSDB_API_KEY || "";
-const REQUIRE_FINAL_CHECK = process.env.REQUIRE_FINAL_CHECK !== "0";  // enable by default
-const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 300); // additional buffer after lock (sec)
+const REQUIRE_FINAL_CHECK = process.env.REQUIRE_FINAL_CHECK !== "0";           // enable by default
+const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 300);  // additional buffer after lock (sec)
 
 /* === DON pointer (activeSecrets.json) lookup === */
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
@@ -122,7 +122,7 @@ function loadGamePoolAbi(): { abi: any; fromArtifact: boolean; source: "artifact
 }
 
 const { abi: poolAbi, fromArtifact } = loadGamePoolAbi();
-const iface = new ethers.Interface(poolAbi);
+const iface = new ethers.utils.Interface(poolAbi); // v5
 
 /* =========================
    Helpers
@@ -223,7 +223,7 @@ function loadGamesMeta(): GameMeta[] {
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
     const filtered = arr.filter((a) => {
-      try { return ethers.isAddress(a); } catch { return false; }
+      try { return ethers.utils.isAddress(a); } catch { return false; } // v5
     });
     if (filtered.length) {
       console.log(`Using CONTRACTS from env (${filtered.length})`);
@@ -375,12 +375,12 @@ async function main() {
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
   console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
 
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
-  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+  const provider = new ethers.providers.JsonRpcProvider(RPC_URL); // v5
+  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);        // v5
 
   const { secretsVersion, donId, source } = await loadActiveSecrets();
   const donHostedSecretsVersion = BigInt(secretsVersion);
-  const donID = ethers.encodeBytes32String(donId);
+  const donID = ethers.utils.formatBytes32String(donId);          // v5
   console.log(`🔐 Loaded DON pointer from ${source}`);
   console.log(`   secretsVersion = ${secretsVersion}`);
   console.log(`   donId          = ${donId}`);
@@ -523,9 +523,9 @@ async function main() {
 
     console.log(`[ARGS] ${addr} ${JSON.stringify(finalArgs)}`);
 
-    // Static-call probe (gasless simulation) — NOTE: includes SOURCE first
+    // Static-call probe (gasless simulation) — NOTE: v5 uses callStatic
     try {
-      await pool.sendRequest.staticCall(
+      await pool.callStatic.sendRequest(
         SOURCE,
         finalArgs,
         SUBSCRIPTION_ID,
