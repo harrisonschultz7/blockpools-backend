@@ -2,15 +2,13 @@ name: Upload DON Secrets + Settle
 
 on:
   schedule:
-    # Run every 5 minutes, aligned with your settlement cadence
     - cron: "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
   workflow_dispatch: {}
 
 permissions:
-  contents: write   # we commit updated activeSecrets.json
+  contents: write  # commit updated activeSecrets.json
 
 concurrency:
-  # Prevent overlapping runs so we never interleave pointers and sends
   group: upload-and-settle
   cancel-in-progress: false
 
@@ -21,7 +19,7 @@ jobs:
     timeout-minutes: 6
 
     steps:
-      # ---- Checkout both repos (backend for bot, frontend for games.json) ----
+      # --- Checkouts ---
       - name: Checkout backend repo
         uses: actions/checkout@v4
         with:
@@ -35,8 +33,31 @@ jobs:
           token: ${{ secrets.FRONTEND_READ_TOKEN }}
           fetch-depth: 1
 
-      # ---- Node for root (settlement-bot) ----
+      # --- Single Node setup for everything ---
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            .github/secrets-uploader/package-lock.json
+
+      # --- One cache covering both node_modules trees ---
+      - name: Cache node_modules (root + uploader)
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            .github/secrets-uploader/node_modules
+          key: ${{ runner.os }}-nm-${{ hashFiles('package-lock.json', '.github/secrets-uploader/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nm-
+
+      # --- Only sanitize/regenerate lockfile on cold cache ---
       - name: Sanitize package.json & regenerate lockfile
+        if: steps.cache-deps.outputs.cache-hit != 'true'
         shell: bash
         run: |
           node -e '
@@ -57,44 +78,22 @@ jobs:
           '
           npm install --package-lock-only --ignore-scripts
 
-      - name: Setup Node.js (root)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Cache node_modules (root)
-        id: cache-node-modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-nm-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-nm-
-
-      - name: Install dependencies (root; ignore optional deps)
-        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+      # --- Install root deps only if missing ---
+      - name: Install dependencies (root; ignore optional)
+        shell: bash
         env:
           npm_config_optional: "false"
-        run: npm ci --omit=optional --no-audit --no-fund
+        run: |
+          if [ ! -d node_modules ]; then
+            npm ci --omit=optional --no-audit --no-fund
+          else
+            echo "root node_modules present (cached)"
+          fi
 
-      # ---- Secrets uploader (isolated tiny workspace/cache) ----
-      - name: Setup Node.js (uploader)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Cache node_modules (uploader)
-        uses: actions/cache@v4
-        with:
-          path: .github/secrets-uploader/node_modules
-          key: ${{ runner.os }}-node20-uploader-${{ hashFiles('.github/secrets-uploader/package-lock.json', '.github/secrets-uploader/package.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node20-uploader-
-
+      # --- Install uploader deps only if missing ---
       - name: Install deps (uploader)
         working-directory: .github/secrets-uploader
+        shell: bash
         run: |
           if [ ! -d node_modules ]; then
             if [ -f package-lock.json ]; then
@@ -102,43 +101,21 @@ jobs:
             else
               npm install --omit=optional --no-audit --no-fund
             fi
+          else
+            echo "uploader node_modules present (cached)"
           fi
 
-      - name: Show toolkit version
-        working-directory: .github/secrets-uploader
-        run: node -p "require('@chainlink/functions-toolkit/package.json').version"
-
-      - name: Report available *_API_KEY secrets
-        env:
-          MLB_API_KEY: ${{ secrets.MLB_API_KEY }}
-          NFL_API_KEY: ${{ secrets.NFL_API_KEY }}
-          NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
-          NHL_API_KEY: ${{ secrets.NHL_API_KEY }}
-          EPL_API_KEY: ${{ secrets.EPL_API_KEY }}
-          UCL_API_KEY: ${{ secrets.UCL_API_KEY }}
-          THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-        run: |
-          for K in MLB_API_KEY NFL_API_KEY NBA_API_KEY NHL_API_KEY EPL_API_KEY UCL_API_KEY THESPORTSDB_API_KEY; do
-            if [ -n "${!K}" ]; then
-              echo "✓ $K is set"
-            else
-              echo "• $K is NOT set (skipping)"
-            fi
-          done
-
+      # --- Upload fresh DON secrets ---
       - name: Upload DON secrets (fresh pointer)
         working-directory: .github/secrets-uploader
         env:
-          # signer & RPC
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           ARBITRUM_SEPOLIA_RPC_URL: ${{ secrets.ARBITRUM_SEPOLIA_RPC_URL }}
 
-          # IMPORTANT: Slot must match what your bot/contracts expect
           SLOT_ID: 0
           DON_TTL_MINUTES: 1440
 
-          # League API keys
           MLB_API_KEY: ${{ secrets.MLB_API_KEY }}
           NFL_API_KEY: ${{ secrets.NFL_API_KEY }}
           NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
@@ -147,24 +124,18 @@ jobs:
           UCL_API_KEY: ${{ secrets.UCL_API_KEY }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
 
-          # Optional endpoints
           MLB_ENDPOINT: ${{ secrets.MLB_ENDPOINT }}
           NFL_ENDPOINT: ${{ secrets.NFL_ENDPOINT }}
           NBA_ENDPOINT: ${{ secrets.NBA_ENDPOINT }}
           NHL_ENDPOINT: ${{ secrets.NHL_ENDPOINT }}
           EPL_ENDPOINT: ${{ secrets.EPL_ENDPOINT }}
           UCL_ENDPOINT: ${{ secrets.UCL_ENDPOINT }}
-        run: |
-          echo "Upload step sees these *_API_KEY envs:"
-          for K in MLB_API_KEY NFL_API_KEY NBA_API_KEY NHL_API_KEY EPL_API_KEY UCL_API_KEY THESPORTSDB_API_KEY; do
-            if [ -n "${!K}" ]; then echo "✓ $K present"; else echo "• $K MISSING"; fi
-          done
-          npm run upload
+        run: npm run upload
 
-      - name: Show activeSecrets.json (repo root)
+      # --- Ensure activeSecrets.json is present at repo root ---
+      - name: Show activeSecrets.json (any known location)
         run: cat activeSecrets.json || cat ../../activeSecrets.json || true
 
-      # Move the file to repo root if uploader emitted it two dirs up
       - name: Normalize activeSecrets.json location
         shell: bash
         run: |
@@ -192,12 +163,7 @@ jobs:
           git commit -m "Update activeSecrets.json (sv=${{ steps.sv.outputs.secretsVersion }}) [skip ci]" || true
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
 
-      # Optional: short pause to ensure the just-pushed file is visible via the GitHub
-      # contents API in case the bot fetches it remotely.
-      - name: Short settle pause
-        run: sleep 5
-
-      # ---- Run settlement bot (now guaranteed to see fresh pointer) ----
+      # --- Run settlement bot using the fresh pointer ---
       - name: Run settlement bot (send on-chain)
         env:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
@@ -205,7 +171,7 @@ jobs:
           SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}
           FUNCTIONS_GAS_LIMIT: "300000"
           DON_SECRETS_SLOT: "0"
-          # The bot already reads from GitHub; we just pushed the new pointer.
+
           GITHUB_OWNER: "harrisonschultz7"
           GITHUB_REPO: "blockpools-backend"
           GITHUB_REF: "main"
