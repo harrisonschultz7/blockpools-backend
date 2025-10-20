@@ -1,0 +1,222 @@
+name: Upload DON Secrets + Settle
+
+on:
+  schedule:
+    # Run every 5 minutes, aligned with your settlement cadence
+    - cron: "0,5,10,15,20,25,30,35,40,45,50,55 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # we commit updated activeSecrets.json
+
+concurrency:
+  # Prevent overlapping runs so we never interleave pointers and sends
+  group: upload-and-settle
+  cancel-in-progress: false
+
+jobs:
+  upload_and_settle:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+
+    steps:
+      # ---- Checkout both repos (backend for bot, frontend for games.json) ----
+      - name: Checkout backend repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout frontend repo (for games.json)
+        uses: actions/checkout@v4
+        with:
+          repository: harrisonschultz7/blockpools-frontend
+          path: frontend-src
+          token: ${{ secrets.FRONTEND_READ_TOKEN }}
+          fetch-depth: 1
+
+      # ---- Node for root (settlement-bot) ----
+      - name: Sanitize package.json & regenerate lockfile
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("package.json","utf8"));
+            let changed = false;
+            for (const k of ["dependencies","devDependencies"]) {
+              if (p[k] && p[k].fsevents) { delete p[k].fsevents; changed = true; }
+            }
+            if (!p.optionalDependencies) p.optionalDependencies = {};
+            if (!p.optionalDependencies.fsevents) p.optionalDependencies.fsevents = "^2.3.2";
+            if (changed) {
+              fs.writeFileSync("package.json", JSON.stringify(p, null, 2));
+              console.log("package.json sanitized: removed fsevents from deps/devDeps");
+            } else {
+              console.log("package.json OK: fsevents not in deps/devDeps");
+            }
+          '
+          npm install --package-lock-only --ignore-scripts
+
+      - name: Setup Node.js (root)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Cache node_modules (root)
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-nm-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nm-
+
+      - name: Install dependencies (root; ignore optional deps)
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        env:
+          npm_config_optional: "false"
+        run: npm ci --omit=optional --no-audit --no-fund
+
+      # ---- Secrets uploader (isolated tiny workspace/cache) ----
+      - name: Setup Node.js (uploader)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache node_modules (uploader)
+        uses: actions/cache@v4
+        with:
+          path: .github/secrets-uploader/node_modules
+          key: ${{ runner.os }}-node20-uploader-${{ hashFiles('.github/secrets-uploader/package-lock.json', '.github/secrets-uploader/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node20-uploader-
+
+      - name: Install deps (uploader)
+        working-directory: .github/secrets-uploader
+        run: |
+          if [ ! -d node_modules ]; then
+            if [ -f package-lock.json ]; then
+              npm ci --omit=optional --no-audit --no-fund
+            else
+              npm install --omit=optional --no-audit --no-fund
+            fi
+          fi
+
+      - name: Show toolkit version
+        working-directory: .github/secrets-uploader
+        run: node -p "require('@chainlink/functions-toolkit/package.json').version"
+
+      - name: Report available *_API_KEY secrets
+        env:
+          MLB_API_KEY: ${{ secrets.MLB_API_KEY }}
+          NFL_API_KEY: ${{ secrets.NFL_API_KEY }}
+          NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
+          NHL_API_KEY: ${{ secrets.NHL_API_KEY }}
+          EPL_API_KEY: ${{ secrets.EPL_API_KEY }}
+          UCL_API_KEY: ${{ secrets.UCL_API_KEY }}
+          THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
+        run: |
+          for K in MLB_API_KEY NFL_API_KEY NBA_API_KEY NHL_API_KEY EPL_API_KEY UCL_API_KEY THESPORTSDB_API_KEY; do
+            if [ -n "${!K}" ]; then
+              echo "✓ $K is set"
+            else
+              echo "• $K is NOT set (skipping)"
+            fi
+          done
+
+      - name: Upload DON secrets (fresh pointer)
+        working-directory: .github/secrets-uploader
+        env:
+          # signer & RPC
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          ARBITRUM_SEPOLIA_RPC_URL: ${{ secrets.ARBITRUM_SEPOLIA_RPC_URL }}
+
+          # IMPORTANT: Slot must match what your bot/contracts expect
+          SLOT_ID: 0
+          DON_TTL_MINUTES: 1440
+
+          # League API keys
+          MLB_API_KEY: ${{ secrets.MLB_API_KEY }}
+          NFL_API_KEY: ${{ secrets.NFL_API_KEY }}
+          NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
+          NHL_API_KEY: ${{ secrets.NHL_API_KEY }}
+          EPL_API_KEY: ${{ secrets.EPL_API_KEY }}
+          UCL_API_KEY: ${{ secrets.UCL_API_KEY }}
+          THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
+
+          # Optional endpoints
+          MLB_ENDPOINT: ${{ secrets.MLB_ENDPOINT }}
+          NFL_ENDPOINT: ${{ secrets.NFL_ENDPOINT }}
+          NBA_ENDPOINT: ${{ secrets.NBA_ENDPOINT }}
+          NHL_ENDPOINT: ${{ secrets.NHL_ENDPOINT }}
+          EPL_ENDPOINT: ${{ secrets.EPL_ENDPOINT }}
+          UCL_ENDPOINT: ${{ secrets.UCL_ENDPOINT }}
+        run: |
+          echo "Upload step sees these *_API_KEY envs:"
+          for K in MLB_API_KEY NFL_API_KEY NBA_API_KEY NHL_API_KEY EPL_API_KEY UCL_API_KEY THESPORTSDB_API_KEY; do
+            if [ -n "${!K}" ]; then echo "✓ $K present"; else echo "• $K MISSING"; fi
+          done
+          npm run upload
+
+      - name: Show activeSecrets.json (repo root)
+        run: cat activeSecrets.json || cat ../../activeSecrets.json || true
+
+      # Move the file to repo root if uploader emitted it two dirs up
+      - name: Normalize activeSecrets.json location
+        shell: bash
+        run: |
+          if [ -f ../../activeSecrets.json ]; then
+            mv -f ../../activeSecrets.json ./activeSecrets.json
+          fi
+          test -f activeSecrets.json && echo "activeSecrets.json present" || (echo "activeSecrets.json missing" && exit 1)
+
+      - name: Extract secretsVersion (for logs)
+        id: sv
+        run: |
+          SV=$(node -e "console.log(require('./activeSecrets.json').secretsVersion || '')")
+          echo "secretsVersion=$SV" >> $GITHUB_OUTPUT
+          echo "secretsVersion: $SV"
+
+      - name: Commit and push updated activeSecrets.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add activeSecrets.json
+          git commit -m "Update activeSecrets.json (sv=${{ steps.sv.outputs.secretsVersion }}) [skip ci]" || true
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
+
+      # Optional: short pause to ensure the just-pushed file is visible via the GitHub
+      # contents API in case the bot fetches it remotely.
+      - name: Short settle pause
+        run: sleep 5
+
+      # ---- Run settlement bot (now guaranteed to see fresh pointer) ----
+      - name: Run settlement bot (send on-chain)
+        env:
+          RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          SUBSCRIPTION_ID: ${{ secrets.SUBSCRIPTION_ID }}
+          FUNCTIONS_GAS_LIMIT: "300000"
+          DON_SECRETS_SLOT: "0"
+          # The bot already reads from GitHub; we just pushed the new pointer.
+          GITHUB_OWNER: "harrisonschultz7"
+          GITHUB_REPO: "blockpools-backend"
+          GITHUB_REF: "main"
+          GH_PAT: ${{ secrets.GH_PAT }}
+
+          THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
+
+          DRY_RUN: "0"
+          MAX_TX_PER_RUN: "8"
+          REQUEST_GAP_SECONDS: "180"
+          REQUIRE_FINAL_CHECK: "1"
+          POSTGAME_MIN_ELAPSED: "600"
+          GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
+        run: npx tsx bots/settlement-bot.ts
