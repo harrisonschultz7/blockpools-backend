@@ -1,30 +1,39 @@
-// === Chainlink Functions SOURCE CODE (diagnostics + tolerant matching + by-ID support) ===
+// === Chainlink Functions SOURCE CODE — v2 migration (prev/league + by-ID + results) ===
+//
+// Args:
+// [0]=league(label), [1]=d0, [2]=d1, [3]=A code, [4]=B code, [5]=A name, [6]=B name, [7]=kickoff epoch, [8]=optional tsdbEventId
+//
+// Behavior:
+// - Prefer by-ID via v2 `lookup/event` + `lookup/event_results`
+// - Fallback to v2 `schedule/previous/league/{idLeague}` (10 most recent) and pick closest to kickoff
+// - Finality detection via status + non-null scores
+// - Returns winner code "A"/"B" (or "Tie") mapped to the caller's team codes
+//
+// Secrets expected: THESPORTSDB_API_KEY (preferred) or league-specific *_API_KEY
 
 // ---------- Args ----------
-// [0]=league, [1]=d0, [2]=d1, [3]=A code, [4]=B code, [5]=A name, [6]=B name, [7]=kickoff epoch, [8]=optional tsdbEventId
-const Lraw=(args[0]||'').trim();
-const d0=args[1];
-const d1=args[2];
-const A=(args[3]||'').toUpperCase();
-const B=(args[4]||'').toUpperCase();
-const a=(args[5]||'').trim();
-const b=(args[6]||'').trim();
-const t=Number(args[7]||0);
+const Lraw = (args[0] || "").trim();
+const d0 = args[1];      // kept for logging/backcompat (not required by v2 flow)
+const d1 = args[2];
+const A = (args[3] || "").toUpperCase();
+const B = (args[4] || "").toUpperCase();
+const a = (args[5] || "").trim();
+const b = (args[6] || "").trim();
+const t = Number(args[7] || 0);
 const tsdbEventIdRaw = (args.length >= 9 ? args[8] : null);
 const tsdbEventId = tsdbEventIdRaw != null && tsdbEventIdRaw !== "" ? String(tsdbEventIdRaw) : null;
 
 // ---------- League normalization ----------
-function cleanLeagueLabel(s){
-  return decodeURIComponent(String(s||""))
-    .replace(/[_]+/g," ")
-    .replace(/\s+/g," ")
+function cleanLeagueLabel(s) {
+  return decodeURIComponent(String(s || ""))
+    .replace(/[_]+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 const L = cleanLeagueLabel(Lraw);
 const lcn = L.toLowerCase();
 
-// tag used only for choosing per-league keys/endpoints
-function leagueTag(lc){
+function leagueTag(lc) {
   if (/\bmlb\b/.test(lc)) return "MLB";
   if (/\bnfl\b/.test(lc)) return "NFL";
   if (/\bnba\b/.test(lc)) return "NBA";
@@ -35,11 +44,22 @@ function leagueTag(lc){
 }
 const TAG = leagueTag(lcn);
 
+// ---------- League IDs (v2 uses idLeague) ----------
+const LEAGUE_ID = {
+  MLB: "4424",
+  NFL: "4391",
+  NBA: "4387",
+  NHL: "4380",
+  EPL: "4328",
+  UCL: "4480",
+};
+function leagueIdFromTag(tag) { return LEAGUE_ID[tag] || null; }
+
 // ---------- Secret selection ----------
-function pickApiKey(tag){
+function pickApiKey(tag) {
   const s = secrets || {};
   if (s.THESPORTSDB_API_KEY) return s.THESPORTSDB_API_KEY;
-  switch(tag){
+  switch (tag) {
     case "MLB": return s.MLB_API_KEY || "";
     case "NFL": return s.NFL_API_KEY || "";
     case "NBA": return s.NBA_API_KEY || "";
@@ -52,24 +72,7 @@ function pickApiKey(tag){
 const API = pickApiKey(TAG);
 if (!API) throw Error("missing API key (expected THESPORTSDB_API_KEY or league-specific *_API_KEY)");
 
-function pickEndpoint(tag){
-  const s = secrets || {};
-  const base = "https://www.thesportsdb.com/api/v1/json";
-  const map = {
-    MLB: s.MLB_ENDPOINT,
-    NFL: s.NFL_ENDPOINT,
-    NBA: s.NBA_ENDPOINT,
-    NHL: s.NHL_ENDPOINT,
-    EPL: s.EPL_ENDPOINT,
-    UCL: s.UCL_ENDPOINT,
-  };
-  const ep = map[tag];
-  const chosen = (typeof ep === "string" && ep.trim().length) ? ep.trim() : base;
-  return chosen.replace(/\/+$/,""); // no trailing slash
-}
-const BASE = pickEndpoint(TAG);
-
-// ---------- Debug helpers (safe masking) ----------
+// ---------- Debug helpers ----------
 function maskKey(k) {
   if (!k) return "none";
   const s = String(k);
@@ -78,7 +81,7 @@ function maskKey(k) {
 }
 function keyNameUsed(tag) {
   if (secrets?.THESPORTSDB_API_KEY) return "THESPORTSDB_API_KEY";
-  switch(tag){
+  switch (tag) {
     case "MLB": return secrets?.MLB_API_KEY ? "MLB_API_KEY" : "none";
     case "NFL": return secrets?.NFL_API_KEY ? "NFL_API_KEY" : "none";
     case "NBA": return secrets?.NBA_API_KEY ? "NBA_API_KEY" : "none";
@@ -89,11 +92,11 @@ function keyNameUsed(tag) {
   }
 }
 
-console.log("SRC_VERSION: 2025-10-15T-REV1");
+console.log("SRC_VERSION: 2025-10-27T-v2-REV1");
 console.log(JSON.stringify({
   leagueLabel: L,
   tag: TAG,
-  baseEndpoint: BASE,
+  leagueId: leagueIdFromTag(TAG),
   keyName: keyNameUsed(TAG),
   keyMask: maskKey(API),
   dates: { d0, d1 },
@@ -102,17 +105,16 @@ console.log(JSON.stringify({
   tsdbEventId
 }, null, 2));
 
-// ---------- Normalization & matching ----------
-function norm(s){
-  return (s||"")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-    .replace(/[’'`]/g,"")
-    .replace(/[^a-z0-9 ]/gi," ")
-    .replace(/\s+/g," ")
+// ---------- Normalization ----------
+function norm(s) {
+  return (s || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’'`]/g, "")
+    .replace(/[^a-z0-9 ]/gi, " ")
+    .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
 }
-
 function sameTeam(x, y) {
   const nx = norm(x), ny = norm(y);
   if (!nx || !ny) return false;
@@ -120,145 +122,115 @@ function sameTeam(x, y) {
   return nx.includes(ny) || ny.includes(nx);
 }
 
-// ---------- HTTP helpers ----------
-const DEFAULT_BASE = "https://www.thesportsdb.com/api/v1/json";
-const cacheBust = () => `cb=${Date.now()}`;
+// ---------- v2 HTTP helpers ----------
+const V2_BASE = "https://www.thesportsdb.com/api/v2/json";
+const V2_HEADERS = { "X-API-KEY": API };
 
-async function httpJson(url, label){
-  const r = await Functions.makeHttpRequest({ url });
-  console.log(`HTTP ${label} status=${r?.status ?? "no"}`);
+async function httpJsonV2(url, label) {
+  const r = await Functions.makeHttpRequest({ url, headers: V2_HEADERS });
+  console.log(`HTTP[v2] ${label} status=${r?.status ?? "no"}`);
   return r?.data || null;
 }
 
-async function fetchDay(d){
-  if(!d) return [];
-  const attempts = [];
-  attempts.push({ base: BASE, withLeague: true,  label: "chosen-base+key" });
-  if (BASE !== DEFAULT_BASE) attempts.push({ base: DEFAULT_BASE, withLeague: true, label: "default-base+key" });
-  attempts.push({ base: DEFAULT_BASE, withLeague: false, label: "default-base+key:no-league" });
-
-  for (const at of attempts) {
-    const base = at.base.replace(/\/+$/,"");
-    const url = at.withLeague
-      ? `${base}/${API}/eventsday.php?d=${encodeURIComponent(d)}&l=${encodeURIComponent(L)}&${cacheBust()}`
-      : `${base}/${API}/eventsday.php?d=${encodeURIComponent(d)}&${cacheBust()}`;
-    const data = await httpJson(url, `${at.label} d=${d} withL=${at.withLeague}`);
-    const events = Array.isArray(data?.events) ? data.events : [];
-    if (events.length) return events;
-  }
-  return [];
+// ---------- v2 fetchers ----------
+async function v2PreviousLeagueEvents(tag) {
+  const id = leagueIdFromTag(tag);
+  if (!id) return [];
+  const url = `${V2_BASE}/schedule/previous/league/${id}`;
+  const data = await httpJsonV2(url, `previous league ${tag}`);
+  return Array.isArray(data?.events) ? data.events : [];
 }
 
-async function fetchById(id){
-  const base = (BASE || DEFAULT_BASE).replace(/\/+$/,"");
-  const url  = `${base}/${API}/lookupevent.php?id=${encodeURIComponent(String(id))}&${cacheBust()}`;
-  const data = await httpJson(url, `lookupevent id=${id}`);
+async function v2LookupEvent(idEvent) {
+  const url = `${V2_BASE}/lookup/event/${encodeURIComponent(String(idEvent))}`;
+  const data = await httpJsonV2(url, `lookup event ${idEvent}`);
   const ev = data?.events;
-  if (Array.isArray(ev) && ev.length) return ev[0];
+  return Array.isArray(ev) && ev.length ? ev[0] : null;
+}
+
+async function v2LookupEventResults(idEvent) {
+  const url = `${V2_BASE}/lookup/event_results/${encodeURIComponent(String(idEvent))}`;
+  const data = await httpJsonV2(url, `event_results ${idEvent}`);
+  const ev = data?.results ?? data?.events ?? null;
+  return Array.isArray(ev) && ev.length ? ev[0] : null;
+}
+
+// ---------- Time helper ----------
+function eventEpochSec(e) {
+  if (!e) return null;
+  let x = e.strTimestamp || "";
+  if (x) {
+    const ms = Date.parse(x);
+    if (!Number.isNaN(ms)) return (ms / 1000) | 0;
+  }
+  const de = e.dateEvent, tm = e.strTime;
+  if (de && tm) {
+    const s = /Z$/.test(tm) ? `${de}T${tm}` : `${de}T${tm}Z`;
+    const ms = Date.parse(s);
+    if (!Number.isNaN(ms)) return (ms / 1000) | 0;
+  }
+  if (de) {
+    const ms = Date.parse(`${de}T00:00:00Z`);
+    if (!Number.isNaN(ms)) return (ms / 1000) | 0;
+  }
   return null;
 }
 
-// ---------- Pull data ----------
+// ---------- Pull data (v2 flow) ----------
 let selectedEvent = null;
 let selectedFrom = "none";
 
-// Preferred path: by-ID if provided
+// Preferred: by-ID (+ promote to results if available)
 if (tsdbEventId) {
-  const ev = await fetchById(tsdbEventId);
+  const ev = await v2LookupEvent(tsdbEventId);
   if (ev) {
-    selectedEvent = ev;
-    selectedFrom = "byId";
+    const res = await v2LookupEventResults(tsdbEventId);
+    selectedEvent = res || ev;
+    selectedFrom = res ? "byId+results" : "byId";
   }
 }
 
-// Fallback path: day slice(s) + tolerant matching
+// Fallback: within previous-league window, pick closest to kickoff and matching teams
 if (!selectedEvent) {
-  const ev0 = await fetchDay(d0);
-  const ev1 = await fetchDay(d1);
-  console.log(`DBG counts: d0=${ev0.length} d1=${ev1.length}`);
-  const all = [...ev0, ...ev1];
-  console.log("DBG titles (sample):", all.slice(0,6).map(e => e.strEvent || e.strEventAlternate));
-
-  let cand = all.filter(e=>{
-    const h=e.strHomeTeam, w=e.strAwayTeam;
-    return (sameTeam(h,a)&&sameTeam(w,b)) || (sameTeam(h,b)&&sameTeam(w,a));
+  const recent = await v2PreviousLeagueEvents(TAG); // ~last 10
+  const cand = recent.filter(e => {
+    const h = e.strHomeTeam, w = e.strAwayTeam;
+    return (sameTeam(h, a) && sameTeam(w, b)) || (sameTeam(h, b) && sameTeam(w, a));
   });
-
-  if(!cand.length){
-    const la=norm(a), lb=norm(b);
-    const alt = all.filter(e=>{
-      const s1=norm(e.strEvent||""), s2=norm(e.strEventAlternate||"");
-      return (s1.includes(la)||s2.includes(la)) && (s1.includes(lb)||s2.includes(lb));
-    });
-    if (alt.length) cand = alt;
-  }
-
-  if(!cand.length){
-    console.log("Available events:", all.map(e => e.strEvent || e.strEventAlternate));
-    console.log("Looking for:", a, "vs", b);
-    console.log("Normalized A:", norm(a), "B:", norm(b));
-    throw Error(`no match (seen=${all.length}, a=${a}, b=${b})`);
-  }
-
-  function ep(e){
-    let x=e.strTimestamp||'';
-    if(x){ x=Date.parse(x); if(!Number.isNaN(x)) return (x/1000)|0; }
-    const de=e.dateEvent, tm=e.strTime;
-    if(de&&tm){
-      let i=`${de}T${tm}`;
-      if(!/Z$/.test(i)) i+='Z';
-      x=Date.parse(i);
-      if(!Number.isNaN(x)) return (x/1000)|0;
-    }
-    if(de){
-      x=Date.parse(`${de}T00:00:00Z`);
-      if(!Number.isNaN(x)) return (x/1000)|0;
-    }
-    return null;
-  }
-
-  cand.sort((x,y)=>{
-    const dx=(ep(x)||1e15), dy=(ep(y)||1e15);
-    return Math.abs(dx-t)-Math.abs(dy-t) || (dx-dy);
-  });
-
-  selectedEvent = cand[0];
-  selectedFrom = "dayMatch";
-}
-
-// ---------- Finality & scoring ----------
-function isFinal(ev){
-  const S=String(ev?.strStatus||'').toUpperCase();
-  const P=String(ev?.strProgress||'');
-  if (/^(FT|AOT|AET|PEN|FINISHED)$/.test(S)) return true;
-  if (/final/i.test(S) || /final/i.test(P)) return true;
-
-  // Some feeds return empty status but non-null scores when ended
-  const hs=+ev?.intHomeScore, as=+ev?.intAwayScore;
-  if(Number.isFinite(hs) && Number.isFinite(as) && !S) return true;
-
-  return false;
+  cand.sort((x, y) => (Math.abs((eventEpochSec(x) || 1e15) - t) - Math.abs((eventEpochSec(y) || 1e15) - t)));
+  selectedEvent = cand[0] || null;
+  selectedFrom = selectedEvent ? "prevLeagueMatch" : "none";
 }
 
 if (!selectedEvent) throw Error("no_event");
 
-// Optional sport-specific extra guard (MLB)
-if (TAG === "MLB") {
-  // If TSDB provides innings/progress strings, you could enforce innings>=9 here.
-  // Kept lenient due to field variability; rely on consensus gate in the bot.
+// If we matched by ID but not via results, try to promote to results for better finality/status
+if (tsdbEventId && selectedFrom === "byId" && selectedEvent?.idEvent) {
+  const res = await v2LookupEventResults(selectedEvent.idEvent);
+  if (res) { selectedEvent = res; selectedFrom = "byId+results"; }
 }
 
-if (!isFinal(selectedEvent)) {
-  throw Error('not final');
+// ---------- Finality & scoring ----------
+function isFinal(ev) {
+  const S = String(ev?.strStatus || "").toUpperCase();
+  const P = String(ev?.strProgress || "");
+  const hs = +ev?.intHomeScore, as = +ev?.intAwayScore;
+
+  if (/^(FT|AOT|AET|PEN|FINISHED|FULL TIME)$/.test(S)) return true;
+  if (/final|finished|ended|complete/i.test(S) || /full\s*time/i.test(S)) return true;
+  if (Number.isFinite(hs) && Number.isFinite(as) && !S) return true; // scores present, empty status
+  return false;
 }
 
-const hs=+selectedEvent.intHomeScore, as=+selectedEvent.intAwayScore;
-if(!Number.isFinite(hs)||!Number.isFinite(as)) throw Error('bad score');
+if (!isFinal(selectedEvent)) throw Error("not final");
 
-// ---------- Winner (return codes A/B) ----------
-let W='Tie';
-if(hs>as) W = sameTeam(selectedEvent.strHomeTeam,a) ? A : B;
-else if(as>hs) W = sameTeam(selectedEvent.strAwayTeam,a) ? A : B;
+const hs = +selectedEvent.intHomeScore, as = +selectedEvent.intAwayScore;
+if (!Number.isFinite(hs) || !Number.isFinite(as)) throw Error("bad score");
 
-console.log(`WINNER: ${W} | from=${selectedFrom} | ${selectedEvent.strEvent || selectedEvent.strEventAlternate} | ${hs}-${as}`);
+// ---------- Winner (returns A/B/Tie) ----------
+let W = "Tie";
+if (hs > as) W = sameTeam(selectedEvent.strHomeTeam, a) ? A : B;
+else if (as > hs) W = sameTeam(selectedEvent.strAwayTeam, a) ? A : B;
+
+console.log(`WINNER: ${W} | from=${selectedFrom} | id=${selectedEvent.idEvent || "?"} | ${selectedEvent.strEvent || selectedEvent.strEventAlternate} | ${hs}-${as}`);
 return Functions.encodeString(W);
