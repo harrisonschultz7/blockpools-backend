@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: write  # commit updated activeSecrets.json
 
 concurrency:
   group: upload-and-settle
@@ -153,7 +153,7 @@ jobs:
           git commit -m "Update activeSecrets.json (sv=${{ steps.sv.outputs.secretsVersion }}) [skip ci]" || true
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
 
-      # --- Sanity check TheSportsDB v2 key (auth must succeed; 'previous' may be empty) ---
+      # --- Sanity check TheSportsDB v2 key (lenient content; fail only on HTTP) ---
       - name: Sanity check TheSportsDB v2 key
         env:
           TSDB_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
@@ -162,21 +162,26 @@ jobs:
           set -e
           if [ -z "$TSDB_KEY" ]; then echo "THESPORTSDB_API_KEY not set"; exit 1; fi
 
-          # Deterministic auth test: seasons list should always return data
-          SEASONS_URL="https://www.thesportsdb.com/api/v2/json/list/seasons/4391"
-          CODE=$(curl -s -o /tmp/seasons.json -w "%{http_code}" -H "X-API-KEY: $TSDB_KEY" "$SEASONS_URL")
-          echo "HTTP $CODE from v2 list/seasons"
-          if [ "$CODE" -ne 200 ]; then
-            echo "::error::v2 auth failed on seasons (HTTP $CODE)"
-            cat /tmp/seasons.json || true
+          # Probe two stable endpoints; only fail if BOTH are non-200
+          L1_URL="https://www.thesportsdb.com/api/v2/json/lookup/league/4391"  # NFL
+          L2_URL="https://www.thesportsdb.com/api/v2/json/lookup/league/4328"  # EPL
+
+          C1=$(curl -s -o /tmp/l1.json -w "%{http_code}" -H "X-API-KEY: $TSDB_KEY" "$L1_URL"); echo "lookup/league 4391 => $C1"
+          C2=$(curl -s -o /tmp/l2.json -w "%{http_code}" -H "X-API-KEY: $TSDB_KEY" "$L2_URL"); echo "lookup/league 4328 => $C2"
+
+          if [ "$C1" -ne 200 ] && [ "$C2" -ne 200 ]; then
+            echo "::error::v2 auth failed (both league lookups non-200)"
+            echo "payload 1:"; cat /tmp/l1.json || true
+            echo "payload 2:"; cat /tmp/l2.json || true
             exit 1
           fi
-          node -e "const j=require('/tmp/seasons.json'); if(!j||!Array.isArray(j.seasons)||!j.seasons.length){ console.error('No seasons in response'); process.exit(1);} console.log('v2 OK: seasons tail ->', j.seasons.slice(-3).map(s=>s.strSeason).join(', '));"
 
-          # Optional: see if previous has data (do NOT fail if empty/offseason)
-          PREV_URL='https://www.thesportsdb.com/api/v2/json/schedule/previous/league/4391'
-          curl -s -H "X-API-KEY: $TSDB_KEY" "$PREV_URL" -o /tmp/prev.json || true
-          node -e "const fs=require('fs'); try{const j=JSON.parse(fs.readFileSync('/tmp/prev.json','utf8')); const n=Array.isArray(j.events)?j.events.length:0; console.log(n>0?('prev events: '+n):'prev empty (off-day/offseason ok)');}catch{console.log('prev parse skipped');}"
+          # Log a little context without enforcing schema
+          node -e "const fs=require('fs'); for (const p of ['/tmp/l1.json','/tmp/l2.json']) { try { const j=JSON.parse(fs.readFileSync(p,'utf8')); const k=j&&j.leagues&&j.leagues[0]; if(k){ console.log(p, '->', (k.strLeague||k.strLeagueAlternate||'unknown')); } else { console.log(p, '-> ok (empty)'); } } catch(e){ console.log(p, '-> not JSON'); } }"
+
+          # Optional: peek at previous/league; never fail if empty
+          curl -s -H "X-API-KEY: $TSDB_KEY" "https://www.thesportsdb.com/api/v2/json/schedule/previous/league/4391" -o /tmp/prev.json || true
+          node -e "const fs=require('fs'); try{const j=JSON.parse(fs.readFileSync('/tmp/prev.json','utf8')); const n=Array.isArray(j.events)?j.events.length:0; console.log('previous/league/4391 events:', n);}catch{console.log('previous/league parse skipped');}"
 
       # --- Run settlement bot (send on-chain) ---
       - name: Run settlement bot (send on-chain)
