@@ -7,9 +7,9 @@ import { fileURLToPath } from "url";
 import { ethers } from "ethers";
 import { gamePoolAbi as IMPORTED_GAMEPOOL_ABI } from "./gamepool.abi";
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   ESM-safe __dirname / __filename
-────────────────────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────────────────────
+// ESM-safe __dirname / __filename
+// ──────────────────────────────────────────────────────────────────────────────
 const __filename =
   typeof (globalThis as any).__filename !== "undefined"
     ? (globalThis as any).__filename
@@ -19,9 +19,9 @@ const __dirname =
     ? (globalThis as any).__dirname
     : path.dirname(__filename);
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   Config / ENV
-────────────────────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────────────────────
+/* Config / ENV */
+// ──────────────────────────────────────────────────────────────────────────────
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
 const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                  // uint64
@@ -32,18 +32,18 @@ const DRY_RUN = process.env.DRY_RUN === "1";
 
 const REQUIRE_FINAL_CHECK = process.env.REQUIRE_FINAL_CHECK !== "0";
 const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);  // sec after lock
-const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);    // sec after lock before request
+const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);    // guard after lock
 
 // Concurrency controls
-const READ_CONCURRENCY = Number(process.env.READ_CONCURRENCY || 25);
-const TSDB_CONCURRENCY = Number(process.env.TSDB_CONCURRENCY || 8);
-const TX_SIM_CONCURRENCY = Number(process.env.TX_SIM_CONCURRENCY || 10);
-const TX_SEND_CONCURRENCY = Number(process.env.TX_SEND_CONCURRENCY || 3);
+const READ_CONCURRENCY  = Number(process.env.READ_CONCURRENCY  || 25);
+const TSDB_CONCURRENCY  = Number(process.env.TSDB_CONCURRENCY  || 8);
+const TX_SIM_CONCURRENCY= Number(process.env.TX_SIM_CONCURRENCY|| 10);
+const TX_SEND_CONCURRENCY=Number(process.env.TX_SEND_CONCURRENCY|| 3);
 
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0);
 
-// TheSportsDB
+// TheSportsDB (v2 header key)
 const THESPORTSDB_API_KEY = process.env.THESPORTSDB_API_KEY || "";
 
 // DON pointer (activeSecrets.json) lookup
@@ -70,9 +70,9 @@ const SOURCE_CANDIDATES = [
   path.resolve(process.cwd(), "bots", "source.js"),
 ];
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   ABI loader
-────────────────────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────────────────────
+/* ABI loader */
+// ──────────────────────────────────────────────────────────────────────────────
 const FALLBACK_MIN_ABI = [
   { inputs: [], name: "league",      outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
   { inputs: [], name: "teamAName",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
@@ -132,9 +132,9 @@ function loadGamePoolAbi(): { abi: any; source: "artifact" | "imported" | "minim
 const { abi: poolAbi } = loadGamePoolAbi();
 const iface = new ethers.utils.Interface(poolAbi);
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   Utils
-────────────────────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────────────────────
+/* Utils */
+// ──────────────────────────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 function limiter(concurrency: number) {
@@ -161,9 +161,9 @@ function addDaysISO(iso: string, days: number) {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   games.json loader (robust to multiple shapes)
-────────────────────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────────────────────
+/* games.json loader (robust to multiple shapes) */
+// ──────────────────────────────────────────────────────────────────────────────
 type GameMeta = {
   contractAddress: string;
   tsdbEventId?: number | string;
@@ -234,9 +234,9 @@ function loadSourceCode(): string {
   throw new Error(`Could not find source.js. Tried:\n- ${SOURCE_CANDIDATES.join("\n- ")}`);
 }
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   DON pointer (activeSecrets.json)
-────────────────────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────────────────────
+/* DON pointer (activeSecrets.json) */
+// ──────────────────────────────────────────────────────────────────────────────
 async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: string; source: string }> {
   const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
   const envDonId = process.env.DON_ID;
@@ -256,123 +256,108 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
   return { secretsVersion: Number(json.secretsVersion ?? json.version), donId: json.donId || "fun-ethereum-sepolia-1", source: "github" };
 }
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   TheSportsDB helpers
-────────────────────────────────────────────────────────────────────────────── */
-function mapLeagueForTSDB(leagueOnChain: string): string {
+// ──────────────────────────────────────────────────────────────────────────────
+/* v2: League IDs, fetchers, finality */
+// ──────────────────────────────────────────────────────────────────────────────
+function mapLeagueId(leagueOnChain: string): string {
   const lk = String(leagueOnChain || "").toLowerCase();
-  const TSDB_LABEL: Record<string, string> = {
-    mlb: "MLB", nfl: "NFL", nba: "NBA", nhl: "NHL",
-    epl: "English%20Premier%20League", ucl: "UEFA%20Champions%20League",
+  const MAP: Record<string, string> = {
+    mlb: "4424", nfl: "4391", nba: "4387", nhl: "4380",
+    epl: "4328", ucl: "4480",
   };
-  return TSDB_LABEL[lk] || leagueOnChain;
+  return MAP[lk] || "";
 }
 
-const FINAL_MARKERS = ["final", "ft", "match finished", "ended", "game finished", "full time", "aet"];
-const cacheBust = () => `cb=${Date.now()}`;
+const V2_BASE = "https://www.thesportsdb.com/api/v2/json";
+const V2_HEADERS = { "X-API-KEY": THESPORTSDB_API_KEY };
 
-function looksFinal(ev: any) {
+async function v2Fetch(path: string) {
+  const r = await fetch(`${V2_BASE}${path}`, { headers: V2_HEADERS });
+  if (!r.ok) return null;
+  return r.json().catch(() => null);
+}
+
+async function v2PreviousLeagueEvents(idLeague: string) {
+  if (!idLeague) return [];
+  const j = await v2Fetch(`/schedule/previous/league/${idLeague}`);
+  return Array.isArray(j?.events) ? j.events : [];
+}
+async function v2LookupEvent(idEvent: string | number) {
+  const j = await v2Fetch(`/lookup/event/${encodeURIComponent(String(idEvent))}`);
+  const ev = j?.events;
+  return Array.isArray(ev) && ev.length ? ev[0] : null;
+}
+async function v2LookupEventResults(idEvent: string | number) {
+  const j = await v2Fetch(`/lookup/event_results/${encodeURIComponent(String(idEvent))}`);
+  const res = j?.results ?? j?.events ?? null;
+  return Array.isArray(res) && res.length ? res[0] : null;
+}
+// Extra coverage: by team (each returns 10 previous)
+async function v2PreviousTeamEvents(idTeam: string) {
+  if (!idTeam) return [];
+  const j = await v2Fetch(`/schedule/previous/team/${encodeURIComponent(idTeam)}`);
+  return Array.isArray(j?.events) ? j.events : [];
+}
+// Team directory per league (cache)
+const teamIdCache = new Map<string, Map<string, string>>(); // idLeague -> (normName -> idTeam)
+async function ensureLeagueTeamsCached(idLeague: string) {
+  if (!idLeague || teamIdCache.has(idLeague)) return;
+  const j = await v2Fetch(`/list/teams/${idLeague}`);
+  const map = new Map<string, string>();
+  const norm = (s: string) =>
+    (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[’'`]/g, "").replace(/[^a-z0-9 ]/gi, " ")
+      .replace(/\s+/g, " ").trim().toLowerCase();
+  for (const t of (j?.teams ?? [])) {
+    const n = norm(t.strTeam);
+    if (n && t.idTeam) map.set(n, String(t.idTeam));
+  }
+  teamIdCache.set(idLeague, map);
+}
+function findIdTeam(idLeague: string, teamName: string): string | "" {
+  const m = teamIdCache.get(idLeague); if (!m) return "";
+  const norm = (s: string) =>
+    (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[’'`]/g, "").replace(/[^a-z0-9 ]/gi, " ")
+      .replace(/\s+/g, " ").trim().toLowerCase();
+  const key = norm(teamName);
+  for (const [k, v] of m) if (k === key || k.includes(key) || key.includes(k)) return v;
+  return "";
+}
+function tsFromEvent(e: any): number {
+  if (e?.strTimestamp) { const ms = Date.parse(e.strTimestamp); if (!Number.isNaN(ms)) return (ms / 1000) | 0; }
+  if (e?.dateEvent && e?.strTime) { const s = /Z$/.test(e.strTime) ? `${e.dateEvent}T${e.strTime}` : `${e.dateEvent}T${e.strTime}Z`; const ms = Date.parse(s); if (!Number.isNaN(ms)) return (ms / 1000) | 0; }
+  if (e?.dateEvent) { const ms = Date.parse(`${e.dateEvent}T00:00:00Z`); if (!Number.isNaN(ms)) return (ms / 1000) | 0; }
+  return 0;
+}
+function normTeam(s: string) {
+  return (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’'`]/g, "").replace(/[^a-z0-9 ]/gi, " ")
+    .replace(/\s+/g, " ").trim().toLowerCase();
+}
+function sameTeam(x?: string, y?: string) {
+  const nx = normTeam(String(x || "")), ny = normTeam(String(y || ""));
+  return nx && ny && (nx === ny || nx.includes(ny) || ny.includes(nx));
+}
+function pickClosestByKickoff(events: any[], aName: string, bName: string, kickoff: number) {
+  const cand = events.filter(e => {
+    const h = e.strHomeTeam, w = e.strAwayTeam;
+    return (sameTeam(h, aName) && sameTeam(w, bName)) || (sameTeam(h, bName) && sameTeam(w, aName));
+  });
+  cand.sort((x, y) => Math.abs(tsFromEvent(x) - kickoff) - Math.abs(tsFromEvent(y) - kickoff));
+  return cand[0] || null;
+}
+function looksFinalV2(ev: any) {
   const status = String(ev?.strStatus ?? ev?.strProgress ?? "").toLowerCase();
-  const desc   = String(ev?.strDescriptionEN ?? "").toLowerCase();
   const hasScores = (ev?.intHomeScore != null && ev?.intAwayScore != null);
-  if (FINAL_MARKERS.some(m => status.includes(m) || desc.includes(m))) return true;
-  if (status === "ft") return true;
+  if (/^(ft|aot|aet|pen|finished|full time)$/i.test(status)) return true;
+  if (/final|finished|ended|complete/.test(status)) return true;
   return hasScores && !status;
 }
 
-async function tsdbDayEvents(dateISO: string, leagueParam?: string) {
-  const base = "https://www.thesportsdb.com/api/v1/json";
-  const key  = THESPORTSDB_API_KEY;
-  const urls = leagueParam
-    ? [
-        `${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&l=${leagueParam}&${cacheBust()}`,
-        `${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&${cacheBust()}`,
-      ]
-    : [`${base}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&${cacheBust()}`];
-
-  for (const u of urls) {
-    const r = await fetch(u);
-    if (!r.ok) continue;
-    const j = await r.json().catch(() => null);
-    if (Array.isArray(j?.events) && j.events.length) return j.events;
-  }
-  return [];
-}
-
-async function tsdbEventById(eventId: number | string) {
-  const base = "https://www.thesportsdb.com/api/v1/json";
-  const key  = THESPORTSDB_API_KEY;
-  const u = `${base}/${key}/lookupevent.php?id=${encodeURIComponent(String(eventId))}&${cacheBust()}`;
-  const r = await fetch(u);
-  if (!r.ok) return null;
-  const j = await r.json().catch(() => null);
-  const ev = j?.events;
-  if (Array.isArray(ev) && ev.length) return ev[0];
-  return null;
-}
-
-function indexDayEvents(events: any[]) {
-  const norm = (s: string) => (s || "").toLowerCase().trim();
-  const keyFrom = (a: string, b: string) => `${norm(a)}|${norm(b)}`;
-  const map = new Map<string, any>();
-  for (const e of events) {
-    const h = e?.strHomeTeam || "";
-    const a = e?.strAwayTeam || "";
-    const alt = e?.strEventAlternate || "";
-    map.set(keyFrom(h, a), e);
-    if (alt) map.set(`alt|${(alt || "").toLowerCase()}`, e);
-  }
-  return {
-    getMatch(teamAName: string, teamBName: string) {
-      const k1 = keyFrom(teamAName, teamBName);
-      const k2 = keyFrom(teamBName, teamAName);
-      const e1 = map.get(k1); if (e1) return e1;
-      const e2 = map.get(k2); if (e2) return e2;
-      for (const [k, e] of map) {
-        if (!k.startsWith("alt|")) continue;
-        const alt = k.slice(4);
-        if (alt.includes((teamAName || "").toLowerCase()) && alt.includes((teamBName || "").toLowerCase())) return e;
-      }
-      return null;
-    }
-  };
-}
-
-function consensusFromCaches(params: {
-  teamAName: string; teamBName: string;
-  date0Idx?: ReturnType<typeof indexDayEvents>;
-  date1Idx?: ReturnType<typeof indexDayEvents>;
-  byIdEvent?: any | null;
-}) {
-  const { teamAName, teamBName, date0Idx, date1Idx, byIdEvent } = params;
-
-  let byIdOk: boolean | null = null;
-  let byIdStatus: string | undefined = undefined;
-  if (byIdEvent !== undefined) {
-    if (byIdEvent) {
-      byIdOk = looksFinal(byIdEvent);
-      byIdStatus = String(byIdEvent?.strStatus ?? byIdEvent?.strProgress ?? "");
-    } else { byIdOk = false; byIdStatus = "id_not_found"; }
-  }
-
-  function scan(idx?: ReturnType<typeof indexDayEvents>) {
-    if (!idx) return { final: false, status: "no_slice" };
-    const m = idx.getMatch(teamAName, teamBName);
-    if (!m) return { final: false, status: "no_match" };
-    return { final: looksFinal(m), status: String(m?.strStatus ?? m?.strProgress ?? "") };
-  }
-
-  const r0 = scan(date0Idx);
-  const r1 = scan(date1Idx);
-  const best = r0.final ? r0 : (r1.final ? r1 : (r0.status !== "no_slice" ? r0 : r1));
-
-  if (byIdOk === null) return { final: best.final, status: best.status };
-  return { final: Boolean(byIdOk && best.final), status: `id:${byIdStatus}|day:${best.status}` };
-}
-
-/* ──────────────────────────────────────────────────────────────────────────────
-   Error decoding
-────────────────────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────────────────────
+/* Error decoding */
+// ──────────────────────────────────────────────────────────────────────────────
 const FUNCTIONS_ROUTER_ERRORS = [
   "error EmptyArgs()", "error EmptySource()", "error InsufficientBalance()",
   "error InvalidConsumer(address consumer)", "error InvalidSubscription()",
@@ -393,9 +378,9 @@ function decodeRevert(data?: string) {
   return "unknown";
 }
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   MAIN
-────────────────────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────────────────────
+/* MAIN */
+// ──────────────────────────────────────────────────────────────────────────────
 async function main() {
   if (!RPC_URL || !PRIVATE_KEY) throw new Error("Missing RPC_URL or PRIVATE_KEY");
   if (!process.env.SUBSCRIPTION_ID) throw new Error("Missing SUBSCRIPTION_ID");
@@ -488,75 +473,126 @@ async function main() {
   );
   if (!timeGated.length) { console.log("No eligible pools after gates. Submitted 0 transaction(s)."); return; }
 
-  /* STEP 2: Provider finality checks (optional) */
+  // STEP 2: Provider finality checks (v2)
   let finalEligible: PoolState[] = timeGated;
   if (REQUIRE_FINAL_CHECK) {
     if (!THESPORTSDB_API_KEY) { console.log("REQUIRE_FINAL_CHECK=1 but no THESPORTSDB_API_KEY set. Skipping to avoid wasted LINK."); return; }
 
-    type DayKey = string;
-    const dayKeys = new Set<DayKey>(); const idKeys = new Set<string>();
-    for (const s of timeGated) {
-      const leagueParam = mapLeagueForTSDB(s.league);
-      const date0 = epochToEtISO(s.lockTime);
-      const date1 = addDaysISO(date0, 1);
-      dayKeys.add(`${leagueParam}|${date0}`); dayKeys.add(`${leagueParam}|${date1}`);
-      if (s.tsdbEventId != null && s.tsdbEventId !== "") idKeys.add(String(s.tsdbEventId));
-    }
+    // Preload previous-events per league (avoid N×HTTP)
+    const leagues = new Set<string>();
+    for (const s of timeGated) leagues.add(mapLeagueId(s.league));
 
-    const dayCache = new Map<DayKey, ReturnType<typeof indexDayEvents> | undefined>();
+    const prevCache = new Map<string, any[]>();
     await Promise.all(
-      Array.from(dayKeys).map(key =>
+      Array.from(leagues).map(id =>
         limiter(TSDB_CONCURRENCY)(async () => {
-          const [leagueParam, dateISO] = key.split("|");
-          const events = await tsdbDayEvents(dateISO, leagueParam);
-          dayCache.set(key, events.length ? indexDayEvents(events) : undefined);
+          const arr = await v2PreviousLeagueEvents(id);
+          prevCache.set(id, arr);
         })
       )
     );
 
+    // Warm ID lookups when provided
     const idCache = new Map<string, any | null>();
+    const idKeys = new Set<string>();
+    for (const s of timeGated) if (s.tsdbEventId != null && s.tsdbEventId !== "") idKeys.add(String(s.tsdbEventId));
     await Promise.all(
       Array.from(idKeys).map(id =>
         limiter(TSDB_CONCURRENCY)(async () => {
-          const ev = await tsdbEventById(id);
-          idCache.set(id, ev || null);
+          const res = (await v2LookupEventResults(id)) || (await v2LookupEvent(id));
+          idCache.set(id, res || null);
         })
       )
     );
 
     const eligible: PoolState[] = [];
     for (const s of timeGated) {
-      const leagueParam = mapLeagueForTSDB(s.league);
-      const date0 = epochToEtISO(s.lockTime);
-      const date1 = addDaysISO(date0, 1);
-      const date0Idx = dayCache.get(`${leagueParam}|${date0}`);
-      const date1Idx = dayCache.get(`${leagueParam}|${date1}`);
-      const byIdEvent = (s.tsdbEventId != null && s.tsdbEventId !== "") ? idCache.get(String(s.tsdbEventId)) : undefined;
+      const idLeague = mapLeagueId(s.league);
+      const prev = prevCache.get(idLeague) || [];
 
-      const c = consensusFromCaches({ teamAName: s.teamAName, teamBName: s.teamBName, date0Idx, date1Idx, byIdEvent });
-      if (c.final) eligible.push(s);
-      else console.log(`[SKIP] Not final yet by TSDB (${leagueParam} ${s.teamAName} vs ${s.teamBName}) status="${c.status}"`);
+      let ev: any | null = null;
+      let mark = "none";
+
+      if (s.tsdbEventId != null && s.tsdbEventId !== "") {
+        ev = idCache.get(String(s.tsdbEventId)) ?? null;
+        mark = ev ? "id_lookup" : "id_missing";
+      }
+
+      if (!ev) {
+        ev = pickClosestByKickoff(prev, s.teamAName, s.teamBName, s.lockTime);
+        mark = ev ? "prev_league_match" : "no_prev_match";
+      }
+
+      if (!ev) {
+        // Busy slate fallback: try previous/team for both sides (expands 10 → ~20)
+        const idL = idLeague;
+        await ensureLeagueTeamsCached(idL);
+        const idTeamA = findIdTeam(idL, s.teamAName);
+        const idTeamB = findIdTeam(idL, s.teamBName);
+        const pools: any[] = [];
+        if (idTeamA) pools.push(v2PreviousTeamEvents(idTeamA));
+        if (idTeamB) pools.push(v2PreviousTeamEvents(idTeamB));
+        if (pools.length) {
+          const results = (await Promise.all(pools)).flat();
+          ev = pickClosestByKickoff(results, s.teamAName, s.teamBName, s.lockTime);
+          mark = ev ? "prev_team_match" : "no_team_match";
+        }
+      }
+
+      if (ev && looksFinalV2(ev)) {
+        eligible.push(s);
+      } else {
+        console.log(`[SKIP] Not final by v2 (${s.league} ${s.teamAName} vs ${s.teamBName}) via ${mark} status="${String(ev?.strStatus||ev?.strProgress||"")}"`);
+      }
     }
 
     finalEligible = eligible;
-    if (!finalEligible.length) { console.log("No games confirmed final by provider consensus. Submitted 0 transaction(s)."); return; }
-    console.log(`✅ Provider consensus final for ${finalEligible.length} pool(s).`);
+    if (!finalEligible.length) { console.log("No games confirmed final by v2 provider. Submitted 0 transaction(s)."); return; }
+    console.log(`✅ v2 provider final for ${finalEligible.length} pool(s).`);
   }
 
-  /* STEP 3: Simulate & send — adaptive 9 ⇄ 8 args */
+  // STEP 3: Simulate & send — adaptive 9 ⇄ 8 args (keep your existing logic)
   const { secretsVersion: sv } = await loadActiveSecrets();
   const donHostedSecretsVersion2 = BigInt(sv);
 
-  const buildArgs9 = (s: PoolState): string[] => {
+  // Optionally resolve a missing idEvent just-in-time (to strengthen by-ID path)
+  async function resolveEventIdIfMissing(s: PoolState): Promise<string | ""> {
+    if (s.tsdbEventId != null && s.tsdbEventId !== "") return String(s.tsdbEventId);
+
+    const idLeague = mapLeagueId(s.league);
+    if (!idLeague) return "";
+
+    // Try previous/league
+    const prev = await v2PreviousLeagueEvents(idLeague);
+    const byPrev = pickClosestByKickoff(prev, s.teamAName, s.teamBName, s.lockTime);
+    if (byPrev?.idEvent) return String(byPrev.idEvent);
+
+    // Try previous/team (both sides)
+    await ensureLeagueTeamsCached(idLeague);
+    const idTeamA = findIdTeam(idLeague, s.teamAName);
+    const idTeamB = findIdTeam(idLeague, s.teamBName);
+    const pools: any[] = [];
+    if (idTeamA) pools.push(v2PreviousTeamEvents(idTeamA));
+    if (idTeamB) pools.push(v2PreviousTeamEvents(idTeamB));
+    if (pools.length) {
+      const results = (await Promise.all(pools)).flat();
+      const byTeamPrev = pickClosestByKickoff(results, s.teamAName, s.teamBName, s.lockTime);
+      if (byTeamPrev?.idEvent) return String(byTeamPrev.idEvent);
+    }
+    return "";
+  }
+
+  const buildArgs9 = (s: PoolState, idOverride?: string): string[] => {
     const d0 = epochToEtISO(s.lockTime), d1 = addDaysISO(d0, 1);
-    const leagueArg = mapLeagueForTSDB(s.league);
-    const id = (s.tsdbEventId != null && s.tsdbEventId !== "") ? String(s.tsdbEventId) : "";
-    return [leagueArg, d0, d1, String(s.teamACode).toUpperCase(), String(s.teamBCode).toUpperCase(), s.teamAName, s.teamBName, String(s.lockTime), id];
+    // Keep passing the human league label — source.js derives TAG from it.
+    const leagueArg = s.league;
+    const id = (idOverride ?? String(s.tsdbEventId ?? "")).trim();
+    return [leagueArg, d0, d1, s.teamACode.toUpperCase(), s.teamBCode.toUpperCase(), s.teamAName, s.teamBName, String(s.lockTime), id];
   };
   const buildArgs8 = (s: PoolState): string[] => {
     const d0 = epochToEtISO(s.lockTime), d1 = addDaysISO(d0, 1);
-    const leagueArg = mapLeagueForTSDB(s.league);
-    return [leagueArg, d0, d1, String(s.teamACode).toUpperCase(), String(s.teamBCode).toUpperCase(), s.teamAName, s.teamBName, String(s.lockTime)];
+    const leagueArg = s.league;
+    return [leagueArg, d0, d1, s.teamACode.toUpperCase(), s.teamBCode.toUpperCase(), s.teamAName, s.teamBName, String(s.lockTime)];
   };
 
   async function simulate(pool: any, args: string[]) {
@@ -575,13 +611,16 @@ async function main() {
     if (submitted >= MAX_TX_PER_RUN) break;
 
     const pool = new ethers.Contract(s.addr, poolAbi, wallet);
-    const hasId = (s.tsdbEventId != null && s.tsdbEventId !== "");
 
-    // If we have an ID: try 9 → 8.
-    // If we don't have an ID: try 8 → 9 (with empty id) to cover 9-arg-only contracts.
+    // NEW: resolve idEvent dynamically if missing (strengthens by-ID path)
+    const dynamicId = await resolveEventIdIfMissing(s);
+    if (dynamicId) console.log(`[INFO] Resolved idEvent=${dynamicId} for ${s.teamAName} vs ${s.teamBName}`);
+
+    const hasId = Boolean(dynamicId || (s.tsdbEventId != null && s.tsdbEventId !== ""));
+
     const candidates: Array<{ label: "args9" | "args8"; args: string[] }> = hasId
-      ? [{ label: "args9", args: buildArgs9(s) }, { label: "args8", args: buildArgs8(s) }]
-      : [{ label: "args8", args: buildArgs8(s) }, { label: "args9", args: buildArgs9(s) }];
+      ? [{ label: "args9", args: buildArgs9(s, dynamicId) }, { label: "args8", args: buildArgs8(s) }]
+      : [{ label: "args8", args: buildArgs8(s) }, { label: "args9", args: buildArgs9(s, dynamicId) }];
 
     let choice: { label: "args9" | "args8"; args: string[] } | null = null;
 
@@ -598,7 +637,7 @@ async function main() {
         try {
           if (REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
           const tx = await pool.sendRequest(SOURCE, choice.args, SUBSCRIPTION_ID, FUNCTIONS_GAS_LIMIT, DON_SECRETS_SLOT, donHostedSecretsVersion2, donBytes);
-          const idShown = choice.label === "args9" ? choice.args[8] || '""' : "(none)";
+          const idShown = choice.label === "args9" ? (choice.args[8] || '""') : "(none)";
           console.log(`[OK] sendRequest ${s.addr} using ${choice.label} id=${idShown}: ${tx.hash}`);
           submitted++;
         } catch (e: any) {
@@ -609,7 +648,7 @@ async function main() {
         }
       });
     } else {
-      const idShown = choice.label === "args9" ? choice.args[8] || '""' : "(none)";
+      const idShown = choice.label === "args9" ? (choice.args[8] || '""') : "(none)";
       console.log(`[DRY_RUN] Would sendRequest ${s.addr} using ${choice.label} id=${idShown}`);
     }
   }
