@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write  # commit updated activeSecrets.json
+  contents: write
 
 concurrency:
   group: upload-and-settle
@@ -33,7 +33,7 @@ jobs:
           token: ${{ secrets.FRONTEND_READ_TOKEN }}
           fetch-depth: 1
 
-      # --- Single Node setup for everything ---
+      # --- Node setup & caching ---
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -43,7 +43,6 @@ jobs:
             package-lock.json
             .github/secrets-uploader/package-lock.json
 
-      # --- One cache covering both node_modules trees ---
       - name: Cache node_modules (root + uploader)
         id: cache-deps
         uses: actions/cache@v4
@@ -55,7 +54,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nm-
 
-      # --- Only sanitize/regenerate lockfile on cold cache ---
       - name: Sanitize package.json & regenerate lockfile
         if: steps.cache-deps.outputs.cache-hit != 'true'
         shell: bash
@@ -78,7 +76,6 @@ jobs:
           '
           npm install --package-lock-only --ignore-scripts
 
-      # --- Install root deps only if missing ---
       - name: Install dependencies (root; ignore optional)
         shell: bash
         env:
@@ -90,7 +87,6 @@ jobs:
             echo "root node_modules present (cached)"
           fi
 
-      # --- Install uploader deps only if missing ---
       - name: Install deps (uploader)
         working-directory: .github/secrets-uploader
         shell: bash
@@ -116,7 +112,7 @@ jobs:
           SLOT_ID: 0
           DON_TTL_MINUTES: 1440
 
-          # v2 prefers a single key, but we keep league-specific as fallbacks if you still set them.
+          # v2 prefers a single key; league-specific keys kept for backward compat
           MLB_API_KEY: ${{ secrets.MLB_API_KEY }}
           NFL_API_KEY: ${{ secrets.NFL_API_KEY }}
           NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
@@ -124,8 +120,6 @@ jobs:
           EPL_API_KEY: ${{ secrets.EPL_API_KEY }}
           UCL_API_KEY: ${{ secrets.UCL_API_KEY }}
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-
-          # (Removed: *_ENDPOINT — not used in v2)
         run: npm run upload
 
       # --- Ensure activeSecrets.json is present at repo root ---
@@ -159,28 +153,30 @@ jobs:
           git commit -m "Update activeSecrets.json (sv=${{ steps.sv.outputs.secretsVersion }}) [skip ci]" || true
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
 
-     - name: Sanity check TheSportsDB v2 key
-  env:
-    TSDB_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
-  shell: bash
-  run: |
-    set -e
-    if [ -z "$TSDB_KEY" ]; then echo "THESPORTSDB_API_KEY not set"; exit 1; fi
+      # --- Sanity check TheSportsDB v2 key (auth must succeed; 'previous' may be empty) ---
+      - name: Sanity check TheSportsDB v2 key
+        env:
+          TSDB_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
+        shell: bash
+        run: |
+          set -e
+          if [ -z "$TSDB_KEY" ]; then echo "THESPORTSDB_API_KEY not set"; exit 1; fi
 
-    # 1) Deterministic auth test: seasons list should always return data
-    SEASONS_URL="https://www.thesportsdb.com/api/v2/json/list/seasons/4391" # NFL
-    CODE=$(curl -s -o /tmp/seasons.json -w "%{http_code}" -H "X-API-KEY: $TSDB_KEY" "$SEASONS_URL")
-    echo "HTTP $CODE from v2 list/seasons"
-    if [ "$CODE" -ne 200 ]; then
-      echo "::error::v2 auth failed on seasons (HTTP $CODE)"; cat /tmp/seasons.json || true; exit 1;
-    fi
-    node -e "const j=require('/tmp/seasons.json'); if(!j||!Array.isArray(j.seasons)||!j.seasons.length){ console.error('No seasons in response'); process.exit(1);} console.log('v2 OK: seasons:', j.seasons.slice(-3).map(s=>s.strSeason).join(', '));"
+          # Deterministic auth test: seasons list should always return data
+          SEASONS_URL="https://www.thesportsdb.com/api/v2/json/list/seasons/4391"
+          CODE=$(curl -s -o /tmp/seasons.json -w "%{http_code}" -H "X-API-KEY: $TSDB_KEY" "$SEASONS_URL")
+          echo "HTTP $CODE from v2 list/seasons"
+          if [ "$CODE" -ne 200 ]; then
+            echo "::error::v2 auth failed on seasons (HTTP $CODE)"
+            cat /tmp/seasons.json || true
+            exit 1
+          fi
+          node -e "const j=require('/tmp/seasons.json'); if(!j||!Array.isArray(j.seasons)||!j.seasons.length){ console.error('No seasons in response'); process.exit(1);} console.log('v2 OK: seasons tail ->', j.seasons.slice(-3).map(s=>s.strSeason).join(', '));"
 
-    # 2) Optional: see if previous has data (do NOT fail if empty)
-    PREV_URL='https://www.thesportsdb.com/api/v2/json/schedule/previous/league/4391'
-    curl -s -H "X-API-KEY: $TSDB_KEY" "$PREV_URL" -o /tmp/prev.json || true
-    node -e "const fs=require('fs'); let ok='?'; try{const j=JSON.parse(fs.readFileSync('/tmp/prev.json','utf8')); const n=Array.isArray(j.events)?j.events.length:0; ok=n>0?('prev events: '+n):'prev empty (off-day/offseason ok)'; console.log(ok);}catch(e){console.log('prev parse skipped');}"
-
+          # Optional: see if previous has data (do NOT fail if empty/offseason)
+          PREV_URL='https://www.thesportsdb.com/api/v2/json/schedule/previous/league/4391'
+          curl -s -H "X-API-KEY: $TSDB_KEY" "$PREV_URL" -o /tmp/prev.json || true
+          node -e "const fs=require('fs'); try{const j=JSON.parse(fs.readFileSync('/tmp/prev.json','utf8')); const n=Array.isArray(j.events)?j.events.length:0; console.log(n>0?('prev events: '+n):'prev empty (off-day/offseason ok)');}catch{console.log('prev parse skipped');}"
 
       # --- Run settlement bot (send on-chain) ---
       - name: Run settlement bot (send on-chain)
