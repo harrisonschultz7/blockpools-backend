@@ -43,8 +43,9 @@ const TX_SEND_CONCURRENCY= Number(process.env.TX_SEND_CONCURRENCY|| 3);
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0);
 
-// TheSportsDB (v2 header key)
+// TheSportsDB keys / flags
 const THESPORTSDB_API_KEY = process.env.THESPORTSDB_API_KEY || "";
+const ALLOW_V1_FALLBACK = process.env.ALLOW_V1_FALLBACK === "1"; // finality check only
 
 // DON pointer (activeSecrets.json) lookup
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
@@ -246,7 +247,7 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
   const headers: any = {
     ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
     "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "settlement-bot",
+    "User-Agent": "blockpools-settlement-bot/1.0",
     Accept: "application/vnd.github+json",
   };
   const res = await fetch(url, { headers });
@@ -257,7 +258,7 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
-   v2: League IDs, fetchers, matching, finality
+   v2 + optional v1 fetchers, matching, finality
 ────────────────────────────────────────────────────────────────────────────── */
 function mapLeagueId(leagueOnChain: string): string {
   const lk = String(leagueOnChain || "").toLowerCase();
@@ -269,20 +270,38 @@ function mapLeagueId(leagueOnChain: string): string {
 }
 
 const V2_BASE = "https://www.thesportsdb.com/api/v2/json";
-const V2_HEADERS = { "X-API-KEY": THESPORTSDB_API_KEY };
+
+// send both header variants + UA + Accept, and retry if empty
+const v2HeaderVariants: Array<Record<string, string>> = [
+  { "X-API-KEY": THESPORTSDB_API_KEY, "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" },
+  { "X_API_KEY": THESPORTSDB_API_KEY, "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" },
+  { "X-API-KEY": THESPORTSDB_API_KEY, "X_API_KEY": THESPORTSDB_API_KEY, "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" },
+];
 
 async function v2Fetch(path: string) {
   const url = `${V2_BASE}${path}`;
-  const r = await fetch(url, { headers: V2_HEADERS });
-  if (!r.ok) {
-    const body = await r.text().catch(() => "");
-    console.warn(`[v2Fetch] ${r.status} ${r.statusText} ${path} :: ${body?.slice(0,160)}`);
-    return null;
+  for (const headers of v2HeaderVariants) {
+    try {
+      const r = await fetch(url, { headers });
+      const txt = await r.text();
+      if (!r.ok) {
+        console.warn(`[v2Fetch] ${r.status} ${r.statusText} ${path} :: ${txt.slice(0,160)}`);
+        continue;
+      }
+      // try parse JSON
+      try {
+        const j = txt ? JSON.parse(txt) : null;
+        // treat "{}" or empty as miss
+        if (j && (Object.keys(j).length > 0)) return j;
+        console.warn(`[v2Fetch] empty JSON for ${path} with headers variant`);
+      } catch (e) {
+        console.warn(`[v2Fetch] JSON parse error for ${path}:`, (e as Error).message);
+      }
+    } catch (e) {
+      console.warn(`[v2Fetch] request error ${path}:`, (e as Error).message);
+    }
   }
-  try { return await r.json(); } catch (e) {
-    console.warn(`[v2Fetch] JSON parse error for ${path}:`, (e as Error).message);
-    return null;
-  }
+  return null;
 }
 
 async function v2PreviousLeagueEvents(idLeague: string) {
@@ -305,7 +324,6 @@ async function v2PreviousTeamEvents(idTeam: string) {
   const j = await v2Fetch(`/schedule/previous/team/${encodeURIComponent(idTeam)}`);
   return Array.isArray(j?.events) ? j.events : [];
 }
-// Season coverage for heavy slates or empty "previous"
 async function v2ListSeasons(idLeague: string): Promise<string[]> {
   if (!idLeague) return [];
   const j = await v2Fetch(`/list/seasons/${idLeague}`);
@@ -318,6 +336,29 @@ async function v2ScheduleLeagueSeason(idLeague: string, season: string) {
   return Array.isArray(j?.events) ? j.events : [];
 }
 
+/* Optional v1 day-slice fallback for FINALITY ONLY */
+const V1_BASE = "https://www.thesportsdb.com/api/v1/json";
+async function v1EventsDay(dateISO: string, leagueLabel?: string) {
+  // v1 uses key in path, not header
+  const key = THESPORTSDB_API_KEY;
+  const urls = leagueLabel
+    ? [
+        `${V1_BASE}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&l=${encodeURIComponent(leagueLabel)}`,
+        `${V1_BASE}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}`
+      ]
+    : [`${V1_BASE}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}`];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u, { headers: { "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" } });
+      if (!r.ok) continue;
+      const j = await r.json().catch(() => null);
+      if (Array.isArray(j?.events) && j.events.length) return j.events;
+    } catch {}
+  }
+  return [];
+}
+
+/* Matching helpers */
 const teamIdCache = new Map<string, Map<string, string>>(); // idLeague -> (normName -> idTeam)
 async function ensureLeagueTeamsCached(idLeague: string) {
   if (!idLeague || teamIdCache.has(idLeague)) return;
@@ -369,7 +410,7 @@ function pickClosestByKickoff(events: any[], aName: string, bName: string, kicko
   cand.sort((x, y) => Math.abs(tsFromEvent(x) - kickoff) - Math.abs(tsFromEvent(y) - kickoff));
   return cand[0] || null;
 }
-function looksFinalV2(ev: any) {
+function looksFinal(ev: any) {
   const status = String(ev?.strStatus ?? ev?.strProgress ?? "").toLowerCase();
   const hasScores = (ev?.intHomeScore != null && ev?.intAwayScore != null);
   if (/^(ft|aot|aet|pen|finished|full time)$/.test(status)) return true;
@@ -410,6 +451,7 @@ async function main() {
   console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
   console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
+  console.log(`[CFG] ALLOW_V1_FALLBACK=${ALLOW_V1_FALLBACK}`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
@@ -495,7 +537,7 @@ async function main() {
   );
   if (!timeGated.length) { console.log("No eligible pools after gates. Submitted 0 transaction(s)."); return; }
 
-  /* STEP 2: Provider finality checks (v2) */
+  /* STEP 2: Provider finality checks (v2-first, v1 optional fallback) */
   let finalEligible: PoolState[] = timeGated;
   if (REQUIRE_FINAL_CHECK) {
     if (!THESPORTSDB_API_KEY) { console.log("REQUIRE_FINAL_CHECK=1 but no THESPORTSDB_API_KEY set. Skipping to avoid wasted LINK."); return; }
@@ -547,7 +589,7 @@ async function main() {
         mark = ev ? "prev_league_match" : "no_prev_match";
       }
 
-      // previous/team (10 per team → widen window)
+      // previous/team (10 per team → widen)
       if (!ev) {
         await ensureLeagueTeamsCached(idLeague);
         const idTeamA = findIdTeam(idLeague, s.teamAName);
@@ -566,10 +608,9 @@ async function main() {
       if (!ev) {
         const gameDate = epochToEtISO(s.lockTime); // YYYY-MM-DD (ET)
         const seasons = await v2ListSeasons(idLeague);
-        // Try most recent two seasons (helps soccer 2025-26 style)
         for (const ssn of seasons.slice(-2).reverse()) {
           const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
-          if (seasonEvents && seasonEvents.length) {
+          if (seasonEvents?.length) {
             const daySlice = seasonEvents.filter((e: any) => (e?.dateEvent || e?.dateEventLocal) === gameDate);
             const candidate = pickClosestByKickoff(daySlice.length ? daySlice : seasonEvents, s.teamAName, s.teamBName, s.lockTime);
             if (candidate) { ev = candidate; mark = daySlice.length ? "season_day_match" : "season_closest"; break; }
@@ -577,35 +618,43 @@ async function main() {
         }
       }
 
-      if (ev && looksFinalV2(ev)) {
+      // OPTIONAL v1 DAY FALLBACK (finality only) — off by default
+      if (!ev && ALLOW_V1_FALLBACK) {
+        const gameDate = epochToEtISO(s.lockTime);
+        const v1 = await v1EventsDay(gameDate, s.league);
+        if (v1?.length) {
+          ev = pickClosestByKickoff(v1, s.teamAName, s.teamBName, s.lockTime);
+          mark = ev ? "v1_day_match" : "v1_no_match";
+        }
+      }
+
+      if (ev && looksFinal(ev)) {
+        console.log(`[OK] Final via ${mark}: ${s.league} ${s.teamAName} vs ${s.teamBName} (idEvent=${ev?.idEvent || "?"})`);
         eligible.push(s);
       } else {
-        console.log(`[SKIP] Not final by v2 (${s.league} ${s.teamAName} vs ${s.teamBName}) via ${mark} status="${String(ev?.strStatus||ev?.strProgress||"")}"`);
+        console.log(`[SKIP] Not final by provider (${s.league} ${s.teamAName} vs ${s.teamBName}) via ${mark} status="${String(ev?.strStatus||ev?.strProgress||"")}"`);
       }
     }
 
     finalEligible = eligible;
-    if (!finalEligible.length) { console.log("No games confirmed final by v2 provider. Submitted 0 transaction(s)."); return; }
-    console.log(`✅ v2 provider final for ${finalEligible.length} pool(s).`);
+    if (!finalEligible.length) { console.log("No games confirmed final by provider. Submitted 0 transaction(s)."); return; }
+    console.log(`✅ Provider final for ${finalEligible.length} pool(s).`);
   }
 
   /* STEP 3: Simulate & send — adaptive 9 ⇄ 8 args */
   const { secretsVersion: sv } = await loadActiveSecrets();
   const donHostedSecretsVersion2 = BigInt(sv);
 
-  // Resolve an idEvent dynamically if missing (to strengthen by-ID path)
   async function resolveEventIdIfMissing(s: PoolState): Promise<string | ""> {
     if (s.tsdbEventId != null && s.tsdbEventId !== "") return String(s.tsdbEventId);
 
     const idLeague = mapLeagueId(s.league);
     if (!idLeague) return "";
 
-    // Try previous/league
     const prev = await v2PreviousLeagueEvents(idLeague);
     const byPrev = pickClosestByKickoff(prev, s.teamAName, s.teamBName, s.lockTime);
     if (byPrev?.idEvent) return String(byPrev.idEvent);
 
-    // Try previous/team (both sides)
     await ensureLeagueTeamsCached(idLeague);
     const idTeamA = findIdTeam(idLeague, s.teamAName);
     const idTeamB = findIdTeam(idLeague, s.teamBName);
@@ -618,7 +667,6 @@ async function main() {
       if (byTeamPrev?.idEvent) return String(byTeamPrev.idEvent);
     }
 
-    // Season fallback
     const gameDate = epochToEtISO(s.lockTime);
     const seasons = await v2ListSeasons(idLeague);
     for (const ssn of seasons.slice(-2).reverse()) {
@@ -628,7 +676,6 @@ async function main() {
       const candidate = pickClosestByKickoff(daySlice.length ? daySlice : seasonEvents, s.teamAName, s.teamBName, s.lockTime);
       if (candidate?.idEvent) return String(candidate.idEvent);
     }
-
     return "";
   }
 
@@ -661,7 +708,6 @@ async function main() {
 
     const pool = new ethers.Contract(s.addr, poolAbi, wallet);
 
-    // Resolve idEvent dynamically if missing (prefer by-ID in source.js)
     const dynamicId = await resolveEventIdIfMissing(s);
     if (dynamicId) console.log(`[INFO] Resolved idEvent=${dynamicId} for ${s.teamAName} vs ${s.teamBName}`);
 
