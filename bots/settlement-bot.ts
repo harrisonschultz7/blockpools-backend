@@ -162,6 +162,19 @@ function addDaysISO(iso: string, days: number) {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
+/* day-window helper: match ET day, previous, or next */
+function matchesEtDayOrNeighbor(e: any, gameDateEt: string) {
+  const d  = e?.dateEvent || "";
+  const dl = e?.dateEventLocal || "";
+  const prev = addDaysISO(gameDateEt, -1);
+  const next = addDaysISO(gameDateEt,  1);
+  return (
+    d === gameDateEt || dl === gameDateEt ||
+    d === prev      || dl === prev      ||
+    d === next      || dl === next
+  );
+}
+
 /* ──────────────────────────────────────────────────────────────────────────────
    games.json loader (robust to multiple shapes)
 ────────────────────────────────────────────────────────────────────────────── */
@@ -300,10 +313,8 @@ async function v2Fetch(path: string) {
         console.warn(`[v2Fetch] ${r.status} ${r.statusText} ${path} :: ${txt.slice(0,160)}`);
         continue;
       }
-      // try parse JSON
       try {
         const j = txt ? JSON.parse(txt) : null;
-        // treat "{}" or empty as miss
         if (j && (Object.keys(j).length > 0)) {
           const keys = Object.keys(j);
           console.log(`[v2Fetch] ok ${path} keys=${keys.join(",")}`);
@@ -355,7 +366,6 @@ async function v2ScheduleLeagueSeason(idLeague: string, season: string) {
 /* Optional v1 day-slice fallback for FINALITY ONLY */
 const V1_BASE = "https://www.thesportsdb.com/api/v1/json";
 async function v1EventsDay(dateISO: string, leagueLabel?: string) {
-  // v1 uses key in path, not header
   const key = THESPORTSDB_API_KEY;
   const urls = leagueLabel
     ? [
@@ -419,14 +429,36 @@ function sameTeam(x?: string, y?: string) {
   const nx = normTeam(String(x || "")), ny = normTeam(String(y || "")); if (!nx || !ny) return false;
   return nx === ny || nx.includes(ny) || ny.includes(nx);
 }
-function pickClosestByKickoff(events: any[], aName: string, bName: string, kickoff: number) {
+
+/* ID-aware + tolerant nearest-kickoff */
+function pickClosestByKickoff(
+  events: any[],
+  aName: string,
+  bName: string,
+  kickoff: number,
+  aId?: string,
+  bId?: string
+) {
+  const TOL = 45 * 60; // 45-minute grace for listed kickoff vs lock
   const cand = events.filter(e => {
+    if (aId && bId && e?.idHomeTeam && e?.idAwayTeam) {
+      const h = String(e.idHomeTeam), w = String(e.idAwayTeam);
+      if ((h === aId && w === bId) || (h === bId && w === aId)) return true;
+    }
     const h = e?.strHomeTeam, w = e?.strAwayTeam;
     return (sameTeam(h, aName) && sameTeam(w, bName)) || (sameTeam(h, bName) && sameTeam(w, aName));
   });
-  cand.sort((x, y) => Math.abs(tsFromEvent(x) - kickoff) - Math.abs(tsFromEvent(y) - kickoff));
+
+  const ts = (e: any) => tsFromEvent(e) || kickoff;
+  cand.sort((x, y) => {
+    const dx = Math.max(0, Math.abs(ts(x) - kickoff) - TOL);
+    const dy = Math.max(0, Math.abs(ts(y) - kickoff) - TOL);
+    return dx - dy;
+  });
+
   return cand[0] || null;
 }
+
 function looksFinal(ev: any) {
   const status = String(ev?.strStatus ?? ev?.strProgress ?? "").toLowerCase();
   const hasScores = (ev?.intHomeScore != null && ev?.intAwayScore != null);
@@ -573,40 +605,27 @@ async function main() {
       )
     );
 
-    // Warm ID lookups when provided
-    const idCache = new Map<string, any | null>();
-    const idKeys = new Set<string>();
-    for (const s of timeGated) if (s.tsdbEventId != null && s.tsdbEventId !== "") idKeys.add(String(s.tsdbEventId));
-    await Promise.all(
-      Array.from(idKeys).map(id =>
-        limiter(TSDB_CONCURRENCY)(async () => {
-          const res = (await v2LookupEventResults(id)) || (await v2LookupEvent(id));
-          idCache.set(id, res || null);
-        })
-      )
-    );
-
     const eligible: PoolState[] = [];
     for (const s of timeGated) {
       const idLeague = mapLeagueId(s.league);
-      const prev = prevCache.get(idLeague) || [];
-
       let ev: any | null = null;
       let mark = "none";
 
-      // by-ID (optional)
-      if (s.tsdbEventId != null && s.tsdbEventId !== "") {
-        ev = idCache.get(String(s.tsdbEventId)) ?? null;
-        mark = ev ? "id_lookup" : "id_missing_v2";
+      // Try to resolve an event ID fast-path
+      const dynId = await resolveEventIdIfMissing(s);
+      if (dynId) {
+        const byId = (await v2LookupEventResults(dynId)) || (await v2LookupEvent(dynId));
+        if (byId) { ev = byId; mark = "id_lookup"; }
       }
 
-      // previous/league (10)
+      // previous/league (cached)
       if (!ev) {
+        const prev = prevCache.get(idLeague) || [];
         ev = pickClosestByKickoff(prev, s.teamAName, s.teamBName, s.lockTime);
         mark = ev ? "prev_league_match" : "no_prev_match";
       }
 
-      // previous/team (10 per team → widen)
+      // previous/team
       if (!ev) {
         await ensureLeagueTeamsCached(idLeague);
         const idTeamA = findIdTeam(idLeague, s.teamAName);
@@ -616,26 +635,29 @@ async function main() {
         if (idTeamB) pools.push(v2PreviousTeamEvents(idTeamB));
         if (pools.length) {
           const results = (await Promise.all(pools)).flat();
-          ev = pickClosestByKickoff(results, s.teamAName, s.teamBName, s.lockTime);
+          ev = pickClosestByKickoff(results, s.teamAName, s.teamBName, s.lockTime, idTeamA, idTeamB);
           mark = ev ? "prev_team_match" : "no_team_match";
         }
       }
 
-      // SEASON FALLBACK (handles >10 finished at once or empty "previous")
+      // season fallback with ET±1d window
       if (!ev) {
-        const gameDate = epochToEtISO(s.lockTime); // YYYY-MM-DD (ET)
+        const gameDate = epochToEtISO(s.lockTime);
         const seasons = await v2ListSeasons(idLeague);
         for (const ssn of seasons.slice(-2).reverse()) {
           const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
-          if (seasonEvents?.length) {
-            const daySlice = seasonEvents.filter((e: any) => (e?.dateEvent || e?.dateEventLocal) === gameDate);
-            const candidate = pickClosestByKickoff(daySlice.length ? daySlice : seasonEvents, s.teamAName, s.teamBName, s.lockTime);
-            if (candidate) { ev = candidate; mark = daySlice.length ? "season_day_match" : "season_closest"; break; }
-          }
+          if (!seasonEvents?.length) continue;
+          const daySlice = seasonEvents.filter((e: any) => matchesEtDayOrNeighbor(e, gameDate));
+          const pool = daySlice.length ? daySlice : seasonEvents;
+          await ensureLeagueTeamsCached(idLeague);
+          const idTeamA = findIdTeam(idLeague, s.teamAName);
+          const idTeamB = findIdTeam(idLeague, s.teamBName);
+          const candidate = pickClosestByKickoff(pool, s.teamAName, s.teamBName, s.lockTime, idTeamA, idTeamB);
+          if (candidate) { ev = candidate; mark = daySlice.length ? "season_day_match" : "season_closest"; break; }
         }
       }
 
-      // OPTIONAL v1 DAY FALLBACK (finality only) — off by default
+      // OPTIONAL v1 DAY FALLBACK (finality only)
       if (!ev && ALLOW_V1_FALLBACK) {
         const gameDate = epochToEtISO(s.lockTime);
         const v1 = await v1EventsDay(gameDate, s.league);
@@ -668,10 +690,12 @@ async function main() {
     const idLeague = mapLeagueId(s.league);
     if (!idLeague) return "";
 
+    // previous/league
     const prev = await v2PreviousLeagueEvents(idLeague);
     const byPrev = pickClosestByKickoff(prev, s.teamAName, s.teamBName, s.lockTime);
     if (byPrev?.idEvent) return String(byPrev.idEvent);
 
+    // previous/team
     await ensureLeagueTeamsCached(idLeague);
     const idTeamA = findIdTeam(idLeague, s.teamAName);
     const idTeamB = findIdTeam(idLeague, s.teamBName);
@@ -680,17 +704,19 @@ async function main() {
     if (idTeamB) pools.push(v2PreviousTeamEvents(idTeamB));
     if (pools.length) {
       const results = (await Promise.all(pools)).flat();
-      const byTeamPrev = pickClosestByKickoff(results, s.teamAName, s.teamBName, s.lockTime);
+      const byTeamPrev = pickClosestByKickoff(results, s.teamAName, s.teamBName, s.lockTime, idTeamA, idTeamB);
       if (byTeamPrev?.idEvent) return String(byTeamPrev.idEvent);
     }
 
+    // season with ET±1d window
     const gameDate = epochToEtISO(s.lockTime);
     const seasons = await v2ListSeasons(idLeague);
     for (const ssn of seasons.slice(-2).reverse()) {
       const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
       if (!seasonEvents?.length) continue;
-      const daySlice = seasonEvents.filter((e: any) => (e?.dateEvent || e?.dateEventLocal) === gameDate);
-      const candidate = pickClosestByKickoff(daySlice.length ? daySlice : seasonEvents, s.teamAName, s.teamBName, s.lockTime);
+      const daySlice = seasonEvents.filter((e: any) => matchesEtDayOrNeighbor(e, gameDate));
+      const pool = daySlice.length ? daySlice : seasonEvents;
+      const candidate = pickClosestByKickoff(pool, s.teamAName, s.teamBName, s.lockTime, idTeamA, idTeamB);
       if (candidate?.idEvent) return String(candidate.idEvent);
     }
     return "";
