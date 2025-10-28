@@ -1,11 +1,32 @@
 // Chainlink Functions source script for BlockPools
 // Output: winner team code (e.g., "PHI", "NYG") or "TIE" or "ERR"
-// Order of operations (by design):
-//  1) Find by teams + lockTime (league previous + season fallback with ET±1 day)
-//  2) If not found, try idEvent (only accept if teams align)
+// Safety-first policy:
+//   • Require v2 `lookup/event_results/:id` to exist & be final
+//   • Cross-check with at least one additional source
+//   • If scores/winner disagree across sources → return "ERR"
+//   • If teams don't align to contract (by name/code) → return "ERR"
+//   • If anything is missing/ambiguous → return "ERR"
+//
+// Args (8 or 9):
+// [0] leagueLabel ("nfl","mlb","nba","nhl","epl","ucl")
+// [1] dateFrom (ET "YYYY-MM-DD")
+// [2] dateTo   (ET "YYYY-MM-DD" next-day window)
+// [3] teamACode
+// [4] teamBCode
+// [5] teamAName
+// [6] teamBName
+// [7] lockTime (unix seconds)  // used for proximity if needed
+// [8] idEvent (optional; strongly validated; never forces wrong match)
 
 const V2_BASE = "https://www.thesportsdb.com/api/v2/json";
+const V1_BASE = "https://www.thesportsdb.com/api/v1/json";
 const API_KEY = secrets.THESPORTSDB_API_KEY || "";
+
+// --- Tunables (conservative defaults) ---
+const REQUIRE_RESULTS   = true;   // must have lookup/event_results present & final
+const REQUIRE_CONSENSUS = true;   // at least MIN_SOURCES agreeing winner
+const MIN_SOURCES       = 2;      // require >= 2 agreeing sources
+const SEASONS_TO_SCAN   = 2;      // seasons to look back for schedule/league if needed
 
 const leagueMap = { mlb:"4424", nfl:"4391", nba:"4387", nhl:"4380", epl:"4328", ucl:"4480" };
 function mapLeagueId(lbl){ return leagueMap[String(lbl||"").toLowerCase()] || ""; }
@@ -22,7 +43,6 @@ function arrFrom(j, keys){
   for (const v of Object.values(j)) if (Array.isArray(v)) return v;
   return [];
 }
-
 async function v2Fetch(path){
   const url = `${V2_BASE}${path}`;
   for (const h of headerVariants){
@@ -33,7 +53,6 @@ async function v2Fetch(path){
   }
   return null;
 }
-
 async function v2PreviousLeagueEvents(idLeague){
   if (!idLeague) return [];
   const j = await v2Fetch(`/schedule/previous/league/${idLeague}`);
@@ -59,8 +78,18 @@ async function v2ScheduleLeagueSeason(idLeague, season){
   return arrFrom(j, ["schedule","events"]);
 }
 
-/* ------------------------------ Matching utils ----------------------------- */
+// Optional v1 day slice (only used for consensus corroboration)
+async function v1EventsDay(dateISO, leagueLabel){
+  if (!API_KEY) return [];
+  const url = `${V1_BASE}/${API_KEY}/eventsday.php?d=${encodeURIComponent(dateISO)}&l=${encodeURIComponent(leagueLabel||"")}`;
+  try{
+    const r = await Functions.makeHttpRequest({ url, timeout:12000 });
+    if (r && r.data) return arrFrom(r.data, ["events","schedule","results"]);
+  }catch{}
+  return [];
+}
 
+// ---------------- Matching & evaluation helpers ----------------
 function norm(s){
   return (s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"")
     .replace(/[’'`]/g,"").replace(/[^a-z0-9 ]/gi," ")
@@ -69,13 +98,13 @@ function norm(s){
 function eqCode(a,b){ return !!a && !!b && String(a).trim().toUpperCase()===String(b).trim().toUpperCase(); }
 function eqName(a,b){ const x=norm(a), y=norm(b); return !!x && !!y && x===y; }
 function fuzzyName(a,b){ const x=norm(a), y=norm(b); return !!x && !!y && (x.includes(y)||y.includes(x)); }
+// Strength 3: code match; 2: exact name; 1: fuzzy contain
 function strongTeamEq(targetName, candidateName, targetCode){
   if (eqCode(candidateName, targetCode)) return 3;
   if (eqName(candidateName, targetName)) return 2;
   if (fuzzyName(candidateName, targetName)) return 1;
   return 0;
 }
-
 function tsFromEvent(e){
   if (e?.strTimestamp){ const ms=Date.parse(e.strTimestamp); if(!Number.isNaN(ms)) return (ms/1000)|0; }
   if (e?.dateEvent && e?.strTime){
@@ -85,74 +114,55 @@ function tsFromEvent(e){
   if (e?.dateEvent){ const ms=Date.parse(`${e.dateEvent}T00:00:00Z`); if(!Number.isNaN(ms)) return (ms/1000)|0; }
   return 0;
 }
-
-// ET day helpers
-function addDaysISO(iso, days){
-  const [y,m,d]=iso.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m-1, d));
-  dt.setUTCDate(dt.getUTCDate()+days);
-  const y2=dt.getUTCFullYear(), m2=String(dt.getUTCMonth()+1).padStart(2,"0"), d2=String(dt.getUTCDate()).padStart(2,"0");
-  return `${y2}-${m2}-${d2}`;
+function looksFinal(ev){
+  const status=String(ev?.strStatus??ev?.strProgress??"").toLowerCase();
+  const hasScores=(ev?.intHomeScore!=null && ev?.intAwayScore!=null);
+  if (/^(ft|aot|aet|pen|finished|full time)$/.test(status)) return true;
+  if (/final|finished|ended|complete/.test(status)) return true;
+  return hasScores && !status; // sometimes scores exist but status empty
 }
-function matchesEtDayOrNeighbor(e, gameDateEt){
-  const d  = e?.dateEvent || "";
-  const dl = e?.dateEventLocal || "";
-  const prev = addDaysISO(gameDateEt, -1);
-  const next = addDaysISO(gameDateEt,  1);
-  return (
-    d === gameDateEt || dl === gameDateEt ||
-    d === prev      || dl === prev      ||
-    d === next      || dl === next
-  );
-}
-
-// Kickoff-aware picker (45m tolerance)
 function pickEvent(events, aName, bName, aCode, bCode, kickoff){
-  const TOL = 45 * 60;
   const scored=[];
-  for (const e of events){
+  for (const e of events||[]){
     const h=e?.strHomeTeam, w=e?.strAwayTeam; if(!h||!w) continue;
     const aHome=strongTeamEq(aName,h,aCode), bAway=strongTeamEq(bName,w,bCode);
     const aAway=strongTeamEq(aName,w,aCode), bHome=strongTeamEq(bName,h,bCode);
     const align=Math.max(Math.min(aHome,bAway), Math.min(aAway,bHome));
     if (align>0){
-      const ts=tsFromEvent(e) || (kickoff||0);
-      const delta=Math.abs(ts-(kickoff||ts));
-      const dist = Math.max(0, delta - TOL);
+      const ts=tsFromEvent(e), dist=Math.abs(ts-(kickoff||ts));
       scored.push({e,align,dist});
     }
   }
   scored.sort((x,y)=>(y.align-x.align)||(x.dist-y.dist));
   return scored.length?scored[0].e:null;
 }
-
-function looksFinal(ev){
-  const status=String(ev?.strStatus??ev?.strProgress??"").toLowerCase();
-  const hasScores=(ev?.intHomeScore!=null && ev?.intAwayScore!=null);
-  if (/^(ft|aot|aet|pen|finished|full time)$/.test(status)) return true;
-  if (/final|finished|ended|complete/.test(status)) return true;
-  return hasScores && !status;
-}
-
-function decideWinnerCode(ev, teamAName, teamBName, teamACode, teamBCode){
+function winnerCodeFromScores(ev, teamAName, teamBName, teamACode, teamBCode){
   const hs=Number(ev?.intHomeScore||0), as=Number(ev?.intAwayScore||0);
+  if (!Number.isFinite(hs) || !Number.isFinite(as)) return null;
   if (hs===as) return "TIE";
   const home=ev?.strHomeTeam||"", away=ev?.strAwayTeam||"";
-  const aHome=strongTeamEq(teamAName,home,teamACode), bHome=strongTeamEq(teamBName,home,teamBCode);
-  // if home wins, map whichever contract team aligns more strongly with home
-  if (hs>as) return (aHome>=bHome) ? String(teamACode||"").toUpperCase() : String(teamBCode||"").toUpperCase();
+  const aHome=strongTeamEq(teamAName,home,teamACode);
+  const bHome=strongTeamEq(teamBName,home,teamBCode);
+  // if home wins, pick which contract team maps to home
+  if (hs>as) return (aHome>=bHome) ? teamACode : teamBCode;
   // away wins
-  return (aHome>=bHome) ? String(teamBCode||"").toUpperCase() : String(teamACode||"").toUpperCase();
+  return (aHome>=bHome) ? teamBCode : teamACode;
+}
+function sameScorePair(e1,e2){
+  const a1=Number(e1?.intAwayScore), h1=Number(e1?.intHomeScore);
+  const a2=Number(e2?.intAwayScore), h2=Number(e2?.intHomeScore);
+  return Number.isFinite(a1)&&Number.isFinite(h1)&&Number.isFinite(a2)&&Number.isFinite(h2) && a1===a2 && h1===h2;
 }
 
-/* ---------------------------------- Entry ---------------------------------- */
-
+// --------------- MAIN EXECUTION -----------------
 const N = args.length;
-if (N!==8 && N!==9) throw Error("8 or 9 args required");
+if (N!==8 && N!==9) return Functions.encodeString("ERR"); // strict arity
+
+if (!API_KEY) return Functions.encodeString("ERR");
 
 const leagueLabel = args[0];
-const dateFrom    = args[1]; // ET YYYY-MM-DD
-const _dateTo     = args[2];
+const dateFrom    = args[1]; // ET YYYY-MM-DD (used for season/day filter)
+const dateTo      = args[2];
 const teamACode   = args[3];
 const teamBCode   = args[4];
 const teamAName   = args[5];
@@ -160,44 +170,125 @@ const teamBName   = args[6];
 const lockTime    = Number(args[7]||0);
 const idEventOpt  = N===9 ? String(args[8]||"") : "";
 
-if (!API_KEY) return Functions.encodeString("ERR");
-
 const idLeague = mapLeagueId(leagueLabel);
-let ev = null;
+if (!idLeague) return Functions.encodeString("ERR");
 
-// 1) TEAM/DATE SEARCH FIRST (preferred)
-if (idLeague){
-  // previous/league
+// 1) Primary discovery by teams/dates (previous/league; schedule/league fallback)
+let evPrev = null;
+try {
   const prev = await v2PreviousLeagueEvents(idLeague);
-  ev = pickEvent(prev, teamAName, teamBName, teamACode, teamBCode, lockTime);
+  evPrev = pickEvent(prev, teamAName, teamBName, teamACode, teamBCode, lockTime);
+} catch {}
 
-  // season fallback with ET±1 day window (same-day slice preferred, else closest)
-  if (!ev){
-    const seasons = await v2ListSeasons(idLeague);
-    for (const ssn of seasons.slice(-2).reverse()){
-      const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
-      if (!seasonEvents?.length) continue;
-      const daySlice = seasonEvents.filter(e => matchesEtDayOrNeighbor(e, dateFrom));
-      const pool = daySlice.length ? daySlice : seasonEvents;
-      const cand = pickEvent(pool, teamAName, teamBName, teamACode, teamBCode, lockTime);
-      if (cand){ ev=cand; break; }
+let evSeason = null;
+try {
+  const seasons = await v2ListSeasons(idLeague);
+  // scan last SEASONS_TO_SCAN
+  for (const ssn of seasons.slice(-SEASONS_TO_SCAN).reverse()){
+    const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
+    if (!seasonEvents?.length) continue;
+    const daySlice = seasonEvents.filter(e => (e?.dateEvent || e?.dateEventLocal)===dateFrom);
+    const cand = pickEvent(daySlice.length?daySlice:seasonEvents, teamAName, teamBName, teamACode, teamBCode, lockTime);
+    if (cand){ evSeason=cand; break; }
+  }
+} catch {}
+
+// 2) Optional idEvent (strongly validated and never forces wrong match)
+let evMeta = null, evResults = null;
+if (idEventOpt){
+  try { evResults = await v2LookupEventResults(idEventOpt); } catch {}
+  try { evMeta    = await v2LookupEvent(idEventOpt); } catch {}
+  // Validate idEvent candidate aligns to our teams
+  function aligns(e){
+    if (!e) return false;
+    const h=e.strHomeTeam, w=e.strAwayTeam;
+    const aHome=strongTeamEq(teamAName,h,teamACode), bAway=strongTeamEq(teamBName,w,teamBCode);
+    const aAway=strongTeamEq(teamAName,w,teamACode), bHome=strongTeamEq(teamBName,h,teamBCode);
+    return Math.max(Math.min(aHome,bAway), Math.min(aAway,bHome))>0;
+  }
+  if (evMeta && !aligns(evMeta)) evMeta = null;
+  if (evResults && !aligns(evResults)) evResults = null;
+}
+
+// 3) Build candidate sources & enforce strict consistency
+const sources = [];
+if (evResults) sources.push({ name:"results", ev:evResults });
+if (evMeta)    sources.push({ name:"meta",    ev:evMeta });
+if (evPrev)    sources.push({ name:"prev",    ev:evPrev });
+if (evSeason)  sources.push({ name:"season",  ev:evSeason });
+
+// Must have at least one source
+if (!sources.length) return Functions.encodeString("ERR");
+
+// If requiring results: must exist and be final
+if (REQUIRE_RESULTS) {
+  if (!evResults) return Functions.encodeString("ERR");
+  if (!looksFinal(evResults)) return Functions.encodeString("ERR");
+}
+
+// Every present source must map to same fixture (teams align) and be sensible
+for (const s of sources){
+  const h=s.ev?.strHomeTeam, w=s.ev?.strAwayTeam;
+  if (!h || !w) return Functions.encodeString("ERR");
+  // Require decent alignment (name or code)
+  const aHome=strongTeamEq(teamAName,h,teamACode), bAway=strongTeamEq(teamBName,w,teamBCode);
+  const aAway=strongTeamEq(teamAName,w,teamACode), bHome=strongTeamEq(teamBName,h,teamBCode);
+  const align = Math.max(Math.min(aHome,bAway), Math.min(aAway,bHome));
+  if (align === 0) return Functions.encodeString("ERR");
+}
+
+// If we have both results & meta, their scores must match exactly
+if (evResults && evMeta) {
+  if (!sameScorePair(evResults, evMeta)) return Functions.encodeString("ERR");
+}
+
+// Also: if prev/season picked, ensure their scores (if present) match results/meta
+for (const s of sources){
+  if (s.name==="prev" || s.name==="season"){
+    if (evResults && s.ev?.intHomeScore!=null && s.ev?.intAwayScore!=null){
+      if (!sameScorePair(s.ev, evResults)) return Functions.encodeString("ERR");
+    }
+    if (evMeta && s.ev?.intHomeScore!=null && s.ev?.intAwayScore!=null){
+      if (!sameScorePair(s.ev, evMeta)) return Functions.encodeString("ERR");
     }
   }
 }
 
-// 2) ONLY IF NOT FOUND, TRY idEvent — and accept it only if teams align
-if (!ev && idEventOpt){
-  const cand = (await v2LookupEventResults(idEventOpt)) || (await v2LookupEvent(idEventOpt));
-  if (cand){
-    const aHome=strongTeamEq(teamAName, cand.strHomeTeam, teamACode);
-    const bAway=strongTeamEq(teamBName, cand.strAwayTeam, teamBCode);
-    const aAway=strongTeamEq(teamAName, cand.strAwayTeam, teamACode);
-    const bHome=strongTeamEq(teamBName, cand.strHomeTeam, teamBCode);
-    const align = Math.max(Math.min(aHome,bAway), Math.min(aAway,bHome));
-    if (align>0) ev=cand; // good idEvent for our fixture
+// All good so far. Compute winners from each source that has scores & final.
+const winners = [];
+for (const s of sources){
+  const isFinal = looksFinal(s.ev);
+  const hasScores = (s.ev?.intHomeScore!=null && s.ev?.intAwayScore!=null);
+  if (isFinal && hasScores){
+    const code = winnerCodeFromScores(s.ev, teamAName, teamBName, teamACode, teamBCode);
+    if (code === "TIE" || code === teamACode || code === teamBCode) {
+      winners.push({ src:s.name, code });
+    } else {
+      // Couldn't map winner to contract teams → unsafe
+      return Functions.encodeString("ERR");
+    }
   }
 }
 
-if (!ev || !looksFinal(ev)) return Functions.encodeString("ERR");
+// Need enough agreeing sources
+if (!winners.length) return Functions.encodeString("ERR");
+if (REQUIRE_CONSENSUS && winners.length < MIN_SOURCES) return Functions.encodeString("ERR");
 
-return Functions.encodeString(decideWinnerCode(ev, teamAName, teamBName, teamACode, teamBCode));
+// Build consensus & ensure no disagreement
+const counts = winners.reduce((m, {code}) => (m[code]=(m[code]||0)+1, m), {});
+let top = null, topCount = 0;
+for (const [code,count] of Object.entries(counts)){
+  if (count > topCount){ topCount = count; top = code; }
+}
+if (!top) return Functions.encodeString("ERR");
+
+// If any other code present besides the consensus → unsafe
+const distinctCodes = Object.keys(counts);
+if (distinctCodes.length > 1) {
+  // Allow only if consensus is overwhelming (e.g., all-but-one are same)
+  // For maximum safety, reject any disagreement:
+  return Functions.encodeString("ERR");
+}
+
+// Passed all checks → return the winner code
+return Functions.encodeString(top);
