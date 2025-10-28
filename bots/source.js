@@ -1,9 +1,8 @@
 // Chainlink Functions source script for BlockPools
-// ⬅ Output: winner team code (e.g., "PHI", "NYG") or "TIE" or "ERR"
+// Output: winner team code (e.g., "PHI", "NYG") or "TIE" or "ERR"
 // Order of operations (by design):
-//  1) Find by teams + lockTime (league previous + season fallback)
+//  1) Find by teams + lockTime (league previous + season fallback with ET±1 day)
 //  2) If not found, try idEvent (only accept if teams align)
-// This ensures a bad/dummy idEvent never forces a wrong match.
 
 const V2_BASE = "https://www.thesportsdb.com/api/v2/json";
 const API_KEY = secrets.THESPORTSDB_API_KEY || "";
@@ -23,6 +22,7 @@ function arrFrom(j, keys){
   for (const v of Object.values(j)) if (Array.isArray(v)) return v;
   return [];
 }
+
 async function v2Fetch(path){
   const url = `${V2_BASE}${path}`;
   for (const h of headerVariants){
@@ -33,6 +33,7 @@ async function v2Fetch(path){
   }
   return null;
 }
+
 async function v2PreviousLeagueEvents(idLeague){
   if (!idLeague) return [];
   const j = await v2Fetch(`/schedule/previous/league/${idLeague}`);
@@ -58,6 +59,8 @@ async function v2ScheduleLeagueSeason(idLeague, season){
   return arrFrom(j, ["schedule","events"]);
 }
 
+/* ------------------------------ Matching utils ----------------------------- */
+
 function norm(s){
   return (s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"")
     .replace(/[’'`]/g,"").replace(/[^a-z0-9 ]/gi," ")
@@ -72,6 +75,7 @@ function strongTeamEq(targetName, candidateName, targetCode){
   if (fuzzyName(candidateName, targetName)) return 1;
   return 0;
 }
+
 function tsFromEvent(e){
   if (e?.strTimestamp){ const ms=Date.parse(e.strTimestamp); if(!Number.isNaN(ms)) return (ms/1000)|0; }
   if (e?.dateEvent && e?.strTime){
@@ -81,7 +85,30 @@ function tsFromEvent(e){
   if (e?.dateEvent){ const ms=Date.parse(`${e.dateEvent}T00:00:00Z`); if(!Number.isNaN(ms)) return (ms/1000)|0; }
   return 0;
 }
+
+// ET day helpers
+function addDaysISO(iso, days){
+  const [y,m,d]=iso.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m-1, d));
+  dt.setUTCDate(dt.getUTCDate()+days);
+  const y2=dt.getUTCFullYear(), m2=String(dt.getUTCMonth()+1).padStart(2,"0"), d2=String(dt.getUTCDate()).padStart(2,"0");
+  return `${y2}-${m2}-${d2}`;
+}
+function matchesEtDayOrNeighbor(e, gameDateEt){
+  const d  = e?.dateEvent || "";
+  const dl = e?.dateEventLocal || "";
+  const prev = addDaysISO(gameDateEt, -1);
+  const next = addDaysISO(gameDateEt,  1);
+  return (
+    d === gameDateEt || dl === gameDateEt ||
+    d === prev      || dl === prev      ||
+    d === next      || dl === next
+  );
+}
+
+// Kickoff-aware picker (45m tolerance)
 function pickEvent(events, aName, bName, aCode, bCode, kickoff){
+  const TOL = 45 * 60;
   const scored=[];
   for (const e of events){
     const h=e?.strHomeTeam, w=e?.strAwayTeam; if(!h||!w) continue;
@@ -89,13 +116,16 @@ function pickEvent(events, aName, bName, aCode, bCode, kickoff){
     const aAway=strongTeamEq(aName,w,aCode), bHome=strongTeamEq(bName,h,bCode);
     const align=Math.max(Math.min(aHome,bAway), Math.min(aAway,bHome));
     if (align>0){
-      const ts=tsFromEvent(e), dist=Math.abs(ts-(kickoff||ts));
+      const ts=tsFromEvent(e) || (kickoff||0);
+      const delta=Math.abs(ts-(kickoff||ts));
+      const dist = Math.max(0, delta - TOL);
       scored.push({e,align,dist});
     }
   }
   scored.sort((x,y)=>(y.align-x.align)||(x.dist-y.dist));
   return scored.length?scored[0].e:null;
 }
+
 function looksFinal(ev){
   const status=String(ev?.strStatus??ev?.strProgress??"").toLowerCase();
   const hasScores=(ev?.intHomeScore!=null && ev?.intAwayScore!=null);
@@ -103,18 +133,20 @@ function looksFinal(ev){
   if (/final|finished|ended|complete/.test(status)) return true;
   return hasScores && !status;
 }
+
 function decideWinnerCode(ev, teamAName, teamBName, teamACode, teamBCode){
   const hs=Number(ev?.intHomeScore||0), as=Number(ev?.intAwayScore||0);
   if (hs===as) return "TIE";
   const home=ev?.strHomeTeam||"", away=ev?.strAwayTeam||"";
   const aHome=strongTeamEq(teamAName,home,teamACode), bHome=strongTeamEq(teamBName,home,teamBCode);
-  // if home wins, pick which contract team maps to home
-  if (hs>as) return (aHome>=bHome) ? teamACode : teamBCode;
+  // if home wins, map whichever contract team aligns more strongly with home
+  if (hs>as) return (aHome>=bHome) ? String(teamACode||"").toUpperCase() : String(teamBCode||"").toUpperCase();
   // away wins
-  return (aHome>=bHome) ? teamBCode : teamACode;
+  return (aHome>=bHome) ? String(teamBCode||"").toUpperCase() : String(teamACode||"").toUpperCase();
 }
 
-// ─── ENTRY ────────────────────────────────────────────────────────────────────
+/* ---------------------------------- Entry ---------------------------------- */
+
 const N = args.length;
 if (N!==8 && N!==9) throw Error("8 or 9 args required");
 
@@ -139,14 +171,15 @@ if (idLeague){
   const prev = await v2PreviousLeagueEvents(idLeague);
   ev = pickEvent(prev, teamAName, teamBName, teamACode, teamBCode, lockTime);
 
-  // season fallback (same-day → closest)
+  // season fallback with ET±1 day window (same-day slice preferred, else closest)
   if (!ev){
     const seasons = await v2ListSeasons(idLeague);
     for (const ssn of seasons.slice(-2).reverse()){
       const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
       if (!seasonEvents?.length) continue;
-      const daySlice = seasonEvents.filter(e => (e?.dateEvent || e?.dateEventLocal)===dateFrom);
-      const cand = pickEvent(daySlice.length?daySlice:seasonEvents, teamAName, teamBName, teamACode, teamBCode, lockTime);
+      const daySlice = seasonEvents.filter(e => matchesEtDayOrNeighbor(e, dateFrom));
+      const pool = daySlice.length ? daySlice : seasonEvents;
+      const cand = pickEvent(pool, teamAName, teamBName, teamACode, teamBCode, lockTime);
       if (cand){ ev=cand; break; }
     }
   }
