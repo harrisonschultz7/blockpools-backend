@@ -278,6 +278,18 @@ const v2HeaderVariants: Array<Record<string, string>> = [
   { "X-API-KEY": THESPORTSDB_API_KEY, "X_API_KEY": THESPORTSDB_API_KEY, "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" },
 ];
 
+/* ───── Helpers to tolerate schedule/events/results array keys ───── */
+function firstArrayByKeys(j: any, keys: string[]): any[] {
+  if (!j || typeof j !== "object") return [];
+  for (const k of keys) {
+    const v = j?.[k];
+    if (Array.isArray(v)) return v;
+  }
+  // last-resort: return the first array found at any top-level key
+  for (const v of Object.values(j)) if (Array.isArray(v)) return v;
+  return [];
+}
+
 async function v2Fetch(path: string) {
   const url = `${V2_BASE}${path}`;
   for (const headers of v2HeaderVariants) {
@@ -292,7 +304,11 @@ async function v2Fetch(path: string) {
       try {
         const j = txt ? JSON.parse(txt) : null;
         // treat "{}" or empty as miss
-        if (j && (Object.keys(j).length > 0)) return j;
+        if (j && (Object.keys(j).length > 0)) {
+          const keys = Object.keys(j);
+          console.log(`[v2Fetch] ok ${path} keys=${keys.join(",")}`);
+          return j;
+        }
         console.warn(`[v2Fetch] empty JSON for ${path} with headers variant`);
       } catch (e) {
         console.warn(`[v2Fetch] JSON parse error for ${path}:`, (e as Error).message);
@@ -307,33 +323,33 @@ async function v2Fetch(path: string) {
 async function v2PreviousLeagueEvents(idLeague: string) {
   if (!idLeague) return [];
   const j = await v2Fetch(`/schedule/previous/league/${idLeague}`);
-  return Array.isArray(j?.events) ? j.events : [];
+  return firstArrayByKeys(j, ["schedule", "events"]);
 }
 async function v2LookupEvent(idEvent: string | number) {
   const j = await v2Fetch(`/lookup/event/${encodeURIComponent(String(idEvent))}`);
-  const ev = j?.events;
-  return Array.isArray(ev) && ev.length ? ev[0] : null;
+  const arr = firstArrayByKeys(j, ["events", "schedule", "results"]);
+  return arr.length ? arr[0] : null;
 }
 async function v2LookupEventResults(idEvent: string | number) {
   const j = await v2Fetch(`/lookup/event_results/${encodeURIComponent(String(idEvent))}`);
-  const res = j?.results ?? j?.events ?? null;
-  return Array.isArray(res) && res.length ? res[0] : null;
+  const arr = firstArrayByKeys(j, ["results", "events", "schedule"]);
+  return arr.length ? arr[0] : null;
 }
 async function v2PreviousTeamEvents(idTeam: string) {
   if (!idTeam) return [];
   const j = await v2Fetch(`/schedule/previous/team/${encodeURIComponent(idTeam)}`);
-  return Array.isArray(j?.events) ? j.events : [];
+  return firstArrayByKeys(j, ["schedule", "events"]);
 }
 async function v2ListSeasons(idLeague: string): Promise<string[]> {
   if (!idLeague) return [];
   const j = await v2Fetch(`/list/seasons/${idLeague}`);
-  const arr = Array.isArray(j?.seasons) ? j.seasons : [];
+  const arr = firstArrayByKeys(j, ["seasons"]);
   return arr.map((s: any) => String(s?.strSeason || s)).filter(Boolean);
 }
 async function v2ScheduleLeagueSeason(idLeague: string, season: string) {
   if (!idLeague || !season) return [];
   const j = await v2Fetch(`/schedule/league/${idLeague}/${encodeURIComponent(season)}`);
-  return Array.isArray(j?.events) ? j.events : [];
+  return firstArrayByKeys(j, ["schedule", "events"]);
 }
 
 /* Optional v1 day-slice fallback for FINALITY ONLY */
@@ -352,7 +368,8 @@ async function v1EventsDay(dateISO: string, leagueLabel?: string) {
       const r = await fetch(u, { headers: { "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" } });
       if (!r.ok) continue;
       const j = await r.json().catch(() => null);
-      if (Array.isArray(j?.events) && j.events.length) return j.events;
+      const arr = firstArrayByKeys(j, ["events", "schedule", "results"]);
+      if (arr.length) return arr;
     } catch {}
   }
   return [];
@@ -368,7 +385,7 @@ async function ensureLeagueTeamsCached(idLeague: string) {
     (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
       .replace(/[’'`]/g, "").replace(/[^a-z0-9 ]/gi, " ")
       .replace(/\s+/g, " ").trim().toLowerCase();
-  for (const t of (j?.teams ?? [])) {
+  for (const t of (firstArrayByKeys(j, ["teams"]) as any[])) {
     const n = norm(t?.strTeam || "");
     if (n && t?.idTeam) map.set(n, String(t.idTeam));
   }
