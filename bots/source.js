@@ -1,7 +1,6 @@
 // Chainlink Functions source script for BlockPools
-// Returns a tiny string to keep callback gas low:
-//   "<winner>|<idEvent>|<homeScore>|<awayScore>"
-// where winner is "A" or "B" mapped to your contract's A/B (not home/away).
+// Output: "<winnerAB>|<idEvent>|<homeScore>|<awayScore>"
+// winnerAB is "A" or "B" based on your contract's A/B (not home/away)
 
 const leagueMap = {
   mlb: "4424", nfl: "4391", nba: "4387", nhl: "4380",
@@ -10,7 +9,6 @@ const leagueMap = {
 const V2_BASE = "https://www.thesportsdb.com/api/v2/json";
 const API_KEY = secrets.THESPORTSDB_API_KEY || "";
 
-// Some deployments accept either X-API-KEY or X_API_KEY
 const headerVariants = [
   { "X-API-KEY": API_KEY, "Accept": "application/json", "User-Agent": "blockpools-functions/1.0" },
   { "X_API_KEY": API_KEY, "Accept": "application/json", "User-Agent": "blockpools-functions/1.0" },
@@ -22,8 +20,8 @@ function mapLeagueId(lbl) {
   return leagueMap[k] || "";
 }
 
-// ---------- helpers ----------
-function firstArrayByKeys(j, keys) {
+// ---------- HTTP helpers ----------
+function arrFrom(j, keys) {
   if (!j || typeof j !== "object") return [];
   for (const k of keys) {
     const v = j?.[k];
@@ -47,28 +45,29 @@ async function v2Fetch(path) {
 async function v2PreviousLeagueEvents(idLeague) {
   if (!idLeague) return [];
   const j = await v2Fetch(`/schedule/previous/league/${idLeague}`);
-  return firstArrayByKeys(j, ["schedule", "events"]);
+  return arrFrom(j, ["schedule", "events"]);
 }
 async function v2LookupEvent(idEvent) {
   const j = await v2Fetch(`/lookup/event/${encodeURIComponent(String(idEvent))}`);
-  const arr = firstArrayByKeys(j, ["events", "schedule", "results", "lookup"]);
+  const arr = arrFrom(j, ["events", "schedule", "results", "lookup"]);
   return arr.length ? arr[0] : null;
 }
 async function v2LookupEventResults(idEvent) {
   const j = await v2Fetch(`/lookup/event_results/${encodeURIComponent(String(idEvent))}`);
-  const arr = firstArrayByKeys(j, ["results", "events", "schedule"]);
+  const arr = arrFrom(j, ["results", "events", "schedule"]);
   return arr.length ? arr[0] : null;
 }
 async function v2ListSeasons(idLeague) {
   const j = await v2Fetch(`/list/seasons/${idLeague}`);
-  const arr = firstArrayByKeys(j, ["seasons"]);
+  const arr = arrFrom(j, ["seasons"]);
   return arr.map((s) => String(s?.strSeason || s)).filter(Boolean);
 }
 async function v2ScheduleLeagueSeason(idLeague, season) {
   const j = await v2Fetch(`/schedule/league/${idLeague}/${encodeURIComponent(season)}`);
-  return firstArrayByKeys(j, ["schedule", "events"]);
+  return arrFrom(j, ["schedule", "events"]);
 }
 
+// ---------- matching helpers (code > exact name > fuzzy) ----------
 function norm(s) {
   return (s || "")
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -78,11 +77,26 @@ function norm(s) {
     .trim()
     .toLowerCase();
 }
-function sameTeam(a, b) {
-  const x = norm(a), y = norm(b);
-  if (!x || !y) return false;
-  return x === y || x.includes(y) || y.includes(x);
+function eqCode(a, b) {
+  if (!a || !b) return false;
+  return String(a).trim().toUpperCase() === String(b).trim().toUpperCase();
 }
+function eqName(a, b) {
+  const x = norm(a), y = norm(b);
+  return !!x && !!y && x === y;
+}
+function fuzzyName(a, b) {
+  const x = norm(a), y = norm(b);
+  return !!x && !!y && (x.includes(y) || y.includes(x));
+}
+function strongTeamEq(target, candidate, targetCode) {
+  // priority: exact code > exact name > fuzzy
+  if (eqCode(candidate, targetCode)) return 3;
+  if (eqName(candidate, target))   return 2;
+  if (fuzzyName(candidate, target))return 1;
+  return 0;
+}
+
 function tsFromEvent(e) {
   if (e?.strTimestamp) {
     const ms = Date.parse(e.strTimestamp);
@@ -99,89 +113,84 @@ function tsFromEvent(e) {
   }
   return 0;
 }
-function pickClosestByKickoff(events, aName, bName, kickoff) {
-  const cand = events.filter((e) => {
+
+// pick event closest to kickoff that ALSO aligns with A/B vs home/away using strong matching
+function pickEvent(events, aName, bName, aCode, bCode, kickoff) {
+  const scored = [];
+  for (const e of events) {
     const h = e?.strHomeTeam, w = e?.strAwayTeam;
-    return (sameTeam(h, aName) && sameTeam(w, bName)) || (sameTeam(h, bName) && sameTeam(w, aName));
-  });
-  cand.sort((x, y) => Math.abs(tsFromEvent(x) - kickoff) - Math.abs(tsFromEvent(y) - kickoff));
-  return cand[0] || null;
+    if (!h || !w) continue;
+
+    // two possible alignments: A=home,B=away OR A=away,B=home
+    const aHome = strongTeamEq(aName, h, aCode);
+    const bAway = strongTeamEq(bName, w, bCode);
+    const aAway = strongTeamEq(aName, w, aCode);
+    const bHome = strongTeamEq(bName, h, bCode);
+
+    // require a non-zero match on both sides for a valid alignment
+    const align1 = Math.min(aHome, bAway); // A->home, B->away
+    const align2 = Math.min(aAway, bHome); // A->away, B->home
+    const align = Math.max(align1, align2);
+
+    if (align > 0) {
+      const ts = tsFromEvent(e);
+      const dist = Math.abs(ts - (kickoff || ts));
+      // sort by alignment strength desc, then time distance asc
+      scored.push({ e, align, dist });
+    }
+  }
+  scored.sort((x, y) => (y.align - x.align) || (x.dist - y.dist));
+  return scored.length ? scored[0].e : null;
 }
+
 function looksFinal(ev) {
   const status = String(ev?.strStatus ?? ev?.strProgress ?? "").toLowerCase();
   const hasScores = (ev?.intHomeScore != null && ev?.intAwayScore != null);
   if (/^(ft|aot|aet|pen|finished|full time)$/.test(status)) return true;
   if (/final|finished|ended|complete/.test(status)) return true;
-  return hasScores && !status; // some feeds omit status when final but scores set
+  return hasScores && !status;
 }
 
-// Map event (home/away) winner to contract "A" or "B"
-function winnerABFromEvent(ev, teamAName, teamBName, teamACode, teamBCode) {
+// Map (home/away) → contract A/B using strong matching rules consistently
+function winnerAB(ev, aName, bName, aCode, bCode) {
   const homeName = ev?.strHomeTeam || "";
   const awayName = ev?.strAwayTeam || "";
   const hs = ev?.intHomeScore != null ? Number(ev.intHomeScore) : null;
   const as = ev?.intAwayScore != null ? Number(ev.intAwayScore) : null;
+  if (hs == null || as == null) return { w: "", hs: 0, as: 0 };
 
-  if (hs == null || as == null) return { winner: "", hs: 0, as: 0 };
+  // decide which side is home/away using the same scoring
+  const aHome = strongTeamEq(aName, homeName, aCode);
+  const bAway = strongTeamEq(bName, awayName, bCode);
+  const aAway = strongTeamEq(aName, awayName, aCode);
+  const bHome = strongTeamEq(bName, homeName, bCode);
 
-  // Determine which contract side (A/B) is home/away.
-  // Prefer name match, then fall back to codes.
-  const homeIsA = sameTeam(homeName, teamAName) || sameTeam(homeName, teamACode);
-  const homeIsB = sameTeam(homeName, teamBName) || sameTeam(homeName, teamBCode);
-  const awayIsA = sameTeam(awayName, teamAName) || sameTeam(awayName, teamACode);
-  const awayIsB = sameTeam(awayName, teamBName) || sameTeam(awayName, teamBCode);
+  // prefer the alignment with higher min-score
+  const align1 = Math.min(aHome, bAway); // A->home
+  const align2 = Math.min(aAway, bHome); // A->away
 
-  // If we can confidently map:
-  if (homeIsA || awayIsA || homeIsB || awayIsB) {
-    // Winner by score
-    if (hs > as) {
-      // Home wins
-      if (homeIsA) return { winner: "A", hs, as };
-      if (homeIsB) return { winner: "B", hs, as };
-    } else if (as > hs) {
-      // Away wins
-      if (awayIsA) return { winner: "A", hs, as };
-      if (awayIsB) return { winner: "B", hs, as };
-    } else {
-      // draw/tie
-      return { winner: "D", hs, as }; // if your contract treats draws specially
-    }
+  let aIsHome = false;
+  if (align1 > align2) aIsHome = true;
+  else if (align2 > align1) aIsHome = false;
+  else {
+    // tie: break by higher single-side strength, then default to name equality
+    const homeBias = Math.max(aHome, bHome);
+    const awayBias = Math.max(aAway, bAway);
+    if (homeBias !== awayBias) aIsHome = aHome >= bHome; // if A matches home stronger, A->home
+    else aIsHome = eqName(homeName, aName); // final tiny nudge
   }
 
-  // Fallback: do a looser compare using names only
-  if (sameTeam(homeName, teamAName)) {
-    if (hs > as) return { winner: "A", hs, as };
-    if (as > hs) return { winner: "B", hs, as };
-    return { winner: "D", hs, as };
-  }
-  if (sameTeam(homeName, teamBName)) {
-    if (hs > as) return { winner: "B", hs, as };
-    if (as > hs) return { winner: "A", hs, as };
-    return { winner: "D", hs, as };
-  }
-  if (sameTeam(awayName, teamAName)) {
-    if (as > hs) return { winner: "A", hs, as };
-    if (hs > as) return { winner: "B", hs, as };
-    return { winner: "D", hs, as };
-  }
-  if (sameTeam(awayName, teamBName)) {
-    if (as > hs) return { winner: "B", hs, as };
-    if (hs > as) return { winner: "A", hs, as };
-    return { winner: "D", hs, as };
-  }
-
-  // Unknown mapping
-  return { winner: "", hs, as };
+  if (hs > as) return { w: aIsHome ? "A" : "B", hs, as };
+  if (as > hs) return { w: aIsHome ? "B" : "A", hs, as };
+  return { w: "D", hs, as }; // draw support if needed by your contract
 }
 
 // ---------- ENTRY ----------
 const N = args.length;
-if (N !== 8 && N !== 9) {
-  throw Error("8 or 9 args required");
-}
+if (N !== 8 && N !== 9) throw Error("8 or 9 args required");
 
 const leagueLabel = args[0];
-const dateFrom    = args[1]; // ET Y-M-D (used in season day slice)
+const dateFrom    = args[1]; // ET Y-M-D
 const _dateTo     = args[2];
 const teamACode   = args[3];
 const teamBCode   = args[4];
@@ -190,49 +199,38 @@ const teamBName   = args[6];
 const lockTime    = Number(args[7] || 0);
 const idEventOpt  = N === 9 ? String(args[8] || "") : "";
 
-if (!API_KEY) throw Error("missing THESPORTSDB_API_KEY in secrets");
+if (!API_KEY) return Functions.encodeString("ERR|missing_key|||");
 
 const idLeague = mapLeagueId(leagueLabel);
 let ev = null;
 
-// 1) direct ID (results first, then event)
+// 1) direct id
 if (idEventOpt) {
   ev = (await v2LookupEventResults(idEventOpt)) || (await v2LookupEvent(idEventOpt));
 }
 
-// 2) previous/league by kickoff proximity
+// 2) previous/league with strong alignment filter
 if (!ev && idLeague) {
   const prev = await v2PreviousLeagueEvents(idLeague);
-  ev = pickClosestByKickoff(prev, teamAName, teamBName, lockTime);
+  ev = pickEvent(prev, teamAName, teamBName, teamACode, teamBCode, lockTime);
 }
 
-// 3) season schedule day-slice fallback (handles >10 previous)
+// 3) season fallback for the day (handles >10 previous)
 if (!ev && idLeague) {
   const seasons = await v2ListSeasons(idLeague);
   for (const ssn of seasons.slice(-2).reverse()) {
     const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
     if (!seasonEvents?.length) continue;
     const daySlice = seasonEvents.filter((e) => (e?.dateEvent || e?.dateEventLocal) === dateFrom);
-    const cand = pickClosestByKickoff(daySlice.length ? daySlice : seasonEvents, teamAName, teamBName, lockTime);
+    const cand = pickEvent(daySlice.length ? daySlice : seasonEvents, teamAName, teamBName, teamACode, teamBCode, lockTime);
     if (cand) { ev = cand; break; }
   }
 }
 
-if (!ev) {
-  // tiny error string to keep gas low
-  return Functions.encodeString("ERR|no_event|||");
-}
+if (!ev) return Functions.encodeString("ERR|no_event|||");
+if (!looksFinal(ev)) return Functions.encodeString(`ERR|not_final|${String(ev.idEvent||"")}|${ev.intHomeScore ?? ""}|${ev.intAwayScore ?? ""}`);
 
-if (!looksFinal(ev)) {
-  return Functions.encodeString(`ERR|not_final|${String(ev.idEvent||"")}|${ev.intHomeScore ?? ""}|${ev.intAwayScore ?? ""}`);
-}
+const { w, hs, as } = winnerAB(ev, teamAName, teamBName, teamACode, teamBCode);
+if (!w) return Functions.encodeString(`ERR|map_fail|${String(ev.idEvent||"")}|${hs}|${as}`);
 
-// Winner → A/B mapping
-const { winner, hs, as } = winnerABFromEvent(ev, teamAName, teamBName, teamACode, teamBCode);
-if (!winner) {
-  // Couldn’t map to A/B (names changed etc.)
-  return Functions.encodeString(`ERR|map_fail|${String(ev.idEvent||"")}|${hs}|${as}`);
-}
-
-// SUCCESS — tiny payload
-return Functions.encodeString(`${winner}|${String(ev.idEvent||"")}|${hs}|${as}`);
+return Functions.encodeString(`${w}|${String(ev.idEvent||"")}|${hs}|${as}`);
