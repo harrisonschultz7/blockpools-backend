@@ -1,6 +1,6 @@
 // Chainlink Functions source script for BlockPools
-// Output: "<winnerAB>|<idEvent>|<homeScore>|<awayScore>"
-// winnerAB is "A" or "B" based on your contract's A/B (not home/away)
+// Output: the winner's team code (e.g. "PHI" or "NYG")
+// or "TIE" if scores are equal, or "ERR" if nothing final found.
 
 const leagueMap = {
   mlb: "4424", nfl: "4391", nba: "4387", nhl: "4380",
@@ -20,7 +20,7 @@ function mapLeagueId(lbl) {
   return leagueMap[k] || "";
 }
 
-// ---------- HTTP helpers ----------
+// ---------- helpers ----------
 function arrFrom(j, keys) {
   if (!j || typeof j !== "object") return [];
   for (const k of keys) {
@@ -67,7 +67,6 @@ async function v2ScheduleLeagueSeason(idLeague, season) {
   return arrFrom(j, ["schedule", "events"]);
 }
 
-// ---------- matching helpers (code > exact name > fuzzy) ----------
 function norm(s) {
   return (s || "")
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -90,10 +89,9 @@ function fuzzyName(a, b) {
   return !!x && !!y && (x.includes(y) || y.includes(x));
 }
 function strongTeamEq(target, candidate, targetCode) {
-  // priority: exact code > exact name > fuzzy
   if (eqCode(candidate, targetCode)) return 3;
-  if (eqName(candidate, target))   return 2;
-  if (fuzzyName(candidate, target))return 1;
+  if (eqName(candidate, target)) return 2;
+  if (fuzzyName(candidate, target)) return 1;
   return 0;
 }
 
@@ -114,28 +112,21 @@ function tsFromEvent(e) {
   return 0;
 }
 
-// pick event closest to kickoff that ALSO aligns with A/B vs home/away using strong matching
 function pickEvent(events, aName, bName, aCode, bCode, kickoff) {
   const scored = [];
   for (const e of events) {
     const h = e?.strHomeTeam, w = e?.strAwayTeam;
     if (!h || !w) continue;
-
-    // two possible alignments: A=home,B=away OR A=away,B=home
     const aHome = strongTeamEq(aName, h, aCode);
     const bAway = strongTeamEq(bName, w, bCode);
     const aAway = strongTeamEq(aName, w, aCode);
     const bHome = strongTeamEq(bName, h, bCode);
-
-    // require a non-zero match on both sides for a valid alignment
-    const align1 = Math.min(aHome, bAway); // A->home, B->away
-    const align2 = Math.min(aAway, bHome); // A->away, B->home
+    const align1 = Math.min(aHome, bAway);
+    const align2 = Math.min(aAway, bHome);
     const align = Math.max(align1, align2);
-
     if (align > 0) {
       const ts = tsFromEvent(e);
       const dist = Math.abs(ts - (kickoff || ts));
-      // sort by alignment strength desc, then time distance asc
       scored.push({ e, align, dist });
     }
   }
@@ -151,46 +142,12 @@ function looksFinal(ev) {
   return hasScores && !status;
 }
 
-// Map (home/away) → contract A/B using strong matching rules consistently
-function winnerAB(ev, aName, bName, aCode, bCode) {
-  const homeName = ev?.strHomeTeam || "";
-  const awayName = ev?.strAwayTeam || "";
-  const hs = ev?.intHomeScore != null ? Number(ev.intHomeScore) : null;
-  const as = ev?.intAwayScore != null ? Number(ev.intAwayScore) : null;
-  if (hs == null || as == null) return { w: "", hs: 0, as: 0 };
-
-  // decide which side is home/away using the same scoring
-  const aHome = strongTeamEq(aName, homeName, aCode);
-  const bAway = strongTeamEq(bName, awayName, bCode);
-  const aAway = strongTeamEq(aName, awayName, aCode);
-  const bHome = strongTeamEq(bName, homeName, bCode);
-
-  // prefer the alignment with higher min-score
-  const align1 = Math.min(aHome, bAway); // A->home
-  const align2 = Math.min(aAway, bHome); // A->away
-
-  let aIsHome = false;
-  if (align1 > align2) aIsHome = true;
-  else if (align2 > align1) aIsHome = false;
-  else {
-    // tie: break by higher single-side strength, then default to name equality
-    const homeBias = Math.max(aHome, bHome);
-    const awayBias = Math.max(aAway, bAway);
-    if (homeBias !== awayBias) aIsHome = aHome >= bHome; // if A matches home stronger, A->home
-    else aIsHome = eqName(homeName, aName); // final tiny nudge
-  }
-
-  if (hs > as) return { w: aIsHome ? "A" : "B", hs, as };
-  if (as > hs) return { w: aIsHome ? "B" : "A", hs, as };
-  return { w: "D", hs, as }; // draw support if needed by your contract
-}
-
 // ---------- ENTRY ----------
 const N = args.length;
 if (N !== 8 && N !== 9) throw Error("8 or 9 args required");
 
 const leagueLabel = args[0];
-const dateFrom    = args[1]; // ET Y-M-D
+const dateFrom    = args[1];
 const _dateTo     = args[2];
 const teamACode   = args[3];
 const teamBCode   = args[4];
@@ -199,7 +156,7 @@ const teamBName   = args[6];
 const lockTime    = Number(args[7] || 0);
 const idEventOpt  = N === 9 ? String(args[8] || "") : "";
 
-if (!API_KEY) return Functions.encodeString("ERR|missing_key|||");
+if (!API_KEY) return Functions.encodeString("ERR");
 
 const idLeague = mapLeagueId(leagueLabel);
 let ev = null;
@@ -209,13 +166,13 @@ if (idEventOpt) {
   ev = (await v2LookupEventResults(idEventOpt)) || (await v2LookupEvent(idEventOpt));
 }
 
-// 2) previous/league with strong alignment filter
+// 2) previous/league
 if (!ev && idLeague) {
   const prev = await v2PreviousLeagueEvents(idLeague);
   ev = pickEvent(prev, teamAName, teamBName, teamACode, teamBCode, lockTime);
 }
 
-// 3) season fallback for the day (handles >10 previous)
+// 3) season fallback
 if (!ev && idLeague) {
   const seasons = await v2ListSeasons(idLeague);
   for (const ssn of seasons.slice(-2).reverse()) {
@@ -227,10 +184,23 @@ if (!ev && idLeague) {
   }
 }
 
-if (!ev) return Functions.encodeString("ERR|no_event|||");
-if (!looksFinal(ev)) return Functions.encodeString(`ERR|not_final|${String(ev.idEvent||"")}|${ev.intHomeScore ?? ""}|${ev.intAwayScore ?? ""}`);
+if (!ev || !looksFinal(ev)) return Functions.encodeString("ERR");
 
-const { w, hs, as } = winnerAB(ev, teamAName, teamBName, teamACode, teamBCode);
-if (!w) return Functions.encodeString(`ERR|map_fail|${String(ev.idEvent||"")}|${hs}|${as}`);
+// Determine winner code
+const hs = Number(ev.intHomeScore || 0);
+const as = Number(ev.intAwayScore || 0);
+let winnerCode = "";
+if (hs === as) winnerCode = "TIE";
+else {
+  // Map home/away -> contract team codes
+  const homeMatchA = strongTeamEq(teamAName, ev.strHomeTeam, teamACode);
+  const homeMatchB = strongTeamEq(teamBName, ev.strHomeTeam, teamBCode);
+  if (hs > as) {
+    winnerCode = homeMatchA >= homeMatchB ? teamACode : teamBCode;
+  } else {
+    // away wins
+    winnerCode = homeMatchA >= homeMatchB ? teamBCode : teamACode;
+  }
+}
 
-return Functions.encodeString(`${w}|${String(ev.idEvent||"")}|${hs}|${as}`);
+return Functions.encodeString(winnerCode || "ERR");
