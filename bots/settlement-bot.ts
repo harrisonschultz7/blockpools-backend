@@ -468,6 +468,121 @@ function looksFinal(ev: any) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
+   >>> PRE-FLIGHT GUARDS (strict)
+────────────────────────────────────────────────────────────────────────────── */
+// Drift window around lockTime. Default 2h if env not set.
+const MAX_EVENT_DRIFT_SECS = Number(process.env.MAX_EVENT_DRIFT_SECS || (2 * 3600));
+// Require the event to be on the same calendar day (UTC) as lockTime’s day.
+const REQUIRE_SAME_DAY = (process.env.REQUIRE_SAME_DAY || "1") !== "0";
+
+// League whitelist (must match regular season leagues)
+const ALLOWABLE_LEAGUE_IDS: Record<string, string> = {
+  nfl: "4391",
+  mlb: "4424",
+  nba: "4387",
+  nhl: "4380",
+  epl: "4328",
+  ucl: "4480",
+};
+
+function sameLeagueId(e: any, expected: string) {
+  return String(e?.idLeague || "") === String(expected || "");
+}
+
+function sameDayUTC(tsA: number, tsB: number) {
+  const a = new Date(tsA * 1000).toISOString().slice(0, 10);
+  const b = new Date(tsB * 1000).toISOString().slice(0, 10);
+  return a === b;
+}
+
+function unorderedTeamsMatch(providerHome?: string, providerAway?: string, aName?: string, bName?: string, aCode?: string, bCode?: string) {
+  const alias = (s?: string) => String(s ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+  const pH = alias(providerHome), pA = alias(providerAway);
+  const A1 = alias(aName) || alias(aCode);
+  const B1 = alias(bName) || alias(bCode);
+  const provider = new Set([pH, pA]);
+  const local    = new Set([A1, B1]);
+  return provider.size === local.size && [...provider].every(v => local.has(v));
+}
+
+function isFinalStatus(s?: string) {
+  const t = String(s ?? "").toLowerCase();
+  return /^(ft|aet|aot|pen|finished|full time)$/.test(t) || /final|finished|ended|complete/.test(t);
+}
+
+/**
+ * Hard preflight: find a single event that is:
+ * - correct league
+ * - has a real timestamp
+ * - same-day (UTC) as lockTime (if REQUIRE_SAME_DAY)
+ * - within ±MAX_EVENT_DRIFT_SECS of lockTime
+ * - unordered team match
+ * - final by provider
+ */
+async function confirmFinalInWindow(params: {
+  leagueLabel: string;
+  idEvent?: string | number;
+  lockTime: number;
+  dateFromISO: string;          // "YYYY-MM-DD"
+  teamAName: string; teamBName: string;
+  teamACode: string; teamBCode: string;
+}): Promise<{ ok: boolean; reason?: string; ev?: any; idUsed?: string }> {
+  const league = String(params.leagueLabel || "").toLowerCase();
+  const expectedLeagueId = ALLOWABLE_LEAGUE_IDS[league];
+  if (!expectedLeagueId) return { ok: false, reason: "bad league" };
+
+  const candidates: any[] = [];
+
+  // 1) idEvent fast-path (both endpoints)
+  if (params.idEvent) {
+    const rResults = await v2LookupEventResults(params.idEvent);
+    const rMeta    = await v2LookupEvent(params.idEvent);
+    if (rResults) candidates.push(rResults);
+    if (rMeta)    candidates.push(rMeta);
+  }
+
+  // 2) League previous slice (broad net)
+  const idLeague = mapLeagueId(league);
+  if (idLeague) {
+    const prev = await v2PreviousLeagueEvents(idLeague);
+    for (const e of prev || []) candidates.push(e);
+  }
+
+  // Dedup by idEvent or signature
+  const seen = new Set<string>();
+  const uniq: any[] = [];
+  for (const e of candidates) {
+    const sig = String(e?.idEvent ?? `${e?.strHomeTeam}-${e?.strAwayTeam}-${e?.dateEvent}-${e?.strTime}`);
+    if (!seen.has(sig)) { seen.add(sig); uniq.push(e); }
+  }
+
+  // Apply all hard gates
+  const lockTs = params.lockTime;
+  for (const e of uniq) {
+    if (!sameLeagueId(e, expectedLeagueId)) continue;
+
+    const eTs = tsFromEvent(e);
+    if (!eTs) continue;                                    // must have real timestamp
+
+    if (REQUIRE_SAME_DAY) {
+      const lockDayTs = Date.parse(`${params.dateFromISO}T00:00:00Z`) / 1000;
+      if (!sameDayUTC(eTs, lockDayTs)) continue;           // same UTC day as pool
+    }
+
+    if (Math.abs(eTs - lockTs) > MAX_EVENT_DRIFT_SECS) continue; // tight drift window
+
+    if (!unorderedTeamsMatch(e.strHomeTeam, e.strAwayTeam, params.teamAName, params.teamBName, params.teamACode, params.teamBCode)) continue;
+
+    const status = e?.strStatus ?? e?.strProgress ?? "";
+    if (!isFinalStatus(status)) continue;                  // must be final
+
+    return { ok: true, ev: e, idUsed: String(e?.idEvent || "") };
+  }
+
+  return { ok: false, reason: "no final in-window match" };
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
    Error decoding
 ────────────────────────────────────────────────────────────────────────────── */
 const FUNCTIONS_ROUTER_ERRORS = [
@@ -501,6 +616,7 @@ async function main() {
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
   console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
   console.log(`[CFG] ALLOW_V1_FALLBACK=${ALLOW_V1_FALLBACK}`);
+  console.log(`[CFG] MAX_EVENT_DRIFT_SECS=${MAX_EVENT_DRIFT_SECS} REQUIRE_SAME_DAY=${REQUIRE_SAME_DAY ? 1 : 0}`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
@@ -586,7 +702,7 @@ async function main() {
   );
   if (!timeGated.length) { console.log("No eligible pools after gates. Submitted 0 transaction(s)."); return; }
 
-  /* STEP 2: Provider finality checks (v2-first, v1 optional fallback) */
+  /* STEP 2: Provider finality checks — with strict preflight */
   let finalEligible: PoolState[] = timeGated;
   if (REQUIRE_FINAL_CHECK) {
     if (!THESPORTSDB_API_KEY) { console.log("REQUIRE_FINAL_CHECK=1 but no THESPORTSDB_API_KEY set. Skipping to avoid wasted LINK."); return; }
@@ -608,70 +724,25 @@ async function main() {
     const eligible: PoolState[] = [];
     for (const s of timeGated) {
       const idLeague = mapLeagueId(s.league);
-      let ev: any | null = null;
-      let mark = "none";
 
-      // Try to resolve an event ID fast-path
+      // Try to fetch an idEvent (optional) just to speed up provider calls
       const dynId = await resolveEventIdIfMissing(s);
-      if (dynId) {
-        const byId = (await v2LookupEventResults(dynId)) || (await v2LookupEvent(dynId));
-        if (byId) { ev = byId; mark = "id_lookup"; }
-      }
 
-      // previous/league (cached)
-      if (!ev) {
-        const prev = prevCache.get(idLeague) || [];
-        ev = pickClosestByKickoff(prev, s.teamAName, s.teamBName, s.lockTime);
-        mark = ev ? "prev_league_match" : "no_prev_match";
-      }
+      // >>> PRE-FLIGHT GUARDS: never send unless final & in-window & same-day
+      const pre = await confirmFinalInWindow({
+        leagueLabel: s.league,
+        idEvent: dynId || s.tsdbEventId,
+        lockTime: s.lockTime,
+        dateFromISO: epochToEtISO(s.lockTime),
+        teamAName: s.teamAName, teamBName: s.teamBName,
+        teamACode: s.teamACode, teamBCode: s.teamBCode,
+      });
 
-      // previous/team
-      if (!ev) {
-        await ensureLeagueTeamsCached(idLeague);
-        const idTeamA = findIdTeam(idLeague, s.teamAName);
-        const idTeamB = findIdTeam(idLeague, s.teamBName);
-        const pools: any[] = [];
-        if (idTeamA) pools.push(v2PreviousTeamEvents(idTeamA));
-        if (idTeamB) pools.push(v2PreviousTeamEvents(idTeamB));
-        if (pools.length) {
-          const results = (await Promise.all(pools)).flat();
-          ev = pickClosestByKickoff(results, s.teamAName, s.teamBName, s.lockTime, idTeamA, idTeamB);
-          mark = ev ? "prev_team_match" : "no_team_match";
-        }
-      }
-
-      // season fallback with ET±1d window
-      if (!ev) {
-        const gameDate = epochToEtISO(s.lockTime);
-        const seasons = await v2ListSeasons(idLeague);
-        for (const ssn of seasons.slice(-2).reverse()) {
-          const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
-          if (!seasonEvents?.length) continue;
-          const daySlice = seasonEvents.filter((e: any) => matchesEtDayOrNeighbor(e, gameDate));
-          const pool = daySlice.length ? daySlice : seasonEvents;
-          await ensureLeagueTeamsCached(idLeague);
-          const idTeamA = findIdTeam(idLeague, s.teamAName);
-          const idTeamB = findIdTeam(idLeague, s.teamBName);
-          const candidate = pickClosestByKickoff(pool, s.teamAName, s.teamBName, s.lockTime, idTeamA, idTeamB);
-          if (candidate) { ev = candidate; mark = daySlice.length ? "season_day_match" : "season_closest"; break; }
-        }
-      }
-
-      // OPTIONAL v1 DAY FALLBACK (finality only)
-      if (!ev && ALLOW_V1_FALLBACK) {
-        const gameDate = epochToEtISO(s.lockTime);
-        const v1 = await v1EventsDay(gameDate, s.league);
-        if (v1?.length) {
-          ev = pickClosestByKickoff(v1, s.teamAName, s.teamBName, s.lockTime);
-          mark = ev ? "v1_day_match" : "v1_no_match";
-        }
-      }
-
-      if (ev && looksFinal(ev)) {
-        console.log(`[OK] Final via ${mark}: ${s.league} ${s.teamAName} vs ${s.teamBName} (idEvent=${ev?.idEvent || "?"})`);
+      if (pre.ok) {
+        console.log(`[OK] Final via preflight: ${s.league} ${s.teamAName} vs ${s.teamBName} (idEvent=${pre.idUsed || "?"})`);
         eligible.push(s);
       } else {
-        console.log(`[SKIP] Not final by provider (${s.league} ${s.teamAName} vs ${s.teamBName}) via ${mark} status="${String(ev?.strStatus||ev?.strProgress||"")}"`);
+        console.log(`[SKIP PRE] ${s.league} ${s.teamAName} vs ${s.teamBName}: ${pre.reason}`);
       }
     }
 
