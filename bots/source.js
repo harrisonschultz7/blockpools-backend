@@ -65,7 +65,7 @@ async function v2LookupEvent(idEvent){
 }
 async function v2LookupEventResults(idEvent){
   const j = await v2Fetch(`/lookup/event_results/${encodeURIComponent(String(idEvent))}`);
-  const a = arrFrom(j, ["results","events","schedule"]);
+  const a = arrFrom(j, ["results","events","schedule","lookup"]);
   return a.length ? a[0] : null;
 }
 async function v2ListSeasons(idLeague){
@@ -89,7 +89,7 @@ async function v1EventsDay(dateISO, leagueLabel){
   return [];
 }
 
-// ---------------- Matching & evaluation helpers ----------------
+// ---------------- Normalization + aliasing ----------------
 function norm(s){
   return (s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"")
     .replace(/[’'`]/g,"").replace(/[^a-z0-9 ]/gi," ")
@@ -105,6 +105,47 @@ function strongTeamEq(targetName, candidateName, targetCode){
   if (fuzzyName(candidateName, targetName)) return 1;
   return 0;
 }
+
+// Alias map for common short codes / variations
+const TEAM_ALIASES = new Map([
+  ["AFC BOURNEMOUTH","AFC BOURNEMOUTH"],
+  ["BOURNEMOUTH","AFC BOURNEMOUTH"],
+  ["AFCB","AFC BOURNEMOUTH"],
+  ["NOTTINGHAM FOREST","NOTTINGHAM FOREST"],
+  ["NOTTINGHAM","NOTTINGHAM FOREST"],
+  ["N FOREST","NOTTINGHAM FOREST"],
+  ["NF","NOTTINGHAM FOREST"],
+]);
+function canon(s){ return String(s ?? "").normalize("NFKD").toUpperCase().replace(/\s+/g," ").trim(); }
+function aliasName(raw){ const c = canon(raw); return TEAM_ALIASES.get(c) || c; }
+function sameTeam(a,b){ return aliasName(a) === aliasName(b); }
+
+/**
+ * Order-agnostic team matcher.
+ * Returns { ok, reason?, homeIsA? }.
+ * - ok=true when provider(home,away) == {TeamA, TeamB} as a set
+ * - homeIsA tells if provider HOME corresponds to your Team A (true) or Team B (false)
+ */
+function matchTeamsUnordered({
+  providerHome, providerAway,
+  teamAName, teamBName, teamACode, teamBCode
+}){
+  const pH = aliasName(providerHome);
+  const pA = aliasName(providerAway);
+  const A  = aliasName(teamAName) || aliasName(teamACode);
+  const B  = aliasName(teamBName) || aliasName(teamBCode);
+
+  const setProvider = new Set([pH, pA]);
+  const setLocal    = new Set([A, B]);
+  const setsEqual   = setProvider.size === setLocal.size && [...setProvider].every(v => setLocal.has(v));
+  if (!setsEqual){
+    return { ok:false, reason:`Team set mismatch: provider={${pH}, ${pA}} local={${A}, ${B}}` };
+  }
+  if (sameTeam(pH, A)) return { ok:true, homeIsA:true };
+  if (sameTeam(pH, B)) return { ok:true, homeIsA:false };
+  return { ok:false, reason:"Ambiguous mapping for home team" };
+}
+
 function tsFromEvent(e){
   if (e?.strTimestamp){ const ms=Date.parse(e.strTimestamp); if(!Number.isNaN(ms)) return (ms/1000)|0; }
   if (e?.dateEvent && e?.strTime){
@@ -119,45 +160,57 @@ function looksFinal(ev){
   const hasScores=(ev?.intHomeScore!=null && ev?.intAwayScore!=null);
   if (/^(ft|aot|aet|pen|finished|full time)$/.test(status)) return true;
   if (/final|finished|ended|complete/.test(status)) return true;
-  return hasScores && !status; // sometimes scores exist but status empty
+  return hasScores && !status;
 }
+
+// Candidate picker (still helpful when idEvent not provided)
 function pickEvent(events, aName, bName, aCode, bCode, kickoff){
   const scored=[];
   for (const e of events||[]){
     const h=e?.strHomeTeam, w=e?.strAwayTeam; if(!h||!w) continue;
-    const aHome=strongTeamEq(aName,h,aCode), bAway=strongTeamEq(bName,w,bCode);
-    const aAway=strongTeamEq(aName,w,aCode), bHome=strongTeamEq(bName,h,bCode);
-    const align=Math.max(Math.min(aHome,bAway), Math.min(aAway,bHome));
-    if (align>0){
-      const ts=tsFromEvent(e), dist=Math.abs(ts-(kickoff||ts));
-      scored.push({e,align,dist});
-    }
+    // unordered match via set equality
+    const m = matchTeamsUnordered({
+      providerHome:h, providerAway:w,
+      teamAName:aName, teamBName:bName, teamACode:aCode, teamBCode:bCode
+    });
+    if (!m.ok) continue;
+    const ts=tsFromEvent(e), dist=Math.abs(ts-(kickoff||ts));
+    // align score: stronger when we can map home->A/B confidently
+    const align = 1 + (m.homeIsA === true || m.homeIsA === false ? 1 : 0);
+    scored.push({e,align,dist});
   }
   scored.sort((x,y)=>(y.align-x.align)||(x.dist-y.dist));
   return scored.length?scored[0].e:null;
 }
-function winnerCodeFromScores(ev, teamAName, teamBName, teamACode, teamBCode){
-  const hs=Number(ev?.intHomeScore||0), as=Number(ev?.intAwayScore||0);
-  if (!Number.isFinite(hs) || !Number.isFinite(as)) return null;
-  if (hs===as) return "TIE";
-  const home=ev?.strHomeTeam||"", away=ev?.strAwayTeam||"";
-  const aHome=strongTeamEq(teamAName,home,teamACode);
-  const bHome=strongTeamEq(teamBName,home,teamBCode);
-  // if home wins, pick which contract team maps to home
-  if (hs>as) return (aHome>=bHome) ? teamACode : teamBCode;
-  // away wins
-  return (aHome>=bHome) ? teamBCode : teamACode;
-}
+
 function sameScorePair(e1,e2){
   const a1=Number(e1?.intAwayScore), h1=Number(e1?.intHomeScore);
   const a2=Number(e2?.intAwayScore), h2=Number(e2?.intHomeScore);
   return Number.isFinite(a1)&&Number.isFinite(h1)&&Number.isFinite(a2)&&Number.isFinite(h2) && a1===a2 && h1===h2;
 }
 
+function winnerCodeFromSource(ev, teamAName, teamBName, teamACode, teamBCode){
+  const hs = Number(ev?.intHomeScore ?? NaN);
+  const as = Number(ev?.intAwayScore ?? NaN);
+  if (!Number.isFinite(hs) || !Number.isFinite(as)) return null;
+
+  const m = matchTeamsUnordered({
+    providerHome: ev?.strHomeTeam, providerAway: ev?.strAwayTeam,
+    teamAName, teamBName, teamACode, teamBCode
+  });
+  if (!m.ok) return null;
+
+  // Map provider's home/away scores to your A/B
+  const scoreA = m.homeIsA ? hs : as;
+  const scoreB = m.homeIsA ? as : hs;
+
+  if (scoreA === scoreB) return "TIE";
+  return scoreA > scoreB ? teamACode : teamBCode;
+}
+
 // --------------- MAIN EXECUTION -----------------
 const N = args.length;
 if (N!==8 && N!==9) return Functions.encodeString("ERR"); // strict arity
-
 if (!API_KEY) return Functions.encodeString("ERR");
 
 const leagueLabel = args[0];
@@ -183,7 +236,6 @@ try {
 let evSeason = null;
 try {
   const seasons = await v2ListSeasons(idLeague);
-  // scan last SEASONS_TO_SCAN
   for (const ssn of seasons.slice(-SEASONS_TO_SCAN).reverse()){
     const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
     if (!seasonEvents?.length) continue;
@@ -198,13 +250,14 @@ let evMeta = null, evResults = null;
 if (idEventOpt){
   try { evResults = await v2LookupEventResults(idEventOpt); } catch {}
   try { evMeta    = await v2LookupEvent(idEventOpt); } catch {}
-  // Validate idEvent candidate aligns to our teams
+  // Validate idEvent candidate aligns to our teams (unordered)
   function aligns(e){
     if (!e) return false;
-    const h=e.strHomeTeam, w=e.strAwayTeam;
-    const aHome=strongTeamEq(teamAName,h,teamACode), bAway=strongTeamEq(teamBName,w,teamBCode);
-    const aAway=strongTeamEq(teamAName,w,teamACode), bHome=strongTeamEq(teamBName,h,teamBCode);
-    return Math.max(Math.min(aHome,bAway), Math.min(aAway,bHome))>0;
+    const m = matchTeamsUnordered({
+      providerHome:e.strHomeTeam, providerAway:e.strAwayTeam,
+      teamAName, teamBName, teamACode, teamBCode
+    });
+    return !!m.ok;
   }
   if (evMeta && !aligns(evMeta)) evMeta = null;
   if (evResults && !aligns(evResults)) evResults = null;
@@ -226,15 +279,15 @@ if (REQUIRE_RESULTS) {
   if (!looksFinal(evResults)) return Functions.encodeString("ERR");
 }
 
-// Every present source must map to same fixture (teams align) and be sensible
+// Every present source must map to same fixture (unordered mapping must succeed)
 for (const s of sources){
   const h=s.ev?.strHomeTeam, w=s.ev?.strAwayTeam;
   if (!h || !w) return Functions.encodeString("ERR");
-  // Require decent alignment (name or code)
-  const aHome=strongTeamEq(teamAName,h,teamACode), bAway=strongTeamEq(teamBName,w,teamBCode);
-  const aAway=strongTeamEq(teamAName,w,teamACode), bHome=strongTeamEq(teamBName,h,teamBCode);
-  const align = Math.max(Math.min(aHome,bAway), Math.min(aAway,bHome));
-  if (align === 0) return Functions.encodeString("ERR");
+  const m = matchTeamsUnordered({
+    providerHome:h, providerAway:w,
+    teamAName, teamBName, teamACode, teamBCode
+  });
+  if (!m.ok) return Functions.encodeString("ERR");
 }
 
 // If we have both results & meta, their scores must match exactly
@@ -254,17 +307,16 @@ for (const s of sources){
   }
 }
 
-// All good so far. Compute winners from each source that has scores & final.
+// Compute winners from each source that is final and has scores
 const winners = [];
 for (const s of sources){
   const isFinal = looksFinal(s.ev);
   const hasScores = (s.ev?.intHomeScore!=null && s.ev?.intAwayScore!=null);
   if (isFinal && hasScores){
-    const code = winnerCodeFromScores(s.ev, teamAName, teamBName, teamACode, teamBCode);
+    const code = winnerCodeFromSource(s.ev, teamAName, teamBName, teamACode, teamBCode);
     if (code === "TIE" || code === teamACode || code === teamBCode) {
       winners.push({ src:s.name, code });
     } else {
-      // Couldn't map winner to contract teams → unsafe
       return Functions.encodeString("ERR");
     }
   }
@@ -282,11 +334,8 @@ for (const [code,count] of Object.entries(counts)){
 }
 if (!top) return Functions.encodeString("ERR");
 
-// If any other code present besides the consensus → unsafe
-const distinctCodes = Object.keys(counts);
-if (distinctCodes.length > 1) {
-  // Allow only if consensus is overwhelming (e.g., all-but-one are same)
-  // For maximum safety, reject any disagreement:
+// Reject any disagreement for maximum safety
+if (Object.keys(counts).length > 1) {
   return Functions.encodeString("ERR");
 }
 
