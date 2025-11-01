@@ -12,8 +12,9 @@ const REQUIRE_RESULTS = true;            // require lookup/event_results to be f
 /* ----------------------------- Helper functions ---------------------------- */
 
 function needSecret(name) {
-  if (!secrets || !secrets[name]) throw Error(`ERR_MISSING_SECRET:${name}`);
-  return secrets[name];
+  const bag = typeof secrets === "undefined" ? undefined : secrets;
+  if (!bag || !bag[name]) throw Error(`ERR_MISSING_SECRET:${name}`);
+  return bag[name];
 }
 
 function looksFinal(ev) {
@@ -125,7 +126,8 @@ async function main(args) {
 
   // --- Secrets (DON-hosted) ---
   const TSDB_KEY  = needSecret('THESPORTSDB_API_KEY');
-  const TSDB_BASE = secrets.TSDB_ENDPOINT || 'https://www.thesportsdb.com/api/v2/json';
+  const secretsBag = typeof secrets === "undefined" ? {} : secrets;
+  const TSDB_BASE = secretsBag.TSDB_ENDPOINT || 'https://www.thesportsdb.com/api/v2/json';
   // Base looks like: https://www.thesportsdb.com/api/v2/json/{APIKEY}
   const base = `${TSDB_BASE}/${TSDB_KEY}`;
 
@@ -203,26 +205,17 @@ async function main(args) {
     return Functions.encodeString("ERR");
   }
 
-  // Winner relative to A/B (map A to home/away correctly)
-  const homeScore = Number(ev.intHomeScore || 0);
-  const awayScore = Number(ev.intAwayScore || 0);
-  if (!Number.isFinite(homeScore) || !Number.isFinite(awayScore)) {
-    console.log("[INVALID SCORES]");
-    return Functions.encodeString("ERR");
-  }
+  const homeIsA = teamAIsHome(ev, teamAname, teamAcode, teamBname, teamBcode);
+  const homeScore = Number(ev.intHomeScore ?? ev.intHomeScoreV2 ?? ev.intHomeResult ?? 0);
+  const awayScore = Number(ev.intAwayScore ?? ev.intAwayScoreV2 ?? ev.intAwayResult ?? 0);
 
-  const aIsHome = teamAIsHome(ev, teamAname, teamAcode, teamBname, teamBcode);
-  const aScore = aIsHome ? homeScore : awayScore;
-  const bScore = aIsHome ? awayScore : homeScore;
+  let winner = 0;
+  if (homeScore > awayScore) winner = homeIsA ? 1 : 2;
+  else if (awayScore > homeScore) winner = homeIsA ? 2 : 1;
 
-  let winner = "T";
-  if (aScore > bScore) winner = "A";
-  else if (bScore > aScore) winner = "B";
+  console.log(`[WINNER] home=${homeScore} away=${awayScore} -> ${winner}`);
 
-  console.log(
-    `[OK] ${ev.strHomeTeam}(${homeScore}) vs ${ev.strAwayTeam}(${awayScore}) | A=${aScore} B=${bScore} | winner=${winner}`
-  );
-  return Functions.encodeString(winner);
+  return Functions.encodeString(String(winner));
 }
 
 return main(args);
