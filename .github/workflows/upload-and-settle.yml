@@ -188,8 +188,8 @@ jobs:
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
 
           # Safe defaults: only settle when FINAL
-          DRY_RUN: "1"                 # set "0" to actually send txs
-          MAX_TX_PER_RUN: "2"
+          DRY_RUN: "0"                 # set "0" to actually send txs
+          MAX_TX_PER_RUN: "10"
           REQUEST_GAP_SECONDS: "60"
           POSTGAME_MIN_ELAPSED: "600"  # wait 10 min after lock before checking
 
