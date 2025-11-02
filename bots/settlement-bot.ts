@@ -30,9 +30,13 @@ const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);            /
 
 const DRY_RUN = process.env.DRY_RUN === "1";
 
-const REQUIRE_FINAL_CHECK = process.env.REQUIRE_FINAL_CHECK !== "0";
-const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);  // sec after lock
-const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);    // guard after lock
+/** We will ALWAYS require a provider-final check regardless of this flag. */
+const REQUIRE_FINAL_CHECK = true; // hard-enforced
+
+/** Minimum time after lock before we consider settlement (seconds). */
+const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);
+/** Cooldown right after lock, to avoid racey starts (seconds). */
+const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
 // Concurrency controls
 const READ_CONCURRENCY   = Number(process.env.READ_CONCURRENCY   || 25);
@@ -45,7 +49,7 @@ const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0);
 
 // TheSportsDB keys / flags
 const THESPORTSDB_API_KEY = process.env.THESPORTSDB_API_KEY || "";
-const ALLOW_V1_FALLBACK = process.env.ALLOW_V1_FALLBACK === "1"; // finality check only
+const ALLOW_V1_FALLBACK = process.env.ALLOW_V1_FALLBACK === "1"; // (kept for future use)
 
 // DON pointer (activeSecrets.json) lookup
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
@@ -271,7 +275,7 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
-   v2 + optional v1 fetchers, matching, finality
+   v2 fetchers, matching, finality
 ────────────────────────────────────────────────────────────────────────────── */
 function mapLeagueId(leagueOnChain: string): string {
   const lk = String(leagueOnChain || "").toLowerCase();
@@ -283,22 +287,18 @@ function mapLeagueId(leagueOnChain: string): string {
 }
 
 const V2_BASE = "https://www.thesportsdb.com/api/v2/json";
-
-// send both header variants + UA + Accept, and retry if empty
 const v2HeaderVariants: Array<Record<string, string>> = [
   { "X-API-KEY": THESPORTSDB_API_KEY, "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" },
   { "X_API_KEY": THESPORTSDB_API_KEY, "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" },
   { "X-API-KEY": THESPORTSDB_API_KEY, "X_API_KEY": THESPORTSDB_API_KEY, "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" },
 ];
 
-/* ───── Helpers to tolerate schedule/events/results array keys ───── */
 function firstArrayByKeys(j: any, keys: string[]): any[] {
   if (!j || typeof j !== "object") return [];
   for (const k of keys) {
     const v = j?.[k];
     if (Array.isArray(v)) return v;
   }
-  // last-resort: return the first array found at any top-level key
   for (const v of Object.values(j)) if (Array.isArray(v)) return v;
   return [];
 }
@@ -346,44 +346,6 @@ async function v2LookupEventResults(idEvent: string | number) {
   const arr = firstArrayByKeys(j, ["results", "events", "schedule"]);
   return arr.length ? arr[0] : null;
 }
-async function v2PreviousTeamEvents(idTeam: string) {
-  if (!idTeam) return [];
-  const j = await v2Fetch(`/schedule/previous/team/${encodeURIComponent(idTeam)}`);
-  return firstArrayByKeys(j, ["schedule", "events"]);
-}
-async function v2ListSeasons(idLeague: string): Promise<string[]> {
-  if (!idLeague) return [];
-  const j = await v2Fetch(`/list/seasons/${idLeague}`);
-  const arr = firstArrayByKeys(j, ["seasons"]);
-  return arr.map((s: any) => String(s?.strSeason || s)).filter(Boolean);
-}
-async function v2ScheduleLeagueSeason(idLeague: string, season: string) {
-  if (!idLeague || !season) return [];
-  const j = await v2Fetch(`/schedule/league/${idLeague}/${encodeURIComponent(season)}`);
-  return firstArrayByKeys(j, ["schedule", "events"]);
-}
-
-/* Optional v1 day-slice fallback for FINALITY ONLY */
-const V1_BASE = "https://www.thesportsdb.com/api/v1/json";
-async function v1EventsDay(dateISO: string, leagueLabel?: string) {
-  const key = THESPORTSDB_API_KEY;
-  const urls = leagueLabel
-    ? [
-        `${V1_BASE}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}&l=${encodeURIComponent(leagueLabel)}`,
-        `${V1_BASE}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}`
-      ]
-    : [`${V1_BASE}/${key}/eventsday.php?d=${encodeURIComponent(dateISO)}`];
-  for (const u of urls) {
-    try {
-      const r = await fetch(u, { headers: { "Accept": "application/json", "User-Agent": "blockpools-settlement-bot/1.0" } });
-      if (!r.ok) continue;
-      const j = await r.json().catch(() => null);
-      const arr = firstArrayByKeys(j, ["events", "schedule", "results"]);
-      if (arr.length) return arr;
-    } catch {}
-  }
-  return [];
-}
 
 /* Matching helpers */
 const teamIdCache = new Map<string, Map<string, string>>(); // idLeague -> (normName -> idTeam)
@@ -400,16 +362,6 @@ async function ensureLeagueTeamsCached(idLeague: string) {
     if (n && t?.idTeam) map.set(n, String(t.idTeam));
   }
   teamIdCache.set(idLeague, map);
-}
-function findIdTeam(idLeague: string, teamName: string): string | "" {
-  const m = teamIdCache.get(idLeague); if (!m) return "";
-  const norm = (s: string) =>
-    (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .replace(/[’'`]/g, "").replace(/[^a-z0-9 ]/gi, " ")
-      .replace(/\s+/g, " ").trim().toLowerCase();
-  const key = norm(teamName);
-  for (const [k, v] of m) if (k === key || k.includes(key) || key.includes(k)) return v;
-  return "";
 }
 function tsFromEvent(e: any): number {
   if (e?.strTimestamp) { const ms = Date.parse(e.strTimestamp); if (!Number.isNaN(ms)) return (ms / 1000) | 0; }
@@ -429,72 +381,6 @@ function sameTeam(x?: string, y?: string) {
   const nx = normTeam(String(x || "")), ny = normTeam(String(y || "")); if (!nx || !ny) return false;
   return nx === ny || nx.includes(ny) || ny.includes(nx);
 }
-
-/* ID-aware + tolerant nearest-kickoff */
-function pickClosestByKickoff(
-  events: any[],
-  aName: string,
-  bName: string,
-  kickoff: number,
-  aId?: string,
-  bId?: string
-) {
-  const TOL = 45 * 60; // 45-minute grace for listed kickoff vs lock
-  const cand = events.filter(e => {
-    if (aId && bId && e?.idHomeTeam && e?.idAwayTeam) {
-      const h = String(e.idHomeTeam), w = String(e.idAwayTeam);
-      if ((h === aId && w === bId) || (h === bId && w === aId)) return true;
-    }
-    const h = e?.strHomeTeam, w = e?.strAwayTeam;
-    return (sameTeam(h, aName) && sameTeam(w, bName)) || (sameTeam(h, bName) && sameTeam(w, aName));
-  });
-
-  const ts = (e: any) => tsFromEvent(e) || kickoff;
-  cand.sort((x, y) => {
-    const dx = Math.max(0, Math.abs(ts(x) - kickoff) - TOL);
-    const dy = Math.max(0, Math.abs(ts(y) - kickoff) - TOL);
-    return dx - dy;
-  });
-
-  return cand[0] || null;
-}
-
-function looksFinal(ev: any) {
-  const status = String(ev?.strStatus ?? ev?.strProgress ?? "").toLowerCase();
-  const hasScores = (ev?.intHomeScore != null && ev?.intAwayScore != null);
-  if (/^(ft|aot|aet|pen|finished|full time)$/.test(status)) return true;
-  if (/final|finished|ended|complete/.test(status)) return true;
-  return hasScores && !status;
-}
-
-/* ──────────────────────────────────────────────────────────────────────────────
-   >>> PRE-FLIGHT GUARDS (strict)
-────────────────────────────────────────────────────────────────────────────── */
-// Drift window around lockTime. Default 2h if env not set.
-const MAX_EVENT_DRIFT_SECS = Number(process.env.MAX_EVENT_DRIFT_SECS || (2 * 3600));
-// Require the event to be on the same calendar day (UTC) as lockTime’s day.
-const REQUIRE_SAME_DAY = (process.env.REQUIRE_SAME_DAY || "1") !== "0";
-
-// League whitelist (must match regular season leagues)
-const ALLOWABLE_LEAGUE_IDS: Record<string, string> = {
-  nfl: "4391",
-  mlb: "4424",
-  nba: "4387",
-  nhl: "4380",
-  epl: "4328",
-  ucl: "4480",
-};
-
-function sameLeagueId(e: any, expected: string) {
-  return String(e?.idLeague || "") === String(expected || "");
-}
-
-function sameDayUTC(tsA: number, tsB: number) {
-  const a = new Date(tsA * 1000).toISOString().slice(0, 10);
-  const b = new Date(tsB * 1000).toISOString().slice(0, 10);
-  return a === b;
-}
-
 function unorderedTeamsMatch(providerHome?: string, providerAway?: string, aName?: string, bName?: string, aCode?: string, bCode?: string) {
   const alias = (s?: string) => String(s ?? "").trim().toUpperCase().replace(/\s+/g, " ");
   const pH = alias(providerHome), pA = alias(providerAway);
@@ -511,19 +397,27 @@ function isFinalStatus(s?: string) {
 }
 
 /**
- * Hard preflight: find a single event that is:
- * - correct league
- * - has a real timestamp
- * - same-day (UTC) as lockTime (if REQUIRE_SAME_DAY)
- * - within ±MAX_EVENT_DRIFT_SECS of lockTime
- * - unordered team match
- * - final by provider
+ * Strict preflight: must find a final event matching teams + league + time window.
  */
+const MAX_EVENT_DRIFT_SECS = Number(process.env.MAX_EVENT_DRIFT_SECS || (2 * 3600));
+const REQUIRE_SAME_DAY = true; // hard-enforced
+const ALLOWABLE_LEAGUE_IDS: Record<string, string> = {
+  nfl: "4391", mlb: "4424", nba: "4387", nhl: "4380", epl: "4328", ucl: "4480",
+};
+function sameLeagueId(e: any, expected: string) {
+  return String(e?.idLeague || "") === String(expected || "");
+}
+function sameDayUTC(tsA: number, tsB: number) {
+  const a = new Date(tsA * 1000).toISOString().slice(0, 10);
+  const b = new Date(tsB * 1000).toISOString().slice(0, 10);
+  return a === b;
+}
+
 async function confirmFinalInWindow(params: {
   leagueLabel: string;
   idEvent?: string | number;
   lockTime: number;
-  dateFromISO: string;          // "YYYY-MM-DD"
+  dateFromISO: string;
   teamAName: string; teamBName: string;
   teamACode: string; teamBCode: string;
 }): Promise<{ ok: boolean; reason?: string; ev?: any; idUsed?: string }> {
@@ -533,7 +427,7 @@ async function confirmFinalInWindow(params: {
 
   const candidates: any[] = [];
 
-  // 1) idEvent fast-path (both endpoints)
+  // idEvent fast-path
   if (params.idEvent) {
     const rResults = await v2LookupEventResults(params.idEvent);
     const rMeta    = await v2LookupEvent(params.idEvent);
@@ -541,7 +435,7 @@ async function confirmFinalInWindow(params: {
     if (rMeta)    candidates.push(rMeta);
   }
 
-  // 2) League previous slice (broad net)
+  // League 'previous' sweep
   const idLeague = mapLeagueId(league);
   if (idLeague) {
     const prev = await v2PreviousLeagueEvents(idLeague);
@@ -556,25 +450,25 @@ async function confirmFinalInWindow(params: {
     if (!seen.has(sig)) { seen.add(sig); uniq.push(e); }
   }
 
-  // Apply all hard gates
+  // Apply strict gates
   const lockTs = params.lockTime;
   for (const e of uniq) {
     if (!sameLeagueId(e, expectedLeagueId)) continue;
 
     const eTs = tsFromEvent(e);
-    if (!eTs) continue;                                    // must have real timestamp
+    if (!eTs) continue;
 
     if (REQUIRE_SAME_DAY) {
       const lockDayTs = Date.parse(`${params.dateFromISO}T00:00:00Z`) / 1000;
-      if (!sameDayUTC(eTs, lockDayTs)) continue;           // same UTC day as pool
+      if (!sameDayUTC(eTs, lockDayTs)) continue;
     }
 
-    if (Math.abs(eTs - lockTs) > MAX_EVENT_DRIFT_SECS) continue; // tight drift window
+    if (Math.abs(eTs - lockTs) > MAX_EVENT_DRIFT_SECS) continue;
 
     if (!unorderedTeamsMatch(e.strHomeTeam, e.strAwayTeam, params.teamAName, params.teamBName, params.teamACode, params.teamBCode)) continue;
 
     const status = e?.strStatus ?? e?.strProgress ?? "";
-    if (!isFinalStatus(status)) continue;                  // must be final
+    if (!isFinalStatus(status)) continue;
 
     return { ok: true, ev: e, idUsed: String(e?.idEvent || "") };
   }
@@ -615,8 +509,7 @@ async function main() {
   console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
   console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
-  console.log(`[CFG] ALLOW_V1_FALLBACK=${ALLOW_V1_FALLBACK}`);
-  console.log(`[CFG] MAX_EVENT_DRIFT_SECS=${MAX_EVENT_DRIFT_SECS} REQUIRE_SAME_DAY=${REQUIRE_SAME_DAY ? 1 : 0}`);
+  console.log(`[CFG] MAX_EVENT_DRIFT_SECS=${MAX_EVENT_DRIFT_SECS} REQUIRE_SAME_DAY=1`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
@@ -695,107 +588,71 @@ async function main() {
   );
 
   const nowSec = Math.floor(Date.now() / 1000);
+
+  // Pools we own, are locked, not settled/requested, and no winningTeam yet
   const gated = states.filter(s => s.isOwner && s.isLocked && !s.requestSent && s.winningTeam === 0);
+
+  // Time gates (independent of any env flag)
   const timeGated = gated.filter(s =>
     (s.lockTime === 0 || nowSec >= s.lockTime + REQUEST_GAP_SECONDS) &&
-    (s.lockTime === 0 || !REQUIRE_FINAL_CHECK || nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED)
+    (s.lockTime === 0 || nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED)
   );
-  if (!timeGated.length) { console.log("No eligible pools after gates. Submitted 0 transaction(s)."); return; }
 
-  /* STEP 2: Provider finality checks — with strict preflight */
-  let finalEligible: PoolState[] = timeGated;
-  if (REQUIRE_FINAL_CHECK) {
-    if (!THESPORTSDB_API_KEY) { console.log("REQUIRE_FINAL_CHECK=1 but no THESPORTSDB_API_KEY set. Skipping to avoid wasted LINK."); return; }
+  if (!timeGated.length) { console.log("No eligible pools after time gates. Submitted 0 transaction(s)."); return; }
 
-    // Preload previous-events per league
-    const leagues = new Set<string>();
-    for (const s of timeGated) leagues.add(mapLeagueId(s.league));
-
-    const prevCache = new Map<string, any[]>();
-    await Promise.all(
-      Array.from(leagues).map(id =>
-        limiter(TSDB_CONCURRENCY)(async () => {
-          const arr = await v2PreviousLeagueEvents(id);
-          prevCache.set(id, arr);
-        })
-      )
-    );
-
-    const eligible: PoolState[] = [];
-    for (const s of timeGated) {
-      const idLeague = mapLeagueId(s.league);
-
-      // Try to fetch an idEvent (optional) just to speed up provider calls
-      const dynId = await resolveEventIdIfMissing(s);
-
-      // >>> PRE-FLIGHT GUARDS: never send unless final & in-window & same-day
-      const pre = await confirmFinalInWindow({
-        leagueLabel: s.league,
-        idEvent: dynId || s.tsdbEventId,
-        lockTime: s.lockTime,
-        dateFromISO: epochToEtISO(s.lockTime),
-        teamAName: s.teamAName, teamBName: s.teamBName,
-        teamACode: s.teamACode, teamBCode: s.teamBCode,
-      });
-
-      if (pre.ok) {
-        console.log(`[OK] Final via preflight: ${s.league} ${s.teamAName} vs ${s.teamBName} (idEvent=${pre.idUsed || "?"})`);
-        eligible.push(s);
-      } else {
-        console.log(`[SKIP PRE] ${s.league} ${s.teamAName} vs ${s.teamBName}: ${pre.reason}`);
-      }
-    }
-
-    finalEligible = eligible;
-    if (!finalEligible.length) { console.log("No games confirmed final by provider. Submitted 0 transaction(s)."); return; }
-    console.log(`✅ Provider final for ${finalEligible.length} pool(s).`);
+  if (!THESPORTSDB_API_KEY) {
+    console.log("No THESPORTSDB_API_KEY set. Cannot confirm final state. Submitted 0 transaction(s).");
+    return;
   }
 
-  /* STEP 3: Simulate & send — adaptive 9 ⇄ 8 args */
-  const { secretsVersion: sv } = await loadActiveSecrets();
-  const donHostedSecretsVersion2 = BigInt(sv);
-
+  /* STEP 2: Provider finality checks — ALWAYS required */
   async function resolveEventIdIfMissing(s: PoolState): Promise<string | ""> {
     if (s.tsdbEventId != null && s.tsdbEventId !== "") return String(s.tsdbEventId);
 
     const idLeague = mapLeagueId(s.league);
     if (!idLeague) return "";
 
-    // previous/league
+    // Try league previous slice
     const prev = await v2PreviousLeagueEvents(idLeague);
-    const byPrev = pickClosestByKickoff(prev, s.teamAName, s.teamBName, s.lockTime);
-    if (byPrev?.idEvent) return String(byPrev.idEvent);
+    const cand = (prev || []).filter(e =>
+      unorderedTeamsMatch(e.strHomeTeam, e.strAwayTeam, s.teamAName, s.teamBName, s.teamACode, s.teamBCode)
+    );
+    cand.sort((a,b) => Math.abs(tsFromEvent(a) - s.lockTime) - Math.abs(tsFromEvent(b) - s.lockTime));
+    if (cand[0]?.idEvent) return String(cand[0].idEvent);
 
-    // previous/team
-    await ensureLeagueTeamsCached(idLeague);
-    const idTeamA = findIdTeam(idLeague, s.teamAName);
-    const idTeamB = findIdTeam(idLeague, s.teamBName);
-    const pools: any[] = [];
-    if (idTeamA) pools.push(v2PreviousTeamEvents(idTeamA));
-    if (idTeamB) pools.push(v2PreviousTeamEvents(idTeamB));
-    if (pools.length) {
-      const results = (await Promise.all(pools)).flat();
-      const byTeamPrev = pickClosestByKickoff(results, s.teamAName, s.teamBName, s.lockTime, idTeamA, idTeamB);
-      if (byTeamPrev?.idEvent) return String(byTeamPrev.idEvent);
-    }
-
-    // season with ET±1d window
-    const gameDate = epochToEtISO(s.lockTime);
-    const seasons = await v2ListSeasons(idLeague);
-    for (const ssn of seasons.slice(-2).reverse()) {
-      const seasonEvents = await v2ScheduleLeagueSeason(idLeague, ssn);
-      if (!seasonEvents?.length) continue;
-      const daySlice = seasonEvents.filter((e: any) => matchesEtDayOrNeighbor(e, gameDate));
-      const pool = daySlice.length ? daySlice : seasonEvents;
-      const candidate = pickClosestByKickoff(pool, s.teamAName, s.teamBName, s.lockTime, idTeamA, idTeamB);
-      if (candidate?.idEvent) return String(candidate.idEvent);
-    }
     return "";
   }
 
+  const finalEligible: PoolState[] = [];
+  for (const s of timeGated) {
+    const dynId = await resolveEventIdIfMissing(s);
+    const pre = await confirmFinalInWindow({
+      leagueLabel: s.league,
+      idEvent: dynId || s.tsdbEventId,
+      lockTime: s.lockTime,
+      dateFromISO: epochToEtISO(s.lockTime),
+      teamAName: s.teamAName, teamBName: s.teamBName,
+      teamACode: s.teamACode, teamBCode: s.teamBCode,
+    });
+
+    if (pre.ok) {
+      console.log(`[OK] Final by provider: ${s.league} ${s.teamAName} vs ${s.teamBName} (idEvent=${pre.idUsed || "?"})`);
+      finalEligible.push(s);
+    } else {
+      console.log(`[SKIP] Not final yet / not matched (${s.league} ${s.teamAName} vs ${s.teamBName}): ${pre.reason}`);
+    }
+  }
+
+  if (!finalEligible.length) { console.log("No games confirmed FINAL. Submitted 0 transaction(s)."); return; }
+  console.log(`✅ Provider confirmed FINAL for ${finalEligible.length} pool(s). Proceeding.`);
+
+  /* STEP 3: Simulate & send — adaptive 9 ⇄ 8 args */
+  const { secretsVersion: sv } = await loadActiveSecrets();
+  const donHostedSecretsVersion2 = BigInt(sv);
+
   const buildArgs9 = (s: PoolState, idOverride?: string): string[] => {
     const d0 = epochToEtISO(s.lockTime), d1 = addDaysISO(d0, 1);
-    const leagueArg = s.league; // keep human label; source.js normalizes internally
+    const leagueArg = s.league;
     const id = (idOverride ?? String(s.tsdbEventId ?? "")).trim();
     return [leagueArg, d0, d1, s.teamACode.toUpperCase(), s.teamBCode.toUpperCase(), s.teamAName, s.teamBName, String(s.lockTime), id];
   };
@@ -807,7 +664,7 @@ async function main() {
 
   async function simulate(pool: any, args: string[]) {
     try {
-      await pool.callStatic.sendRequest(SOURCE, args, SUBSCRIPTION_ID, FUNCTIONS_GAS_LIMIT, DON_SECRETS_SLOT, donHostedSecretsVersion2, donBytes);
+      await pool.callStatic.sendRequest(SOURCE, args, SUBSCRIPTION_ID, FUNCTIONS_GAS_LIMIT, DON_SECRETS_SLOT, donHostedSecretsVersion2, ethers.utils.formatBytes32String(donId));
       return { ok: true as const, err: null as null | string };
     } catch (e: any) {
       const data = e?.data ?? e?.error?.data; const decoded = decodeRevert(data);
@@ -834,9 +691,14 @@ async function main() {
     let choice: { label: "args9" | "args8"; args: string[] } | null = null;
 
     for (const c of candidates) {
-      const sim = await simLimit(() => simulate(pool, c.args));
-      if (sim.ok) { choice = c; break; }
-      else console.error(`[SIM ERR] ${s.addr} (${c.label}) => ${sim.err}`);
+      try {
+        await pool.callStatic.sendRequest(SOURCE, c.args, SUBSCRIPTION_ID, FUNCTIONS_GAS_LIMIT, DON_SECRETS_SLOT, donHostedSecretsVersion2, donBytes);
+        choice = c;
+        break;
+      } catch (e: any) {
+        const data = e?.data ?? e?.error?.data;
+        console.error(`[SIM ERR] ${s.addr} (${c.label}) => ${decodeRevert(data)}`);
+      }
     }
 
     if (!choice) continue;
