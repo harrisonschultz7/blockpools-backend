@@ -112,7 +112,6 @@ jobs:
           SLOT_ID: 0
           DON_TTL_MINUTES: 1440
 
-          # v2 prefers a single key; league-specific keys kept for backward compat
           MLB_API_KEY: ${{ secrets.MLB_API_KEY }}
           NFL_API_KEY: ${{ secrets.NFL_API_KEY }}
           NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
@@ -153,7 +152,7 @@ jobs:
           git commit -m "Update activeSecrets.json (sv=${{ steps.sv.outputs.secretsVersion }}) [skip ci]" || true
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
 
-      # --- Sanity check TheSportsDB v2 key (lenient content; fail only on HTTP) ---
+      # --- Sanity check TheSportsDB v2 key ---
       - name: Sanity check TheSportsDB v2 key
         env:
           TSDB_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
@@ -161,24 +160,18 @@ jobs:
         run: |
           set -e
           if [ -z "$TSDB_KEY" ]; then echo "THESPORTSDB_API_KEY not set"; exit 1; fi
-          # Probe two stable endpoints; only fail if BOTH are non-200
-          L1_URL="https://www.thesportsdb.com/api/v2/json/lookup/league/4391"  # NFL
-          L2_URL="https://www.thesportsdb.com/api/v2/json/lookup/league/4328"  # EPL
+          L1_URL="https://www.thesportsdb.com/api/v2/json/lookup/league/4391"
+          L2_URL="https://www.thesportsdb.com/api/v2/json/lookup/league/4328"
           C1=$(curl -s -o /tmp/l1.json -w "%{http_code}" -H "X-API-KEY: $TSDB_KEY" "$L1_URL"); echo "lookup/league 4391 => $C1"
           C2=$(curl -s -o /tmp/l2.json -w "%{http_code}" -H "X-API-KEY: $TSDB_KEY" "$L2_URL"); echo "lookup/league 4328 => $C2"
           if [ "$C1" -ne 200 ] && [ "$C2" -ne 200 ]; then
             echo "::error::v2 auth failed (both league lookups non-200)"
-            echo "payload 1:"; cat /tmp/l1.json || true
-            echo "payload 2:"; cat /tmp/l2.json || true
             exit 1
           fi
-          # Log a little context without enforcing schema
-          node -e "const fs=require('fs'); for (const p of ['/tmp/l1.json','/tmp/l2.json']) { try { const j=JSON.parse(fs.readFileSync(p,'utf8')); const k=j&&j.leagues&&j.leagues[0]; if(k){ console.log(p, '->', (k.strLeague||k.strLeagueAlternate||'unknown')); } else { console.log(p, '-> ok (empty)'); } } catch(e){ console.log(p, '-> not JSON'); } }"
-          # Optional: peek at previous/league; never fail if empty
           curl -s -H "X-API-KEY: $TSDB_KEY" "https://www.thesportsdb.com/api/v2/json/schedule/previous/league/4391" -o /tmp/prev.json || true
           node -e "const fs=require('fs'); try{const j=JSON.parse(fs.readFileSync('/tmp/prev.json','utf8')); const n=Array.isArray(j.events)?j.events.length:0; console.log('previous/league/4391 events:', n);}catch{console.log('previous/league parse skipped');}"
 
-      # --- Run settlement bot (DRY RUN: simulate only; no on-chain tx) ---
+      # --- Run settlement bot (DRY RUN = simulate only) ---
       - name: Run settlement bot (DRY RUN)
         env:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
@@ -194,12 +187,11 @@ jobs:
 
           THESPORTSDB_API_KEY: ${{ secrets.THESPORTSDB_API_KEY }}
 
-          # >>> DRY RUN ENABLED <<<
-          DRY_RUN: "1"               # simulate: logs what WOULD be sent; no tx
-          MAX_TX_PER_RUN: "2"        # keep it small while testing
-          REQUEST_GAP_SECONDS: "30"  # quicker logs in DRY_RUN
-          REQUIRE_FINAL_CHECK: "0"   # skip strict final-state check in simulation
-          POSTGAME_MIN_ELAPSED: "0"  # no postgame wait in simulation
+          # Safe defaults: only settle when FINAL
+          DRY_RUN: "1"                 # set "0" to actually send txs
+          MAX_TX_PER_RUN: "2"
+          REQUEST_GAP_SECONDS: "60"
+          POSTGAME_MIN_ELAPSED: "600"  # wait 10 min after lock before checking
 
           # Point to your current games list
           GAMES_PATH: ${{ github.workspace }}/frontend-src/src/data/games.json
