@@ -1,66 +1,13 @@
 // @ts-nocheck
-// Hardened Chainlink Functions source.js for BlockPools
-// - Uses DON-hosted secrets (secrets.THESPORTSDB_API_KEY / optional secrets.TSDB_ENDPOINT)
-// - Strict same-day and drift window checks
-// - Resolves correct A/B winner by mapping A/B to home/away
+// Chainlink Functions source.js — Goalserve (simple winner resolver)
+// Returns: "1" (Team A), "2" (Team B), "0" (Tie), or "ERR" on failure.
 
-/* ------------------------------- Tunables --------------------------------- */
-const MAX_EVENT_DRIFT_SECS = 2 * 3600;   // ±2 h drift allowed
-const REQUIRE_SAME_DAY = true;           // must be same calendar day UTC
-const REQUIRE_RESULTS = true;            // require lookup/event_results to be final
-
-/* ----------------------------- Helper functions ---------------------------- */
+// ----------------------------- Helpers -------------------------------------
 
 function needSecret(name) {
   const bag = typeof secrets === "undefined" ? undefined : secrets;
   if (!bag || !bag[name]) throw Error(`ERR_MISSING_SECRET:${name}`);
   return bag[name];
-}
-
-function looksFinal(ev) {
-  const s = String(ev?.strStatus ?? ev?.strProgress ?? "").trim().toLowerCase();
-  const hasScores =
-    ev?.intHomeScore != null && ev?.intAwayScore != null &&
-    ev.intHomeScore !== "" && ev.intAwayScore !== "";
-
-  // Common final markers seen in TSDB:
-  if (/^(ft|aot|aet|ap|pen|finished|full time|final)$/.test(s)) return true;
-  if (/final|finished|ended|complete/.test(s)) return true;
-  // Some feeds leave status blank but provide final scores
-  return hasScores && !s;
-}
-
-function tsFromEvent(e) {
-  // Prefer explicit timestamp
-  if (e?.strTimestamp) {
-    const ms = Date.parse(e.strTimestamp);
-    if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
-  }
-  // Fallback: date + time
-  if (e?.dateEvent && e?.strTime) {
-    const s = /Z$/.test(e.strTime) ? `${e.dateEvent}T${e.strTime}` : `${e.dateEvent}T${e.strTime}Z`;
-    const ms = Date.parse(s);
-    if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
-  }
-  // Fallback: midnight UTC on date
-  if (e?.dateEvent) {
-    const ms = Date.parse(`${e.dateEvent}T00:00:00Z`);
-    if (!Number.isNaN(ms)) return Math.floor(ms / 1000);
-  }
-  return 0;
-}
-
-function sameDayUTC(tsA, tsB) {
-  const a = new Date(tsA * 1000).toISOString().slice(0, 10);
-  const b = new Date(tsB * 1000).toISOString().slice(0, 10);
-  return a === b;
-}
-
-function withinStrictWindow(eventTs, lockTime) {
-  if (!eventTs || !lockTime) return false;
-  if (REQUIRE_SAME_DAY && !sameDayUTC(eventTs, lockTime)) return false;
-  if (Math.abs(eventTs - lockTime) > MAX_EVENT_DRIFT_SECS) return false;
-  return true;
 }
 
 function normTeam(s) {
@@ -74,148 +21,133 @@ function normTeam(s) {
     .toLowerCase();
 }
 
-function unorderedTeamsMatch(ev, aName, bName, aCode, bCode) {
-  const home = normTeam(ev?.strHomeTeam);
-  const away = normTeam(ev?.strAwayTeam);
-  const A1 = normTeam(aName) || normTeam(aCode);
-  const B1 = normTeam(bName) || normTeam(bCode);
-  const set1 = new Set([home, away]);
-  const set2 = new Set([A1, B1]);
-  if (set1.size !== set2.size) return false;
-  for (const v of set1) if (!set2.has(v)) return false;
-  return true;
+// lockTime (unix seconds or ms) -> "dd.MM.yyyy" (Goalserve expects dots)
+function toGoalserveDate(input) {
+  if (!input) {
+    // fallback to "today" UTC if missing (not ideal, but safe)
+    const d = new Date();
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const yyyy = d.getUTCFullYear();
+    return `${dd}.${mm}.${yyyy}`;
+  }
+  const n = Number(input);
+  const ms = n > 1e12 ? n : n * 1000; // handle secs vs ms
+  const d = new Date(ms);
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = d.getUTCFullYear();
+  return `${dd}.${mm}.${yyyy}`;
 }
-
-// Determine if Team A corresponds to home or away in the matched event
-function teamAIsHome(ev, aName, aCode, bName, bCode) {
-  const home = normTeam(ev?.strHomeTeam);
-  const away = normTeam(ev?.strAwayTeam);
-  const A1 = normTeam(aName) || normTeam(aCode);
-  const B1 = normTeam(bName) || normTeam(bCode);
-  if (A1 && A1 === home) return true;
-  if (A1 && A1 === away) return false;
-
-  // If A didn't match cleanly, try B as a hint
-  if (B1 && B1 === home) return false; // then A must be away
-  if (B1 && B1 === away) return true;  // then A must be home
-
-  // Fallback: if names are ambiguous, infer by codes first
-  const aCodeN = normTeam(aCode);
-  if (aCodeN && aCodeN === home) return true;
-  if (aCodeN && aCodeN === away) return false;
-
-  // Last resort: default to home=false (A=away); safer than assuming home
-  return false;
-}
-
-/* ------------------------------ API functions ------------------------------ */
 
 async function fetchJson(url) {
-  const res = await Functions.makeHttpRequest({ url });
+  const res = await Functions.makeHttpRequest({ url, timeout: 12000 });
   if (res.error) throw new Error(`HTTP_ERR: ${url} :: ${res.error}`);
   return res.data;
 }
 
-/* ------------------------------- Main logic -------------------------------- */
+// Flatten common Goalserve shapes into an array of game-like objects
+function extractGames(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+
+  if (Array.isArray(payload.games?.game)) return payload.games.game;
+  if (Array.isArray(payload.game)) return payload.game;
+  if (Array.isArray(payload.events)) return payload.events;
+
+  // As a last resort, collect object values that look like game objects
+  if (typeof payload === "object") {
+    const vals = Object.values(payload);
+    const arrs = vals.filter(v => Array.isArray(v)).flat();
+    if (arrs.length) return arrs;
+    return vals.filter(v => v && typeof v === "object");
+  }
+  return [];
+}
+
+// ------------------------------ Main ---------------------------------------
 
 async function main(args) {
-  // Support args8 or args9 (last slot may be eventId)
-  const [league, dateFrom, dateTo, teamAcode, teamBcode, teamAname, teamBname, lockTimeStr, eventIdMaybe] = args;
-  const lockTime = Number(lockTimeStr || 0);
-  const eventId = eventIdMaybe && !isNaN(Number(eventIdMaybe)) ? String(eventIdMaybe) : "";
+  // Keep same arg order you already use:
+  // [league, dateFrom, dateTo, teamAcode, teamBcode, teamAname, teamBname, lockTimeStr, eventIdMaybe]
+  const [league, _dateFrom, _dateTo, _teamAcode, _teamBcode, teamAname, teamBname, lockTimeStr] = args;
 
-  // --- Secrets (DON-hosted) ---
-  const TSDB_KEY  = needSecret('THESPORTSDB_API_KEY');
-  const secretsBag = typeof secrets === "undefined" ? {} : secrets;
-  const TSDB_BASE = secretsBag.TSDB_ENDPOINT || 'https://www.thesportsdb.com/api/v2/json';
-  // Base looks like: https://www.thesportsdb.com/api/v2/json/{APIKEY}
-  const base = `${TSDB_BASE}/${TSDB_KEY}`;
+  // --- Secrets ---
+  const API_KEY = needSecret("GOALSERVE_API_KEY");
+  const base = (typeof secrets !== "undefined" && secrets.GOALSERVE_BASE_URL) || "https://www.goalserve.com/getfeed";
 
-  const idLeagueMap = {
-    nfl: "4391",
-    mlb: "4424",
-    nba: "4387",
-    nhl: "4380",
-    epl: "4328",
-    ucl: "4480",
-  };
-  const idLeague = idLeagueMap[String(league).toLowerCase()] || "";
+  // Build date from lockTime to avoid ambiguity
+  const gsDate = toGoalserveDate(lockTimeStr);
 
-  console.log(`[START] league=${league} A=${teamAname}/${teamAcode} B=${teamBname}/${teamBcode} lock=${lockTime}`);
-
-  let ev = null;
-
-  // Try 1) direct id lookup (preferred if provided)
-  if (eventId) {
-    try {
-      const r1 = await fetchJson(`${base}/lookup/event_results/${eventId}`);
-      const r2 = await fetchJson(`${base}/lookup/event/${eventId}`);
-      ev =
-        (r1 && (r1.results?.[0] || r1.lookup?.[0])) ||
-        (r2 && (r2.lookup?.[0] || r2.results?.[0])) ||
-        null;
-    } catch (e) {
-      console.log(`[WARN] direct id lookup failed: ${e.message}`);
-    }
+  // League → path mapping (you can extend later)
+  // You provided NFL endpoint: /football/nfl-scores
+  let sportPath = "football";
+  let leaguePath = "nfl-scores";
+  const L = String(league || "").toLowerCase();
+  if (L !== "nfl") {
+    // default to NFL unless you add more mappings
+    sportPath = "football";
+    leaguePath = "nfl-scores";
   }
 
-  // Try 2) previous/league slice and match by teams + window
-  if (!ev && idLeague) {
-    try {
-      const j = await fetchJson(`${base}/schedule/previous/league/${idLeague}`);
-      const arr = j?.schedule || j?.events || [];
-      for (const e of arr) {
-        if (!unorderedTeamsMatch(e, teamAname, teamBname, teamAcode, teamBcode)) continue;
-        const eTs = tsFromEvent(e);
-        if (!withinStrictWindow(eTs, lockTime)) continue;
-        ev = e;
-        break;
-      }
-    } catch (e) {
-      console.log(`[ERR] league slice fetch failed: ${e.message}`);
-    }
-  }
+  const url =
+    `${base}/${encodeURIComponent(API_KEY)}/${sportPath}/${leaguePath}` +
+    `?date=${encodeURIComponent(gsDate)}&json=1`;
 
-  if (!ev) {
-    console.log("[NO MATCH]");
+  // Fetch day slate and find the game matching your Team A/B (unordered)
+  const data = await fetchJson(url);
+  const games = extractGames(data);
+
+  if (!games.length) {
+    console.log("[NO GAMES]", url);
     return Functions.encodeString("ERR");
   }
 
-  // Optionally require that event_results indicates final
-  if (REQUIRE_RESULTS && ev?.idEvent) {
-    try {
-      const rr = await fetchJson(`${base}/lookup/event_results/${ev.idEvent}`);
-      const er = (rr && (rr.results?.[0] || rr.lookup?.[0])) || null;
-      if (er) ev = Object.assign({}, ev, er); // merge in any definitive fields
-    } catch (e) {
-      console.log(`[WARN] results lookup failed: ${e.message}`);
-    }
-  }
+  const A = normTeam(teamAname);
+  const B = normTeam(teamBname);
 
-  // Ensure final and valid
-  if (!looksFinal(ev)) {
-    console.log("[NOT FINAL]", ev.strStatus || ev.strProgress || "(none)");
+  const match = games.find(g => {
+    const home = normTeam(g?.hometeam?.name ?? g?.home_name ?? g?.home ?? "");
+    const away = normTeam(g?.awayteam?.name ?? g?.away_name ?? g?.away ?? "");
+    // unordered check: sets must match
+    if (!home || !away || !A || !B) return false;
+    return (home === A && away === B) || (home === B && away === A);
+  });
+
+  if (!match) {
+    console.log("[NO MATCHED GAME FOR TEAMS]", teamAname, teamBname);
     return Functions.encodeString("ERR");
   }
 
-  // Check timestamp window again strictly
-  const eTs = tsFromEvent(ev);
-  if (!withinStrictWindow(eTs, lockTime)) {
-    console.log("[OUT OF WINDOW]", eTs, lockTime);
+  const status = String(match?.status || "").trim().toLowerCase();
+  const isFinal = status === "final" || status === "finished" || status === "full time";
+
+  if (!isFinal) {
+    console.log("[NOT FINAL]", match?.status);
     return Functions.encodeString("ERR");
   }
 
-  const homeIsA = teamAIsHome(ev, teamAname, teamAcode, teamBname, teamBcode);
-  const homeScore = Number(ev.intHomeScore ?? ev.intHomeScoreV2 ?? ev.intHomeResult ?? 0);
-  const awayScore = Number(ev.intAwayScore ?? ev.intAwayScoreV2 ?? ev.intAwayResult ?? 0);
+  // Goalserve totals (strings). Example: hometeam.totalscore / awayteam.totalscore
+  const homeScore = Number(match?.hometeam?.totalscore ?? match?.home_score ?? 0);
+  const awayScore = Number(match?.awayteam?.totalscore ?? match?.away_score ?? 0);
 
-  let winner = 0;
-  if (homeScore > awayScore) winner = homeIsA ? 1 : 2;
-  else if (awayScore > homeScore) winner = homeIsA ? 2 : 1;
+  // Determine whether Team A is home or away in THIS matched game
+  const homeName = normTeam(match?.hometeam?.name ?? match?.home_name ?? match?.home ?? "");
+  const awayName = normTeam(match?.awayteam?.name ?? match?.away_name ?? match?.away ?? "");
 
-  console.log(`[WINNER] home=${homeScore} away=${awayScore} -> ${winner}`);
+  const teamAIsHome =
+    A && homeName && A === homeName
+      ? true
+      : A && awayName && A === awayName
+        ? false
+        : false; // default (shouldn't happen if we matched above)
 
-  return Functions.encodeString(String(winner));
+  let winner = "0"; // tie
+  if (homeScore > awayScore) winner = teamAIsHome ? "1" : "2";
+  else if (awayScore > homeScore) winner = teamAIsHome ? "2" : "1";
+
+  console.log(`[WINNER] home=${homeScore} away=${awayScore} :: AisHome=${teamAIsHome} -> ${winner}`);
+  return Functions.encodeString(winner);
 }
 
 return main(args);
