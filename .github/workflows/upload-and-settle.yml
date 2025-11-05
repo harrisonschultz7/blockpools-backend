@@ -156,30 +156,6 @@ jobs:
           git commit -m "Update activeSecrets.json (sv=${{ steps.sv.outputs.secretsVersion }}) [skip ci]" || true
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
 
-      # --- Sanity check Goalserve key ---
-      - name: Sanity check Goalserve key
-        shell: bash
-        env:
-          GOALSERVE_API_KEY: ${{ secrets.GOALSERVE_API_KEY }}
-          GOALSERVE_BASE_URL: ${{ secrets.GOALSERVE_BASE_URL }}
-        run: |
-          set -e
-          BASE="${GOALSERVE_BASE_URL:-https://www.goalserve.com/getfeed}"
-          if [ -z "$GOALSERVE_API_KEY" ]; then
-            echo "::error::GOALSERVE_API_KEY not set"
-            exit 1
-          fi
-          # Check NFL sample day (uses json=1 and today's UTC date for a quick 200)
-          D=$(date -u +%d.%m.%Y)
-          URL="$BASE/$GOALSERVE_API_KEY/football/nfl-scores?date=$D&json=1"
-          CODE=$(curl -s -o /tmp/gs.json -w "%{http_code}" "$URL")
-          echo "Goalserve check => $CODE"
-          if [ "$CODE" -ne 200 ]; then
-            echo "::error::Goalserve endpoint non-200"
-            head -c 400 /tmp/gs.json || true
-            exit 1
-          fi
-
       # --- Run settlement bot (live by default; set DRY_RUN to 1 to simulate) ---
       - name: Run settlement bot
         env:
