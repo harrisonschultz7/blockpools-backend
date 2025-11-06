@@ -10,6 +10,7 @@ const { SecretsManager } = require("@chainlink/functions-toolkit");
 /* =======================
  * Network / Router config
  * ======================= */
+// ✅ Ethereum Sepolia router + DON
 const FUNCTIONS_ROUTER = "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0"; // Ethereum Sepolia router
 const DON_ID = "fun-ethereum-sepolia-1"; // DON ID
 
@@ -57,27 +58,24 @@ function to0xHex(maybe) {
   // Canary marker
   const secrets = { CANARY: `vps-upload ${new Date().toISOString()}` };
 
-  // 1) Explicit Goalserve knobs your source.js now supports
-  //    Recommended for your current “key-in-path + DMY” setup:
-  //    GOALSERVE_BASE_URL=https://www.goalserve.com/getfeed/<KEY>
-  //    GOALSERVE_AUTH=path
-  //    GOALSERVE_DATE_FMT=DMY
-  //    (optional) GOALSERVE_API_KEY=<KEY>
+  // 1) Explicit Goalserve knobs your source.js supports
+  //    GOALSERVE_BASE_URL=https://www.goalserve.com/getfeed/<KEY> (or without key for header mode)
+  //    GOALSERVE_AUTH=path|header
+  //    GOALSERVE_DATE_FMT=DMY|ISO
+  //    (optional) GOALSERVE_API_KEY=<KEY>  (needed for header mode or when base lacks key segment)
   const GOALSERVE = {
-    GOALSERVE_BASE_URL: process.env.GOALSERVE_BASE_URL, // e.g., https://www.goalserve.com/getfeed/XXXXXX
+    GOALSERVE_BASE_URL: process.env.GOALSERVE_BASE_URL,
     GOALSERVE_AUTH: process.env.GOALSERVE_AUTH,         // "path" | "header"
     GOALSERVE_DATE_FMT: process.env.GOALSERVE_DATE_FMT, // "DMY" | "ISO"
-    GOALSERVE_API_KEY: process.env.GOALSERVE_API_KEY,   // optional (header mode)
+    GOALSERVE_API_KEY: process.env.GOALSERVE_API_KEY,   // optional (header mode / or base w/o key)
   };
 
-  // Warn loudly if your current recommended trio is not present
   console.log("[GOALSERVE] will upload:");
   Object.entries(GOALSERVE).forEach(([k, v]) => {
     const present = v && String(v).trim() ? `present (len=${String(v).length})` : "MISSING/empty";
     console.log(`  ${k}: ${present}`);
   });
 
-  // Apply only those that are set (empty ones are skipped)
   for (const [k, v] of Object.entries(GOALSERVE)) {
     if (v && String(v).trim()) secrets[k] = v;
   }
@@ -97,16 +95,17 @@ function to0xHex(maybe) {
     if (v && String(v).trim()) secrets[k] = v;
   }
 
-  // 3) Log the payload fingerprint
+  // 3) Log the payload fingerprint + chain/DON sanity
   const payloadKeys = Object.keys(secrets);
   const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
   console.log("Uploading DON-hosted payload with keys:", payloadKeys.join(", "));
   console.log("payload sha256:", sha, "TTL_MINUTES:", TTL_MINUTES, "SLOT_ID:", SLOT_ID);
+  console.log("[CHAINLINK]", { functionsRouter: FUNCTIONS_ROUTER, donId: DON_ID, ttlMinutes: TTL_MINUTES });
 
   /* =========================
    * Signer / RPC connection
    * ========================= */
-  const rpcUrl = process.env.ARBITRUM_SEPOLIA_RPC_URL || must("SEPOLIA_RPC_URL");
+  const rpcUrl = process.env.SEPOLIA_RPC_URL || must("SEPOLIA_RPC_URL");
   const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
   const signer = new ethers.Wallet(must("PRIVATE_KEY"), provider);
 
@@ -150,8 +149,8 @@ function to0xHex(maybe) {
 
   console.log("DON-hosted secrets uploaded:", { version: Number(version), slotId });
 
-  // Write activeSecrets.json in repo root (so send-request can read it)
-  const outPath = path.resolve(__dirname, "../../activeSecrets.json");
+  // ✅ Write to repo root so your bot reads from root
+  const outPath = path.resolve(__dirname, "activeSecrets.json");
   fs.writeFileSync(
     outPath,
     JSON.stringify(
