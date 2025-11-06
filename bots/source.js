@@ -106,15 +106,12 @@ function readScore(obj, side /* "home" | "away" */) {
 
 function isFinalStatus(raw) {
   const s = String(raw || "").trim().toLowerCase();
-  // Include common “final” variants
-  return (
-    s === "final" ||
-    s === "finished" ||
-    s === "full time" ||
-    s === "ft" ||
-    s === "aot" || // after overtime (sometimes)
-    s === "ended"
-  );
+  const n = s.replace(/\s+/g, " ").replace(/[()]/g, "").trim();
+  // Common variants across feeds/sports
+  return [
+    "final", "finished", "full time", "ft", "ended", "game over",
+    "aot", "after overtime", "final ot", "final/ot", "final overtime",
+  ].includes(n);
 }
 
 // ------------------------------ Main ---------------------------------------
@@ -134,7 +131,7 @@ async function main(args) {
   const apiKey   = getSecret("GOALSERVE_API_KEY", { fallback: "" });
   const dateFmt  = (getSecret("GOALSERVE_DATE_FMT", { fallback: "DMY" }) || "DMY").toUpperCase(); // "DMY" | "ISO"
 
-  // League → path mapping (you provided NFL endpoint: /football/nfl-scores)
+  // League → path mapping (default NFL endpoint: /football/nfl-scores)
   let sportPath = "football";
   let leaguePath = "nfl-scores";
   const L = String(league || "").toLowerCase();
@@ -191,7 +188,14 @@ async function main(args) {
   });
 
   if (!match) {
-    console.log("[NO MATCHED GAME FOR TEAMS]", { teamAname, teamBname, lookedUpOn: gsDate, url });
+    console.log("[NO MATCHED GAME FOR TEAMS]", {
+      teamAname, teamBname, lookedUpOn: gsDate, url,
+      sample: games.slice(0, 2).map(g => ({
+        home: readTeamName(g, "home"),
+        away: readTeamName(g, "away"),
+        status: g?.status ?? g?.state ?? g?.match_status
+      }))
+    });
     return Functions.encodeString("ERR");
   }
 
