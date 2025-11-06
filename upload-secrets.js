@@ -1,155 +1,99 @@
-// upload-secrets.js — DON-hosted uploader (24h TTL, old/new toolkit compatible)
+// upload-secrets.js — Lean legacy DON-hosted uploader (Ethereum Sepolia, writes ./activeSecrets.json)
 try { require("dotenv").config(); } catch (_) {}
 
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
+
+// IMPORTANT: use only the legacy upload path from the 0.3.x toolkit
 const { SecretsManager } = require("@chainlink/functions-toolkit");
 
 /* =======================
  * Network / Router config
  * ======================= */
-// ✅ Ethereum Sepolia router + DON
-const FUNCTIONS_ROUTER = "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0"; // Ethereum Sepolia router
-const DON_ID = "fun-ethereum-sepolia-1"; // DON ID
+// Ethereum Sepolia
+const FUNCTIONS_ROUTER = "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0";
+const DON_ID = "fun-ethereum-sepolia-1";
 
-// Slot ID lets you update an existing slot to keep a stable pointer
+// Keep a stable pointer with slotId if you want (0 is fine)
 const SLOT_ID = Number(process.env.SLOT_ID ?? 0);
 
-// TTL (5 min .. 7 days typical on test envs). Default: 1440 min (24h).
+// TTL: default 24h
 const TTL_MINUTES = Math.max(5, Math.min(10080, Number(process.env.DON_TTL_MINUTES || 1440)));
-const TTL_SECONDS = TTL_MINUTES * 60;
 
-// Fallback gateway URLs for older toolkit upload path
+// Two public test gateways
 const GATEWAY_URLS = [
   "https://01.functions-gateway.testnet.chain.link/",
   "https://02.functions-gateway.testnet.chain.link/",
 ];
 
-/* ==============
- * Helper funcs
- * ============== */
 function must(name) {
   const v = process.env[name];
   if (!v || !String(v).trim()) throw new Error(`Missing required env: ${name}`);
   return v;
 }
 
-function to0xHex(maybe) {
-  if (!maybe) return null;
-  if (typeof maybe === "string") {
-    if (/^0x[0-9a-fA-F]*$/.test(maybe)) return maybe;
-    if (/^[0-9a-fA-F]+$/.test(maybe)) return "0x" + maybe;
-    return null;
-  }
-  if (typeof maybe === "object") {
-    if (typeof maybe.encryptedSecretsHexstring === "string") return to0xHex(maybe.encryptedSecretsHexstring);
-    if (typeof maybe.encryptedSecrets === "string") return to0xHex(maybe.encryptedSecrets);
-    if (maybe instanceof Uint8Array) return "0x" + Buffer.from(maybe).toString("hex");
-  }
-  return null;
-}
-
-/* ==========================
- * Build the secrets payload
- * ========================== */
 (async () => {
-  // Canary marker
-  const secrets = { CANARY: `vps-upload ${new Date().toISOString()}` };
+  // Build the secrets bag (only set non-empty values)
+  const secrets = { CANARY: `legacy-upload ${new Date().toISOString()}` };
 
-  // 1) Explicit Goalserve knobs your source.js supports
-  //    GOALSERVE_BASE_URL=https://www.goalserve.com/getfeed/<KEY> (or without key for header mode)
-  //    GOALSERVE_AUTH=path|header
-  //    GOALSERVE_DATE_FMT=DMY|ISO
-  //    (optional) GOALSERVE_API_KEY=<KEY>  (needed for header mode or when base lacks key segment)
-  const GOALSERVE = {
-    GOALSERVE_BASE_URL: process.env.GOALSERVE_BASE_URL,
-    GOALSERVE_AUTH: process.env.GOALSERVE_AUTH,         // "path" | "header"
-    GOALSERVE_DATE_FMT: process.env.GOALSERVE_DATE_FMT, // "DMY" | "ISO"
-    GOALSERVE_API_KEY: process.env.GOALSERVE_API_KEY,   // optional (header mode / or base w/o key)
-  };
+  const put = (k, v) => { if (v && String(v).trim()) secrets[k] = v; };
 
-  console.log("[GOALSERVE] will upload:");
-  Object.entries(GOALSERVE).forEach(([k, v]) => {
-    const present = v && String(v).trim() ? `present (len=${String(v).length})` : "MISSING/empty";
-    console.log(`  ${k}: ${present}`);
-  });
+  // Goalserve knobs
+  put("GOALSERVE_BASE_URL", process.env.GOALSERVE_BASE_URL);
+  put("GOALSERVE_AUTH", process.env.GOALSERVE_AUTH);          // "path" | "header"
+  put("GOALSERVE_DATE_FMT", process.env.GOALSERVE_DATE_FMT);  // "DMY" | "ISO"
+  put("GOALSERVE_API_KEY", process.env.GOALSERVE_API_KEY);    // optional / header mode
 
-  for (const [k, v] of Object.entries(GOALSERVE)) {
-    if (v && String(v).trim()) secrets[k] = v;
-  }
-
-  // 2) Auto-collect any *_API_KEY and *_ENDPOINT from your env (harmless extras)
-  const apiKeyNames = Object.keys(process.env).filter((k) => /_API_KEY$/i.test(k));
-  const endpointNames = Object.keys(process.env).filter((k) => /_ENDPOINT$/i.test(k));
-  console.log("Discovered *_API_KEY:", apiKeyNames);
-  console.log("Discovered *_ENDPOINT:", endpointNames);
-
-  for (const k of apiKeyNames) {
-    const v = process.env[k];
-    if (v && String(v).trim()) secrets[k] = v;
-  }
-  for (const k of endpointNames) {
-    const v = process.env[k];
-    if (v && String(v).trim()) secrets[k] = v;
-  }
-
-  // 3) Log the payload fingerprint + chain/DON sanity
-  const payloadKeys = Object.keys(secrets);
-  const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
-  console.log("Uploading DON-hosted payload with keys:", payloadKeys.join(", "));
-  console.log("payload sha256:", sha, "TTL_MINUTES:", TTL_MINUTES, "SLOT_ID:", SLOT_ID);
-  console.log("[CHAINLINK]", { functionsRouter: FUNCTIONS_ROUTER, donId: DON_ID, ttlMinutes: TTL_MINUTES });
-
-  /* =========================
-   * Signer / RPC connection
-   * ========================= */
-  const rpcUrl = process.env.SEPOLIA_RPC_URL || must("SEPOLIA_RPC_URL");
-  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-  const signer = new ethers.Wallet(must("PRIVATE_KEY"), provider);
-
-  const sm = new SecretsManager({ signer, functionsRouterAddress: FUNCTIONS_ROUTER, donId: DON_ID });
-  await sm.initialize();
-
-  /* =========================
-   * Upload to DON (v0.4+ / v0.3)
-   * ========================= */
-  let version, slotId;
-
-  // Preferred (newer) path
-  if (typeof sm.uploadSecretsToDON === "function") {
-    try {
-      ({ version, slotId } = await sm.uploadSecretsToDON({
-        secrets,
-        secondsUntilExpiration: Math.max(300, Math.min(10080 * 60, TTL_SECONDS)),
-        slotId: SLOT_ID,
-      }));
-      console.log("Used uploadSecretsToDON");
-    } catch (e) {
-      console.warn("uploadSecretsToDON failed, falling back:", e.message || e);
+  // Also sweep *_API_KEY and *_ENDPOINT envs
+  for (const k of Object.keys(process.env)) {
+    if (/_API_KEY$/i.test(k) || /_ENDPOINT$/i.test(k)) {
+      put(k, process.env[k]);
     }
   }
 
-  // Back-compat path (toolkit 0.3.x)
-  if (!version && typeof sm.encryptSecrets === "function" && typeof sm.uploadEncryptedSecretsToDON === "function") {
-    const enc = await sm.encryptSecrets(secrets);
-    const encryptedSecretsHexstring = to0xHex(enc);
-    if (!encryptedSecretsHexstring) throw new Error("encryptSecrets() did not return a valid hex payload");
-    ({ version, slotId } = await sm.uploadEncryptedSecretsToDON({
-      encryptedSecretsHexstring,
-      gatewayUrls: GATEWAY_URLS,
-      minutesUntilExpiration: TTL_MINUTES,
-      slotId: SLOT_ID,
-    }));
-    console.log("Used uploadEncryptedSecretsToDON (fallback, 0.3.x)");
-  }
+  // Log fingerprint only (no values)
+  const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
+  console.log("[UPLOAD] keys:", Object.keys(secrets).join(", "));
+  console.log("[UPLOAD] sha256:", sha, "TTL_MINUTES:", TTL_MINUTES, "SLOT_ID:", SLOT_ID);
+  console.log("[CHAINLINK]", { functionsRouter: FUNCTIONS_ROUTER, donId: DON_ID });
 
-  if (!version) throw new Error("No compatible DON-hosted upload method found on this toolkit build.");
+  // Signer
+  const rpcUrl = must("SEPOLIA_RPC_URL");
+  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+  const signer = new ethers.Wallet(must("PRIVATE_KEY"), provider);
+
+  const sm = new SecretsManager({
+    signer,
+    functionsRouterAddress: FUNCTIONS_ROUTER,
+    donId: DON_ID,
+  });
+  await sm.initialize();
+
+  // **Legacy path only** to avoid extra deps: encrypt -> upload via gateway
+  const enc = await sm.encryptSecrets(secrets);
+  const encryptedSecretsHexstring = (() => {
+    if (typeof enc === "string" && /^0x[0-9a-fA-F]*$/.test(enc)) return enc;
+    if (typeof enc === "string") return "0x" + Buffer.from(enc, "utf8").toString("hex");
+    if (enc instanceof Uint8Array) return "0x" + Buffer.from(enc).toString("hex");
+    if (enc && typeof enc === "object" && typeof enc.encryptedSecretsHexstring === "string") {
+      const s = enc.encryptedSecretsHexstring;
+      return /^0x/.test(s) ? s : "0x" + s;
+    }
+    throw new Error("encryptSecrets() did not return a valid hex payload");
+  })();
+
+  const { version, slotId } = await sm.uploadEncryptedSecretsToDON({
+    encryptedSecretsHexstring,
+    gatewayUrls: GATEWAY_URLS,
+    minutesUntilExpiration: TTL_MINUTES,
+    slotId: SLOT_ID,
+  });
 
   console.log("DON-hosted secrets uploaded:", { version: Number(version), slotId });
 
-  // ✅ Write to repo root so your bot reads from root
+  // Write pointer at repo root
   const outPath = path.resolve(__dirname, "activeSecrets.json");
   fs.writeFileSync(
     outPath,
@@ -167,6 +111,6 @@ function to0xHex(maybe) {
   );
   console.log("Wrote", outPath);
 })().catch((e) => {
-  console.error("Upload failed:", e);
+  console.error("Upload failed:", e?.stack || e);
   process.exit(1);
 });
