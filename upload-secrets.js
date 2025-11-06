@@ -7,28 +7,34 @@ const crypto = require("crypto");
 const { ethers } = require("ethers");
 const { SecretsManager } = require("@chainlink/functions-toolkit");
 
-// --- Network/Router (Ethereum Sepolia)
-const FUNCTIONS_ROUTER = "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0";
-const DON_ID = "fun-ethereum-sepolia-1";
+/* =======================
+ * Network / Router config
+ * ======================= */
+const FUNCTIONS_ROUTER = "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0"; // Ethereum Sepolia router
+const DON_ID = "fun-ethereum-sepolia-1"; // DON ID
 
-// IMPORTANT: keep this in sync with your send script (or read from activeSecrets.json there).
+// Slot ID lets you update an existing slot to keep a stable pointer
 const SLOT_ID = Number(process.env.SLOT_ID ?? 0);
 
-// TTL (5 min .. 7 days typical on test envs)
+// TTL (5 min .. 7 days typical on test envs). Default: 1440 min (24h).
 const TTL_MINUTES = Math.max(5, Math.min(10080, Number(process.env.DON_TTL_MINUTES || 1440)));
 const TTL_SECONDS = TTL_MINUTES * 60;
 
-// Fallback path for older toolkit
+// Fallback gateway URLs for older toolkit upload path
 const GATEWAY_URLS = [
   "https://01.functions-gateway.testnet.chain.link/",
   "https://02.functions-gateway.testnet.chain.link/",
 ];
 
+/* ==============
+ * Helper funcs
+ * ============== */
 function must(name) {
   const v = process.env[name];
   if (!v || !String(v).trim()) throw new Error(`Missing required env: ${name}`);
   return v;
 }
+
 function to0xHex(maybe) {
   if (!maybe) return null;
   if (typeof maybe === "string") {
@@ -44,46 +50,62 @@ function to0xHex(maybe) {
   return null;
 }
 
+/* ==========================
+ * Build the secrets payload
+ * ========================== */
 (async () => {
-  // --- Deep debug: show what REALLY exists in process.env for these keys
-  const leagueKeys = ["MLB_API_KEY","NFL_API_KEY","NBA_API_KEY","NHL_API_KEY","EPL_API_KEY","UCL_API_KEY"];
-  console.log("Env presence (process.env) for *_API_KEY:");
-  for (const k of leagueKeys) {
-    const val = process.env[k];
-    console.log(
-      `  ${k}:`,
-      val && String(val).trim() ? `present (len=${String(val).length})` : "MISSING/empty"
-    );
+  // Canary marker
+  const secrets = { CANARY: `vps-upload ${new Date().toISOString()}` };
+
+  // 1) Explicit Goalserve knobs your source.js now supports
+  //    Recommended for your current “key-in-path + DMY” setup:
+  //    GOALSERVE_BASE_URL=https://www.goalserve.com/getfeed/<KEY>
+  //    GOALSERVE_AUTH=path
+  //    GOALSERVE_DATE_FMT=DMY
+  //    (optional) GOALSERVE_API_KEY=<KEY>
+  const GOALSERVE = {
+    GOALSERVE_BASE_URL: process.env.GOALSERVE_BASE_URL, // e.g., https://www.goalserve.com/getfeed/XXXXXX
+    GOALSERVE_AUTH: process.env.GOALSERVE_AUTH,         // "path" | "header"
+    GOALSERVE_DATE_FMT: process.env.GOALSERVE_DATE_FMT, // "DMY" | "ISO"
+    GOALSERVE_API_KEY: process.env.GOALSERVE_API_KEY,   // optional (header mode)
+  };
+
+  // Warn loudly if your current recommended trio is not present
+  console.log("[GOALSERVE] will upload:");
+  Object.entries(GOALSERVE).forEach(([k, v]) => {
+    const present = v && String(v).trim() ? `present (len=${String(v).length})` : "MISSING/empty";
+    console.log(`  ${k}: ${present}`);
+  });
+
+  // Apply only those that are set (empty ones are skipped)
+  for (const [k, v] of Object.entries(GOALSERVE)) {
+    if (v && String(v).trim()) secrets[k] = v;
   }
 
-  // Collect secrets dynamically
-  const secrets = { CANARY: `gh-actions-${new Date().toISOString()}` };
-
-  // Pick up every *_API_KEY present in env
-  const apiKeyNames = Object.keys(process.env).filter(k => /_API_KEY$/i.test(k));
-  // Also log the names we see in Node (not just in the workflow echo)
-  console.log("Discovered *_API_KEY names in process.env:", apiKeyNames);
+  // 2) Auto-collect any *_API_KEY and *_ENDPOINT from your env (harmless extras)
+  const apiKeyNames = Object.keys(process.env).filter((k) => /_API_KEY$/i.test(k));
+  const endpointNames = Object.keys(process.env).filter((k) => /_ENDPOINT$/i.test(k));
+  console.log("Discovered *_API_KEY:", apiKeyNames);
+  console.log("Discovered *_ENDPOINT:", endpointNames);
 
   for (const k of apiKeyNames) {
     const v = process.env[k];
     if (v && String(v).trim()) secrets[k] = v;
   }
-
-  // Optionally upload *_ENDPOINT too (harmless if unused)
-  const endpointNames = Object.keys(process.env).filter(k => /_ENDPOINT$/i.test(k));
-  console.log("Discovered *_ENDPOINT names in process.env:", endpointNames);
   for (const k of endpointNames) {
     const v = process.env[k];
     if (v && String(v).trim()) secrets[k] = v;
   }
 
-  // Build + log the payload keys we will upload
+  // 3) Log the payload fingerprint
   const payloadKeys = Object.keys(secrets);
   const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
-  console.log("Building DON-hosted payload. keys:", payloadKeys.join(", "));
+  console.log("Uploading DON-hosted payload with keys:", payloadKeys.join(", "));
   console.log("payload sha256:", sha, "TTL_MINUTES:", TTL_MINUTES, "SLOT_ID:", SLOT_ID);
 
-  // Signer & RPC (prefer Arbitrum var if present later; you’re on Sepolia today)
+  /* =========================
+   * Signer / RPC connection
+   * ========================= */
   const rpcUrl = process.env.ARBITRUM_SEPOLIA_RPC_URL || must("SEPOLIA_RPC_URL");
   const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
   const signer = new ethers.Wallet(must("PRIVATE_KEY"), provider);
@@ -91,6 +113,9 @@ function to0xHex(maybe) {
   const sm = new SecretsManager({ signer, functionsRouterAddress: FUNCTIONS_ROUTER, donId: DON_ID });
   await sm.initialize();
 
+  /* =========================
+   * Upload to DON (v0.4+ / v0.3)
+   * ========================= */
   let version, slotId;
 
   // Preferred (newer) path
@@ -107,7 +132,7 @@ function to0xHex(maybe) {
     }
   }
 
-  // Back-compat path
+  // Back-compat path (toolkit 0.3.x)
   if (!version && typeof sm.encryptSecrets === "function" && typeof sm.uploadEncryptedSecretsToDON === "function") {
     const enc = await sm.encryptSecrets(secrets);
     const encryptedSecretsHexstring = to0xHex(enc);
@@ -125,12 +150,18 @@ function to0xHex(maybe) {
 
   console.log("DON-hosted secrets uploaded:", { version: Number(version), slotId });
 
-  // Always write to REPO ROOT so the sender picks up the latest pointer
+  // Write activeSecrets.json in repo root (so send-request can read it)
   const outPath = path.resolve(__dirname, "../../activeSecrets.json");
   fs.writeFileSync(
     outPath,
     JSON.stringify(
-      { secretsVersion: Number(version), slotId: Number(slotId ?? SLOT_ID), donId: DON_ID, uploadedAt: new Date().toISOString(), canary: secrets.CANARY },
+      {
+        secretsVersion: Number(version),
+        slotId: Number(slotId ?? SLOT_ID),
+        donId: DON_ID,
+        uploadedAt: new Date().toISOString(),
+        canary: secrets.CANARY,
+      },
       null,
       2
     )
