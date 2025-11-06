@@ -30,17 +30,16 @@ const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);            /
 
 const DRY_RUN = process.env.DRY_RUN === "1";
 
-/** We will ALWAYS require a provider-final check regardless of this flag. */
-const REQUIRE_FINAL_CHECK = true; // hard-enforced
+/** Always require a provider-final check (hard enforced). */
+const REQUIRE_FINAL_CHECK = true;
 
 /** Minimum time after lock before we consider settlement (seconds). */
 const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);
-/** Cooldown right after lock, to avoid racey starts (seconds). */
+/** Cooldown after lock, to avoid racey starts (seconds). */
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
 // Concurrency controls
 const READ_CONCURRENCY   = Number(process.env.READ_CONCURRENCY   || 25);
-const TX_SIM_CONCURRENCY = Number(process.env.TX_SIM_CONCURRENCY || 10);
 const TX_SEND_CONCURRENCY= Number(process.env.TX_SEND_CONCURRENCY|| 3);
 
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
@@ -137,10 +136,9 @@ const { abi: poolAbi } = loadGamePoolAbi();
 const iface = new ethers.utils.Interface(poolAbi);
 
 /* ──────────────────────────────────────────────────────────────────────────────
-   Utils
+   Small utils
 ────────────────────────────────────────────────────────────────────────────── */
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
 function limiter(concurrency: number) {
   let active = 0;
   const queue: Array<() => void> = [];
@@ -261,8 +259,11 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
-   Goalserve helpers: robust team matching (full names + inferred codes)
+   Goalserve helpers: fetching, parsing, matching
 ────────────────────────────────────────────────────────────────────────────── */
+const finalsSet = new Set(["final", "finished", "full time", "ft"]);
+
+// normalize text for matching
 const norm = (s: string) =>
   (s || "")
     .normalize("NFD")
@@ -273,106 +274,182 @@ const norm = (s: string) =>
     .trim()
     .toLowerCase();
 
-function normTokens(s?: string): string[] {
-  return String(s ?? "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[’'`]/g, "").replace(/[^a-z0-9 ]/gi, " ")
-    .toLowerCase().split(/\s+/).filter(Boolean);
+const trimU = (s?: string) => String(s || "").trim().toUpperCase();
+
+function acronym(s: string): string {
+  const parts = (s || "").split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  return parts.map(p => p[0]?.toUpperCase() || "").join("");
 }
 
-function sameTokenSet(a: Set<string>, b: Set<string>) {
-  return a.size === b.size && [...a].every(t => b.has(t));
-}
-
-// Build code-like aliases from provider names (e.g., "New York Giants" -> NYG, "NY", "NG")
-function codeAliasesFromName(name?: string): Set<string> {
-  const t = normTokens(name);
-  const out = new Set<string>();
-  if (!t.length) return out;
-
-  // City first 3 letters (PHI), and first 2 (NY, LA, SF)
-  if (t[0]?.length >= 3) out.add(t[0].slice(0,3).toUpperCase());
-  if (t[0]?.length >= 2) out.add(t[0].slice(0,2).toUpperCase());
-
-  // Initials: CityCity+Nick -> NYG, LAR; also City+Nick -> PE (Philadelphia Eagles)
-  if (t.length >= 2) {
-    const firstTwo = (t[0][0] || "") + (t[1][0] || "");
-    const lastInit = (t[t.length-1][0] || "");
-    const cand3 = (firstTwo + lastInit).toUpperCase();
-    if (cand3.length === 3) out.add(cand3);
-    if (t.length === 2) out.add((t[0][0] + t[1][0]).toUpperCase());
+async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
+  let lastErr: any;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      lastErr = e;
+      if (i < tries - 1) await sleep(backoffMs * (i + 1));
+    }
   }
-
-  // Fallback two-letter city initials again
-  if (t.length >= 2) out.add(((t[0][0] || "") + (t[1][0] || "")).toUpperCase());
-
-  return out;
+  throw lastErr;
 }
 
-function unorderedTeamsMatchByTokens(providerHome: string, providerAway: string, aName?: string, bName?: string, aCode?: string, bCode?: string) {
-  // Full-name token matching
-  const A = new Set(normTokens(aName));
-  const B = new Set(normTokens(bName));
-  const PH = new Set(normTokens(providerHome));
-  const PA = new Set(normTokens(providerAway));
-
-  const fullNameMatch =
-    (A.size && B.size && PH.size && PA.size) &&
-    (sameTokenSet(PH, A) && sameTokenSet(PA, B) || sameTokenSet(PH, B) && sameTokenSet(PA, A));
-
-  if (fullNameMatch) return true;
-
-  // Code inference fallback
-  const homeCodes = codeAliasesFromName(providerHome);
-  const awayCodes = codeAliasesFromName(providerAway);
-  const AC = String(aCode || "").toUpperCase();
-  const BC = String(bCode || "").toUpperCase();
-
-  const codeNameMatch =
-    (homeCodes.has(AC) && awayCodes.has(BC)) ||
-    (homeCodes.has(BC) && awayCodes.has(AC));
-
-  return codeNameMatch;
-}
-
-// lockTime -> "dd.MM.yyyy" (Goalserve format; UTC-based to be deterministic)
-function toGoalserveDate(epochSec?: number) {
-  const ms = (epochSec ?? Math.floor(Date.now()/1000)) * 1000;
-  const d = new Date(ms);
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const yyyy = d.getUTCFullYear();
-  return `${dd}.${mm}.${yyyy}`;
-}
-
-// Minimal league→path mapper (extend if you add more later)
-function goalservePaths(leagueLabel: string) {
-  const L = String(leagueLabel || "").toLowerCase();
-  if (L === "nfl") return { sportPath: "football", leaguePath: "nfl-scores" };
-  // default: NFL
-  return { sportPath: "football", leaguePath: "nfl-scores" };
-}
-
-async function fetchGoalserveDay(url: string) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Goalserve HTTP ${res.status}`);
-  // Assumes &json=1
-  return res.json();
-}
-
-function extractGames(payload: any): any[] {
+function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
+  // Common Goalserve shapes:
+  // { games: { game: [...] } } OR { game: [...] } OR any arraylists nested.
+  if (Array.isArray(payload?.games?.game)) return payload.games.game;
+  if (Array.isArray(payload?.game)) return payload.game;
   if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload.games?.game)) return payload.games.game;
-  if (Array.isArray(payload.game)) return payload.game;
-  if (Array.isArray(payload.events)) return payload.events;
+  // fallback: collect all arrays within object
   if (typeof payload === "object") {
-    const vals = Object.values(payload);
-    const arrs = vals.filter(v => Array.isArray(v)).flat();
-    if (arrs.length) return arrs;
-    return vals.filter(v => v && typeof v === "object");
+    const arrs = Object.values(payload).filter(v => Array.isArray(v)) as any[];
+    if (arrs.length) return arrs.flat();
   }
   return [];
+}
+
+function normalizeGameRow(r: any) {
+  // Try both nested and flat props
+  const homeName = r?.hometeam?.name ?? r?.home_name ?? r?.home ?? "";
+  const awayName = r?.awayteam?.name ?? r?.away_name ?? r?.away ?? "";
+
+  const homeScore = Number(r?.hometeam?.totalscore ?? r?.home_score ?? 0);
+  const awayScore = Number(r?.awayteam?.totalscore ?? r?.away_score ?? 0);
+
+  const status = String(r?.status || "").trim();
+
+  return {
+    homeName,
+    awayName,
+    homeScore,
+    awayScore,
+    status,
+  };
+}
+
+// Parse "26.10.2025 17:00" (UTC) safely
+function parseDatetimeUTC(s?: string): number | undefined {
+  if (!s) return;
+  const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+  if (!m) return;
+  const [_, dd, MM, yyyy, HH, mm] = m;
+  const y = Number(yyyy), mo = Number(MM) - 1, d = Number(dd), h = Number(HH), mi = Number(mm);
+  const t = Date.UTC(y, mo, d, h, mi, 0, 0);
+  return isFinite(t) ? Math.floor(t / 1000) : undefined;
+}
+
+// Parse "26.10.2025" + "12:00 PM" (fallback; treat as UTC-ish)
+function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | undefined {
+  if (!dateStr) return;
+  const md = dateStr.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (!md) return;
+  const [_, dd, MM, yyyy] = md;
+  let h = 0, mi = 0;
+  if (timeStr) {
+    const ampm = timeStr.trim().toUpperCase();
+    const mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
+    if (mh) {
+      h = Number(mh[1]); mi = Number(mh[2]);
+      const mer = mh[3];
+      if (mer === "PM" && h < 12) h += 12;
+      if (mer === "AM" && h === 12) h = 0;
+    } else {
+      const mh24 = ampm.match(/^(\d{1,2}):(\d{2})$/);
+      if (mh24) { h = Number(mh24[1]); mi = Number(mh24[2]); }
+    }
+  }
+  const t = Date.UTC(Number(yyyy), Number(MM)-1, Number(dd), h, mi, 0, 0);
+  return isFinite(t) ? Math.floor(t / 1000) : undefined;
+}
+
+function kickoffEpochFromRaw(raw: any): number | undefined {
+  const t1 = parseDatetimeUTC(raw?.datetime_utc);
+  if (t1) return t1;
+  return parseDateAndTimeAsUTC(
+    raw?.date ?? raw?.formatted_date,
+    raw?.time ?? raw?.start_time ?? raw?.start
+  );
+}
+
+// Team matching (unordered: (home,away) == (A,B) or (B,A))
+// - Accept if code matches (PHI/NYG)
+// - Or if normalized names match
+// - Or if acronym matches ("New York Giants" => "NYG")
+function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
+  const nApi = norm(apiName);
+  const nWant = norm(wantName);
+  const code = trimU(wantCode);
+  if (!nApi) return false;
+
+  // exact normalized name
+  if (nApi && nWant && nApi === nWant) return true;
+
+  // acronym match (e.g., "NYG" ↔ "New York Giants")
+  const apiAcr = acronym(apiName);
+  const wantAcr = acronym(wantName);
+  if (code && apiAcr === code) return true;
+  if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
+
+  // token containment (e.g., "giants" present if wantName contains it)
+  const tokens = new Set(nApi.split(" "));
+  const wantTokens = new Set(nWant.split(" "));
+  const overlap = [...wantTokens].some(t => t.length > 2 && tokens.has(t));
+  if (overlap) return true;
+
+  return false;
+}
+
+function unorderedTeamsMatchByTokens(homeName: string, awayName: string, AName: string, BName: string, ACode: string, BCode: string) {
+  const hA = teamMatchesOneSide(homeName, AName, ACode);
+  const aB = teamMatchesOneSide(awayName, BName, BCode);
+  const hB = teamMatchesOneSide(homeName, BName, BCode);
+  const aA = teamMatchesOneSide(awayName, AName, ACode);
+  return (hA && aB) || (hB && aA);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────────
+   Goalserve date/path strategy (NFL-first) with [0, +1, -1] offsets
+────────────────────────────────────────────────────────────────────────────── */
+function goalserveLeaguePaths(leagueLabel: string): { sportPath: string, leaguePaths: string[] } {
+  // NFL only (explicit) with fallback legacy path
+  return { sportPath: "football", leaguePaths: ["nfl-scores", "nfl"] };
+}
+
+async function tryFetchGoalserve(league: string, lockTime: number) {
+  const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
+
+  // ORDER: same day → next day → previous day (UTC roll-over handling)
+  const offsets = [0, +1, -1];
+  const tried: string[] = [];
+
+  for (const off of offsets) {
+    const baseISO = epochToEtISO(lockTime);
+    const d = addDaysISO(baseISO, off);
+    const [Y, M, D] = d.split("-");
+    const ddmmyyyy = `${D}.${M}.${Y}`;
+
+    for (const lp of leaguePaths) {
+      const url = `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/${sportPath}/${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
+      tried.push(url);
+      try {
+        const payload = await fetchJsonWithRetry(url, 3, 500);
+        const rawGames = collectCandidateGames(payload);
+        if (rawGames.length) {
+          const games = rawGames.map((r) => {
+            const g = normalizeGameRow(r);
+            return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
+          });
+          return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
+        }
+      } catch {
+        // try next
+      }
+    }
+  }
+  return { ok: false, tried };
 }
 
 async function confirmFinalGoalserve(params: {
@@ -380,63 +457,69 @@ async function confirmFinalGoalserve(params: {
   lockTime: number;
   teamAName: string; teamBName: string;
   teamACode?: string; teamBCode?: string;
-}): Promise<{ ok: boolean; winner?: "A" | "B" | "TIE"; reason?: string }> {
+}): Promise<{ ok: boolean; winner?: "A" | "B" | "TIE"; reason?: string, debug?: any }> {
   if (!GOALSERVE_API_KEY) return { ok: false, reason: "missing GOALSERVE_API_KEY" };
 
-  const { sportPath, leaguePath } = goalservePaths(params.league);
-  const date = toGoalserveDate(params.lockTime);
-  const url = `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/${sportPath}/${leaguePath}?date=${encodeURIComponent(date)}&json=1`;
+  const resp = await tryFetchGoalserve(params.league, params.lockTime);
+  if (!resp.ok) return { ok: false, reason: "no games (all fetch attempts failed)" };
 
-  let payload: any;
-  try {
-    payload = await fetchGoalserveDay(url);
-  } catch (e: any) {
-    return { ok: false, reason: `fetch fail: ${e?.message || e}` };
+  const aName = params.teamAName, bName = params.teamBName;
+  const aCode = params.teamACode ?? "", bCode = params.teamBCode ?? "";
+
+  // 1) Filter to team matches (unordered)
+  const candidates = resp.games.filter(g =>
+    unorderedTeamsMatchByTokens(g.homeName, g.awayName, aName, bName, aCode, bCode)
+  );
+
+  if (!candidates.length) {
+    const sample = resp.games.slice(0, 3).map(g => `${g.awayName || "?"} @ ${g.homeName || "?"}`).join(" | ");
+    return { ok: false, reason: `no team match (sample: ${sample || "none"})`, debug: { url: resp.url, date: resp.dateTried } };
   }
 
-  const games = extractGames(payload);
-  if (!games.length) return { ok: false, reason: "no games" };
-
-  const aName = params.teamAName;
-  const bName = params.teamBName;
-  const aCode = params.teamACode ?? "";
-  const bCode = params.teamBCode ?? "";
-
-  // Find the game by (full-name tokens) OR (inferred codes vs on-chain codes), order-agnostic
-  const match = games.find(g => {
-    const home = g?.hometeam?.name ?? g?.home_name ?? g?.home ?? "";
-    const away = g?.awayteam?.name ?? g?.away_name ?? g?.away ?? "";
-    if (!home || !away) return false;
-    return unorderedTeamsMatchByTokens(home, away, aName, bName, aCode, bCode);
+  // 2) Sort by proximity to lockTime, then prefer already-final
+  candidates.sort((g1, g2) => {
+    const t1 = g1.__kickoff ?? Number.MAX_SAFE_INTEGER;
+    const t2 = g2.__kickoff ?? Number.MAX_SAFE_INTEGER;
+    const d1 = Math.abs(t1 - params.lockTime);
+    const d2 = Math.abs(t2 - params.lockTime);
+    if (d1 !== d2) return d1 - d2;
+    const f1 = finalsSet.has((g1.status || "").toLowerCase()) ? 1 : 0;
+    const f2 = finalsSet.has((g2.status || "").toLowerCase()) ? 1 : 0;
+    return f2 - f1;
   });
 
-  if (!match) {
-    // small debug to see what names we tried
-    const sample = games.slice(0, 3).map(g => `${g?.awayteam?.name ?? g?.away_name ?? g?.away ?? "?"} @ ${g?.hometeam?.name ?? g?.home_name ?? g?.home ?? "?"}`).join(" | ");
-    return { ok: false, reason: `no team match (sample: ${sample})` };
-  }
+  const match = candidates[0];
+  const isFinal = finalsSet.has((match.status || "").toLowerCase());
+  if (!isFinal) return { ok: false, reason: "not final", debug: { url: resp.url, date: resp.dateTried, picked: match } };
 
-  const status = String(match?.status || "").trim().toLowerCase();
-  const isFinal = ["final", "finished", "full time"].includes(status);
-  if (!isFinal) return { ok: false, reason: "not final" };
-
-  // Scores determine winner (ties rare but supported)
-  const homeScore = Number(match?.hometeam?.totalscore ?? match?.home_score ?? 0);
-  const awayScore = Number(match?.awayteam?.totalscore ?? match?.away_score ?? 0);
-
-  const homeName = match?.hometeam?.name ?? match?.home_name ?? match?.home ?? "";
-  const homeIsA = unorderedTeamsMatchByTokens(homeName, "", aName, "", aCode, "");
-  const homeIsB = unorderedTeamsMatchByTokens(homeName, "", bName, "", bCode, "");
+  // Decide winner by home/away scores vs which side is A or B
+  const homeIsA = teamMatchesOneSide(match.homeName, aName, aCode);
+  const homeIsB = teamMatchesOneSide(match.homeName, bName, bCode);
 
   let winner: "A" | "B" | "TIE" = "TIE";
-  if (homeScore > awayScore) winner = homeIsA ? "A" : homeIsB ? "B" : "TIE";
-  else if (awayScore > homeScore) winner = homeIsA ? "B" : homeIsB ? "A" : "TIE";
+  if (match.homeScore > match.awayScore) winner = homeIsA ? "A" : homeIsB ? "B" : "TIE";
+  else if (match.awayScore > match.homeScore) winner = homeIsA ? "B" : homeIsB ? "A" : "TIE";
 
-  return { ok: true, winner };
+  return {
+    ok: true,
+    winner,
+    debug: {
+      url: resp.url,
+      date: resp.dateTried,
+      picked: {
+        home: match.homeName,
+        away: match.awayName,
+        status: match.status,
+        homeScore: match.homeScore,
+        awayScore: match.awayScore,
+        kickoff: match.__kickoff,
+      }
+    }
+  };
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
-   Error decoding
+   Error decoding helpers
 ────────────────────────────────────────────────────────────────────────────── */
 const FUNCTIONS_ROUTER_ERRORS = [
   "error EmptyArgs()", "error EmptySource()", "error InsufficientBalance()",
@@ -540,10 +623,10 @@ async function main() {
 
   const nowSec = Math.floor(Date.now() / 1000);
 
-  // Pools we own, are locked, not settled/requested, and no winningTeam yet
+  // Pools we own, are locked, not requested, and no winningTeam yet
   const gated = states.filter(s => s.isOwner && s.isLocked && !s.requestSent && s.winningTeam === 0);
 
-  // Time gates
+  // Time gates (only use planned lockTime for scheduling; actual locking already done on-chain)
   const timeGated = gated.filter(s =>
     (s.lockTime === 0 || nowSec >= s.lockTime + REQUEST_GAP_SECONDS) &&
     (s.lockTime === 0 || nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED)
@@ -559,7 +642,7 @@ async function main() {
     return;
   }
 
-  // STEP 2: Provider finality checks — Goalserve
+  // STEP 2: Provider finality checks — NFL-first with date offsets and closest-kickoff tie-break
   const finalEligible: PoolState[] = [];
   for (const s of timeGated) {
     const pre = await confirmFinalGoalserve({
@@ -572,7 +655,11 @@ async function main() {
     });
 
     if (pre.ok) {
-      console.log(`[OK] FINAL via Goalserve: ${s.league} ${s.teamAName} vs ${s.teamBName} (winner=${pre.winner})`);
+      const dbg = pre.debug || {};
+      console.log(`[OK] FINAL: ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${pre.winner} :: date=${dbg.date} url=${dbg.url}`);
+      if (dbg.picked) {
+        console.log(`     picked=${dbg.picked.away} @ ${dbg.picked.home} status=${dbg.picked.status} score=${dbg.picked.awayScore}-${dbg.picked.homeScore} kickoff=${dbg.picked.kickoff}`);
+      }
       finalEligible.push(s);
     } else {
       console.log(`[SKIP] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason}`);
@@ -585,15 +672,14 @@ async function main() {
   }
   console.log(`✅ Provider confirmed FINAL for ${finalEligible.length} pool(s). Proceeding.`);
 
-  /* STEP 3: Simulate & send — always 8 args (the new source.js doesn't need idEvent) */
+  /* STEP 3: Simulate & send — always 8 args (no idEvent needed) */
   const { secretsVersion: sv } = await loadActiveSecrets();
   const donHostedSecretsVersion2 = BigInt(sv);
 
   const buildArgs8 = (s: PoolState): string[] => {
     const d0 = epochToEtISO(s.lockTime), d1 = addDaysISO(d0, 1);
-    const leagueArg = s.league;
     return [
-      leagueArg,
+      s.league,
       d0,
       d1,
       s.teamACode.toUpperCase(),
@@ -612,7 +698,7 @@ async function main() {
     const pool = new ethers.Contract(s.addr, poolAbi, wallet);
     const args = buildArgs8(s);
 
-    // simulate
+    // Simulate
     try {
       await pool.callStatic.sendRequest(
         SOURCE,
@@ -629,6 +715,7 @@ async function main() {
       continue;
     }
 
+    // Send
     if (!DRY_RUN) {
       await sendLimit(async () => {
         try {
@@ -646,9 +733,8 @@ async function main() {
           submitted++;
         } catch (e: any) {
           const data = e?.data ?? e?.error?.data;
-          let decoded = "unknown"; try { decoded = iface.parseError(data).name; } catch {}
           console.error(`[ERR] sendRequest ${s.addr}:`, e?.reason || e?.message || e);
-          if (data) console.error(` selector = ${data.slice?.(0,10)} (${decoded})`);
+          if (data?.slice) console.error(` selector = ${data.slice(0,10)} (${decodeRevert(data)})`);
         }
       });
     } else {
