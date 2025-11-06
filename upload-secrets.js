@@ -1,116 +1,76 @@
-// upload-secrets.js — Lean legacy DON-hosted uploader (Ethereum Sepolia, writes ./activeSecrets.json)
-try { require("dotenv").config(); } catch (_) {}
-
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const { ethers } = require("ethers");
-
-// IMPORTANT: use only the legacy upload path from the 0.3.x toolkit
-const { SecretsManager } = require("@chainlink/functions-toolkit");
-
-/* =======================
- * Network / Router config
- * ======================= */
-// Ethereum Sepolia
-const FUNCTIONS_ROUTER = "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0";
-const DON_ID = "fun-ethereum-sepolia-1";
-
-// Keep a stable pointer with slotId if you want (0 is fine)
-const SLOT_ID = Number(process.env.SLOT_ID ?? 0);
-
-// TTL: default 24h
-const TTL_MINUTES = Math.max(5, Math.min(10080, Number(process.env.DON_TTL_MINUTES || 1440)));
-
-// Two public test gateways
-const GATEWAY_URLS = [
-  "https://01.functions-gateway.testnet.chain.link/",
-  "https://02.functions-gateway.testnet.chain.link/",
-];
-
-function must(name) {
-  const v = process.env[name];
-  if (!v || !String(v).trim()) throw new Error(`Missing required env: ${name}`);
-  return v;
-}
-
-(async () => {
-  // Build the secrets bag (only set non-empty values)
-  const secrets = { CANARY: `legacy-upload ${new Date().toISOString()}` };
-
-  const put = (k, v) => { if (v && String(v).trim()) secrets[k] = v; };
-
-  // Goalserve knobs
-  put("GOALSERVE_BASE_URL", process.env.GOALSERVE_BASE_URL);
-  put("GOALSERVE_AUTH", process.env.GOALSERVE_AUTH);          // "path" | "header"
-  put("GOALSERVE_DATE_FMT", process.env.GOALSERVE_DATE_FMT);  // "DMY" | "ISO"
-  put("GOALSERVE_API_KEY", process.env.GOALSERVE_API_KEY);    // optional / header mode
-
-  // Also sweep *_API_KEY and *_ENDPOINT envs
-  for (const k of Object.keys(process.env)) {
-    if (/_API_KEY$/i.test(k) || /_ENDPOINT$/i.test(k)) {
-      put(k, process.env[k]);
-    }
+{
+  "name": "functions-hardhat-starter-kit",
+  "license": "MIT",
+  "version": "0.2.1",
+  "description": "Tooling for interacting with Chainlink Functions",
+  "scripts": {
+    "prepare": "husky install",
+    "compile": "hardhat compile",
+    "test": "npm run test:unit",
+    "test:unit": "hardhat test test/unit/*.spec.js",
+    "startLocalFunctionsTestnet": "node scripts/startLocalFunctionsTestnet.js",
+    "listen": "nodemon scripts/listen.js",
+    "lint": "npm run lint:contracts && npm run format:check",
+    "lint:fix": "solhint 'contracts/**/*.sol' --fix",
+    "lint:contracts": "solhint 'contracts/*.sol'",
+    "lint:contracts:fix": "solhint 'contracts/**/*.sol' --fix",
+    "format:check": "prettier --check .",
+    "format:fix": "prettier --write ."
+  },
+  "dependencies": {
+    "@chainlink/contracts": "^1.4.0",
+    "@chainlink/env-enc": "^1.0.5",
+    "@chainlink/functions-toolkit": "0.3.2",
+    "@ethersproject/abi": "^5.7.0",
+    "@ethersproject/providers": "^5.7.1",
+    "@nomicfoundation/hardhat-chai-matchers": "^1.0.3",
+    "@nomicfoundation/hardhat-network-helpers": "^1.0.6",
+    "@nomicfoundation/hardhat-toolbox": "^2.0.0",
+    "@nomiclabs/hardhat-ethers": "^2.2.2",
+    "@openzeppelin/contracts-upgradeable": "^4.9.3",
+    "@typechain/ethers-v5": "^10.1.0",
+    "@typechain/hardhat": "^6.1.3",
+    "axios": "^1.1.3",
+    "chai": "^4.3.6",
+    "dotenv": "^17.2.1",
+    "eth-crypto": "^2.4.0",
+    "ethers": "^5.7.2",
+    "hardhat": "^2.17.3",
+    "hardhat-contract-sizer": "^2.6.1",
+    "hardhat-gas-reporter": "^1.0.9",
+    "husky": "^8.0.1",
+    "lint-staged": "^13.0.3",
+    "nodemon": "^3.0.1",
+    "ora": "5.4.1",
+    "prettier": "^2.7.1",
+    "prettier-plugin-solidity": "^1.0.0-beta.24",
+    "readline": "^1.3.0",
+    "solhint": "^3.3.7",
+    "solhint-plugin-prettier": "^0.0.5",
+    "solidity-coverage": "^0.8.2",
+    "typechain": "^8.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.6.3"
+  },
+  "overrides": {
+    "@chainlink/functions-toolkit": "0.3.2"
+  },
+  "lint-staged": {
+    "*.{js,json,yml,yaml}": [
+      "prettier --write"
+    ],
+    "*.sol": [
+      "prettier --write",
+      "solhint"
+    ]
+  },
+  "prettier": {
+    "trailingComma": "es5",
+    "tabWidth": 2,
+    "semi": false,
+    "singleQuote": false,
+    "printWidth": 120
   }
-
-  // Log fingerprint only (no values)
-  const sha = crypto.createHash("sha256").update(JSON.stringify(secrets)).digest("hex");
-  console.log("[UPLOAD] keys:", Object.keys(secrets).join(", "));
-  console.log("[UPLOAD] sha256:", sha, "TTL_MINUTES:", TTL_MINUTES, "SLOT_ID:", SLOT_ID);
-  console.log("[CHAINLINK]", { functionsRouter: FUNCTIONS_ROUTER, donId: DON_ID });
-
-  // Signer
-  const rpcUrl = must("SEPOLIA_RPC_URL");
-  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-  const signer = new ethers.Wallet(must("PRIVATE_KEY"), provider);
-
-  const sm = new SecretsManager({
-    signer,
-    functionsRouterAddress: FUNCTIONS_ROUTER,
-    donId: DON_ID,
-  });
-  await sm.initialize();
-
-  // **Legacy path only** to avoid extra deps: encrypt -> upload via gateway
-  const enc = await sm.encryptSecrets(secrets);
-  const encryptedSecretsHexstring = (() => {
-    if (typeof enc === "string" && /^0x[0-9a-fA-F]*$/.test(enc)) return enc;
-    if (typeof enc === "string") return "0x" + Buffer.from(enc, "utf8").toString("hex");
-    if (enc instanceof Uint8Array) return "0x" + Buffer.from(enc).toString("hex");
-    if (enc && typeof enc === "object" && typeof enc.encryptedSecretsHexstring === "string") {
-      const s = enc.encryptedSecretsHexstring;
-      return /^0x/.test(s) ? s : "0x" + s;
-    }
-    throw new Error("encryptSecrets() did not return a valid hex payload");
-  })();
-
-  const { version, slotId } = await sm.uploadEncryptedSecretsToDON({
-    encryptedSecretsHexstring,
-    gatewayUrls: GATEWAY_URLS,
-    minutesUntilExpiration: TTL_MINUTES,
-    slotId: SLOT_ID,
-  });
-
-  console.log("DON-hosted secrets uploaded:", { version: Number(version), slotId });
-
-  // Write pointer at repo root
-  const outPath = path.resolve(__dirname, "activeSecrets.json");
-  fs.writeFileSync(
-    outPath,
-    JSON.stringify(
-      {
-        secretsVersion: Number(version),
-        slotId: Number(slotId ?? SLOT_ID),
-        donId: DON_ID,
-        uploadedAt: new Date().toISOString(),
-        canary: secrets.CANARY,
-      },
-      null,
-      2
-    )
-  );
-  console.log("Wrote", outPath);
-})().catch((e) => {
-  console.error("Upload failed:", e?.stack || e);
-  process.exit(1);
-});
+}
