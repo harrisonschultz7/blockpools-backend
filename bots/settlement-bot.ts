@@ -1,3 +1,4 @@
+// bots/settlement-bot.ts
 // @ts-nocheck
 try { require("dotenv").config(); } catch {}
 
@@ -28,7 +29,8 @@ const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                  /
 const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
 const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);            // uint8
 
-const DRY_RUN = process.env.DRY_RUN === "1";
+// Accept "1"/"true" and "0"/"false"
+const DRY_RUN = /^(1|true)$/i.test(String(process.env.DRY_RUN || ""));
 
 /** Always require a provider-final check (hard enforced). */
 const REQUIRE_FINAL_CHECK = true;
@@ -67,7 +69,6 @@ const GAMES_CANDIDATES = [
 
 // Functions source discovery
 const SOURCE_CANDIDATES = [
-  "C:\\Users\\harri\\OneDrive\\functions-betting-app\\functions-hardhat-starter-kit\\blockpools-backend\\bots\\source.js",
   path.resolve(__dirname, "source.js"),
   path.resolve(__dirname, "..", "bots", "source.js"),
   path.resolve(process.cwd(), "bots", "source.js"),
@@ -239,10 +240,24 @@ function loadSourceCode(): string {
 /* ──────────────────────────────────────────────────────────────────────────────
    DON pointer (activeSecrets.json)
 ────────────────────────────────────────────────────────────────────────────── */
+function loadActiveSecretsLocal(): { secretsVersion: number; donId: string } | null {
+  const p = path.join(process.cwd(), "activeSecrets.json");
+  try {
+    if (fs.existsSync(p)) {
+      const j = JSON.parse(fs.readFileSync(p, "utf8"));
+      if (j?.secretsVersion && j?.donId) return { secretsVersion: Number(j.secretsVersion), donId: String(j.donId) };
+    }
+  } catch {}
+  return null;
+}
+
 async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: string; source: string }> {
   const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
   const envDonId = process.env.DON_ID;
   if (envVersion && envDonId) return { secretsVersion: Number(envVersion), donId: envDonId, source: "env" };
+
+  const local = loadActiveSecretsLocal();
+  if (local) return { ...local, source: "local" };
 
   const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/activeSecrets.json?ref=${GITHUB_REF}`;
   const headers: any = {
@@ -298,12 +313,9 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
-  // Common Goalserve shapes:
-  // { games: { game: [...] } } OR { game: [...] } OR any arraylists nested.
   if (Array.isArray(payload?.games?.game)) return payload.games.game;
   if (Array.isArray(payload?.game)) return payload.game;
   if (Array.isArray(payload)) return payload;
-  // fallback: collect all arrays within object
   if (typeof payload === "object") {
     const arrs = Object.values(payload).filter(v => Array.isArray(v)) as any[];
     if (arrs.length) return arrs.flat();
@@ -312,7 +324,6 @@ function collectCandidateGames(payload: any): any[] {
 }
 
 function normalizeGameRow(r: any) {
-  // Try both nested and flat props
   const homeName = r?.hometeam?.name ?? r?.home_name ?? r?.home ?? "";
   const awayName = r?.awayteam?.name ?? r?.away_name ?? r?.away ?? "";
 
@@ -375,9 +386,6 @@ function kickoffEpochFromRaw(raw: any): number | undefined {
 }
 
 // Team matching (unordered: (home,away) == (A,B) or (B,A))
-// - Accept if code matches (PHI/NYG)
-// - Or if normalized names match
-// - Or if acronym matches ("New York Giants" => "NYG")
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -393,7 +401,7 @@ function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string)
   if (code && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
-  // token containment (e.g., "giants" present if wantName contains it)
+  // token containment
   const tokens = new Set(nApi.split(" "));
   const wantTokens = new Set(nWant.split(" "));
   const overlap = [...wantTokens].some(t => t.length > 2 && tokens.has(t));
@@ -411,10 +419,10 @@ function unorderedTeamsMatchByTokens(homeName: string, awayName: string, AName: 
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────
-   Goalserve date/path strategy (NFL-first) with [0, +1, -1] offsets
+   Goalserve date/path strategy (NFL-first)
 ────────────────────────────────────────────────────────────────────────────── */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string, leaguePaths: string[] } {
-  // NFL only (explicit) with fallback legacy path
+  // NFL only (explicit) with fallback legacy path (extend for other leagues)
   return { sportPath: "football", leaguePaths: ["nfl-scores", "nfl"] };
 }
 
@@ -552,6 +560,7 @@ async function main() {
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
   console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
   console.log(`[CFG] Provider=Goalserve (finality precheck enabled)`);
+  console.log(`[CFG] Scores provider = ${process.env.SCORES_PROVIDER || "goalserve"}`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
@@ -566,7 +575,10 @@ async function main() {
   const SOURCE = loadSourceCode();
 
   const gamesMeta = loadGamesMeta();
-  if (!gamesMeta.length) return;
+  if (!gamesMeta.length) {
+    console.log("No games to process.");
+    return;
+  }
 
   const readLimit = limiter(READ_CONCURRENCY);
   const sendLimit = limiter(TX_SEND_CONCURRENCY);
@@ -626,7 +638,7 @@ async function main() {
   // Pools we own, are locked, not requested, and no winningTeam yet
   const gated = states.filter(s => s.isOwner && s.isLocked && !s.requestSent && s.winningTeam === 0);
 
-  // Time gates (only use planned lockTime for scheduling; actual locking already done on-chain)
+  // Time gates
   const timeGated = gated.filter(s =>
     (s.lockTime === 0 || nowSec >= s.lockTime + REQUEST_GAP_SECONDS) &&
     (s.lockTime === 0 || nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED)
