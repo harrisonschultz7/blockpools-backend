@@ -25,18 +25,46 @@ function must(name) {
   return v;
 }
 
-function to0xHexLoose(enc) {
-  // Accept toolkit 0.3.2 shapes: string (with/without 0x), Uint8Array, or { encryptedSecretsHexstring }
-  if (!enc) return null;
-  if (typeof enc === "string") {
-    return enc.startsWith("0x") ? enc : ("0x" + Buffer.from(enc, "utf8").toString("hex"));
+function to0xString(val) {
+  if (!val) return null;
+  if (typeof val === "string") {
+    // hex? (0x... or bare hex)
+    if (/^0x[0-9a-fA-F]+$/.test(val)) return val;
+    if (/^[0-9a-fA-F]+$/.test(val)) return "0x" + val;
+    // treat as utf8 -> hex
+    return "0x" + Buffer.from(val, "utf8").toString("hex");
   }
-  if (enc instanceof Uint8Array) {
-    return "0x" + Buffer.from(enc).toString("hex");
-  }
-  if (typeof enc === "object" && typeof enc.encryptedSecretsHexstring === "string") {
-    const s = enc.encryptedSecretsHexstring;
-    return s.startsWith("0x") ? s : ("0x" + s);
+  if (val instanceof Uint8Array) return "0x" + Buffer.from(val).toString("hex");
+  return null;
+}
+
+function extractHexDeep(enc) {
+  // Accept string/Uint8Array immediately
+  const direct = to0xString(enc);
+  if (direct) return direct;
+
+  if (enc && typeof enc === "object") {
+    // common field names used across toolkit variants
+    const fields = [
+      "encryptedSecretsHexstring",
+      "encryptedSecretsHexString",
+      "encryptedSecretsHex",
+      "encryptedSecrets",
+      "hexstring",
+      "hexString",
+      "hex",
+    ];
+    for (const f of fields) {
+      if (enc[f] != null) {
+        const h = to0xString(enc[f]);
+        if (h) return h;
+      }
+    }
+    // last resort: search nested values
+    for (const v of Object.values(enc)) {
+      const h = extractHexDeep(v);
+      if (h) return h;
+    }
   }
   return null;
 }
@@ -70,9 +98,11 @@ function to0xHexLoose(enc) {
 
   // Encrypt -> normalize -> upload via gateway
   const enc = await sm.encryptSecrets(secrets);
-  const encryptedSecretsHexstring = to0xHexLoose(enc);
+  const encryptedSecretsHexstring = extractHexDeep(enc);
+
   if (!encryptedSecretsHexstring || encryptedSecretsHexstring.length < 10) {
     console.log("[DEBUG] typeof enc:", typeof enc, enc && enc.constructor && enc.constructor.name);
+    console.log("[DEBUG] enc keys:", enc && typeof enc === "object" ? Object.keys(enc) : null);
     throw new Error("Could not normalize encrypted payload from encryptSecrets()");
   }
 
