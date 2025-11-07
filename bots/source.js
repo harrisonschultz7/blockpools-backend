@@ -24,10 +24,9 @@ function normTeam(s) {
 
 // Format date per Goalserve config: "ISO" => "yyyy-mm-dd", "DMY" => "dd.mm.yyyy"
 function fmtGsDateFromLock(lockTimeLike, mode /* "ISO" | "DMY" */) {
-  // If lockTime is absent, use today UTC (safe fallback)
   let d;
   if (lockTimeLike == null || lockTimeLike === "") {
-    d = new Date();
+    d = new Date(); // fallback: today (shouldn't really happen)
   } else {
     const n = Number(lockTimeLike);
     const ms = n > 1e12 ? n : n * 1000; // accept seconds or ms
@@ -36,7 +35,9 @@ function fmtGsDateFromLock(lockTimeLike, mode /* "ISO" | "DMY" */) {
   const yyyy = d.getUTCFullYear();
   const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(d.getUTCDate()).padStart(2, "0");
-  return (String(mode).toUpperCase() === "DMY") ? `${dd}.${mm}.${yyyy}` : `${yyyy}-${mm}-${dd}`;
+  return (String(mode).toUpperCase() === "DMY")
+    ? `${dd}.${mm}.${yyyy}`
+    : `${yyyy}-${mm}-${dd}`;
 }
 
 async function fetchJson(url, headers) {
@@ -50,29 +51,46 @@ async function fetchJson(url, headers) {
   return res.data;
 }
 
-// Flatten common Goalserve shapes into an array of game-like objects
+// Flatten Goalserve shapes into an array of game-like objects
 function extractGames(payload) {
   if (!payload) return [];
+
+  // raw array
   if (Array.isArray(payload)) return payload;
 
-  // Typical JSON shapes we’ve seen
+  // common soccer-style / generic
   if (Array.isArray(payload.games?.game)) return payload.games.game;
   if (Array.isArray(payload.game)) return payload.game;
+
+  // NFL "nfl-scores" shape:
+  // { scores: { category: { match: [...] } } }
+  // or { scores: { category: [ { match: [...] }, ... ] } }
+  if (payload.scores && payload.scores.category) {
+    const cat = payload.scores.category;
+    const cats = Array.isArray(cat) ? cat : [cat];
+    const matches = cats.flatMap(c =>
+      Array.isArray(c?.match) ? c.match : []
+    );
+    if (matches.length) return matches;
+  }
+
+  // events variant
   if (Array.isArray(payload.events)) return payload.events;
 
-  // Fallbacks
+  // fallback: look for any arrays inside
   if (typeof payload === "object") {
     const vals = Object.values(payload);
     const arrays = vals.filter(v => Array.isArray(v));
     if (arrays.length) return arrays.flat();
     return vals.filter(v => v && typeof v === "object");
   }
+
   return [];
 }
 
 function readTeamName(obj, side /* "home" | "away" */) {
-  // Try a handful of likely fields
   if (!obj) return "";
+
   const sideTeam = side === "home"
     ? (obj.hometeam ?? obj.homeTeam ?? obj.home_team ?? {})
     : (obj.awayteam ?? obj.awayTeam ?? obj.away_team ?? {});
@@ -81,7 +99,9 @@ function readTeamName(obj, side /* "home" | "away" */) {
     : (obj.away_name ?? obj.away ?? obj.awayTeamName);
 
   const guess =
-    (typeof sideTeam === "object" ? (sideTeam.name ?? sideTeam.team ?? sideTeam.title) : undefined)
+    (typeof sideTeam === "object"
+      ? (sideTeam.name ?? sideTeam.team ?? sideTeam.title)
+      : undefined)
     ?? direct
     ?? "";
 
@@ -93,10 +113,14 @@ function readScore(obj, side /* "home" | "away" */) {
   const sideTeam = side === "home"
     ? (obj.hometeam ?? obj.homeTeam ?? obj.home_team ?? {})
     : (obj.awayteam ?? obj.awayTeam ?? obj.away_team ?? {});
-  const altField = side === "home" ? (obj.home_score ?? obj.homeScore) : (obj.away_score ?? obj.awayScore);
+  const altField = side === "home"
+    ? (obj.home_score ?? obj.homeScore)
+    : (obj.away_score ?? obj.awayScore);
 
   const val =
-    (typeof sideTeam === "object" ? (sideTeam.totalscore ?? sideTeam.score ?? sideTeam.total) : undefined)
+    (typeof sideTeam === "object"
+      ? (sideTeam.totalscore ?? sideTeam.score ?? sideTeam.total)
+      : undefined)
     ?? altField
     ?? 0;
 
@@ -107,121 +131,173 @@ function readScore(obj, side /* "home" | "away" */) {
 function isFinalStatus(raw) {
   const s = String(raw || "").trim().toLowerCase();
   const n = s.replace(/\s+/g, " ").replace(/[()]/g, "").trim();
-  // Common variants across feeds/sports
   return [
-    "final", "finished", "full time", "ft", "ended", "game over",
-    "aot", "after overtime", "final ot", "final/ot", "final overtime",
+    "final",
+    "finished",
+    "full time",
+    "ft",
+    "ended",
+    "game over",
+    "aot",
+    "after overtime",
+    "final ot",
+    "final/ot",
+    "final overtime",
   ].includes(n);
 }
 
 // ------------------------------ Main ---------------------------------------
 
 async function main(args) {
-  // Arg order (unchanged):
-  // [league, dateFrom, dateTo, teamAcode, teamBcode, teamAname, teamBname, lockTimeStr, eventIdMaybe]
-  const [league, _dateFrom, _dateTo, _teamAcode, _teamBcode, teamAname, teamBname, lockTimeStr] = args;
+  // New args from settlement-bot:
+  // [league, dateFrom, dateTo, teamAcode, teamBcode, teamAname, teamBname, lockTimeStr]
+  const [
+    league,
+    _dateFrom,
+    _dateTo,
+    _teamAcode,
+    _teamBcode,
+    teamAname,
+    teamBname,
+    lockTimeStr,
+  ] = args;
 
-  // ---- Config from DON secrets (with safe fallbacks) ----
-  // Auth modes:
-  //   - path: base is ".../getfeed" (we'll append "/<KEY>")
-  //           OR base is already ".../getfeed/<KEY>"
-  //   - header: base is ".../getfeed", we’ll send { "X-API-KEY": <KEY> }
-  const baseRaw = getSecret("GOALSERVE_BASE_URL", { fallback: "https://www.goalserve.com/getfeed" });
-  const authMode = (getSecret("GOALSERVE_AUTH", { fallback: "path" }) || "path").toLowerCase(); // "path" | "header"
-  const apiKey   = getSecret("GOALSERVE_API_KEY", { fallback: "" });
-  const dateFmt  = (getSecret("GOALSERVE_DATE_FMT", { fallback: "DMY" }) || "DMY").toUpperCase(); // "DMY" | "ISO"
+  // ---- Config from DON secrets ----
+  const baseRaw = getSecret("GOALSERVE_BASE_URL", {
+    fallback: "https://www.goalserve.com/getfeed",
+  });
+  const authMode =
+    (getSecret("GOALSERVE_AUTH", { fallback: "path" }) || "path").toLowerCase(); // "path" | "header"
+  const apiKey = getSecret("GOALSERVE_API_KEY", { fallback: "" });
+  const dateFmt =
+    (getSecret("GOALSERVE_DATE_FMT", { fallback: "DMY" }) || "DMY").toUpperCase(); // "DMY" | "ISO"
 
-  // League → path mapping (default NFL endpoint: /football/nfl-scores)
+  // League → path mapping (for now: always NFL-style)
   let sportPath = "football";
   let leaguePath = "nfl-scores";
   const L = String(league || "").toLowerCase();
-  if (L !== "nfl") {
-    // Keep default NFL unless you expand later
+  if (L === "nfl") {
     sportPath = "football";
     leaguePath = "nfl-scores";
   }
+  // (Extend here for NBA/MLB later.)
 
-  const baseClean = String(baseRaw).replace(/\/+$/, ""); // strip trailing slashes
+  const baseClean = String(baseRaw).replace(/\/+$/, "");
   const gsDate = fmtGsDateFromLock(lockTimeStr, dateFmt);
 
-  // Build base w/ key when using path-auth
+  // Build base with key when using path-auth
   let baseWithAuth = baseClean;
   if (authMode === "path") {
-    // If base already includes a key segment after /getfeed/, keep it as-is.
-    // Otherwise append "/<apiKey>" (and require that we have one).
     const hasKey = /\/getfeed\/[^/]+$/i.test(baseClean);
     if (!hasKey) {
-      if (!apiKey) throw new Error("ERR_MISSING_SECRET:GOALSERVE_API_KEY (path mode)");
+      if (!apiKey) throw new Error("ERR_MISSING_SECRET:GOALSERVE_API_KEY(path)");
       baseWithAuth = `${baseClean}/${encodeURIComponent(apiKey)}`;
     }
   }
 
-  // Optional header when using header-auth
-  const headers = (authMode === "header" && apiKey)
-    ? { "X-API-KEY": apiKey }
-    : undefined;
+  // Headers if using header-auth
+  const headers =
+    authMode === "header" && apiKey
+      ? { "X-API-KEY": apiKey }
+      : undefined;
 
-  const url = `${baseWithAuth}/${sportPath}/${leaguePath}?date=${encodeURIComponent(gsDate)}&json=1`;
+  const url = `${baseWithAuth}/${sportPath}/${leaguePath}?date=${encodeURIComponent(
+    gsDate
+  )}&json=1`;
 
-  // ---- Fetch day slate and find the matching game ----
+  // ---- Fetch & extract ----
   const payload = await fetchJson(url, headers);
   const games = extractGames(payload);
 
   if (!Array.isArray(games) || games.length === 0) {
-    console.log("[NO GAMES]", url);
+    console.log("[NO GAMES]", { url, gsDate });
     return Functions.encodeString("ERR");
   }
 
   const A = normTeam(teamAname);
   const B = normTeam(teamBname);
   if (!A || !B) {
-    console.log("[BAD INPUT TEAMS]", teamAname, teamBname);
+    console.log("[BAD INPUT TEAMS]", { teamAname, teamBname });
     return Functions.encodeString("ERR");
   }
 
+  // Find matching game by team names (unordered)
   const match = games.find((g) => {
     const home = normTeam(readTeamName(g, "home"));
     const away = normTeam(readTeamName(g, "away"));
     if (!home || !away) return false;
-    // Unordered set equality
-    return (home === A && away === B) || (home === B && away === A);
+    return (
+      (home === A && away === B) ||
+      (home === B && away === A)
+    );
   });
 
   if (!match) {
     console.log("[NO MATCHED GAME FOR TEAMS]", {
-      teamAname, teamBname, lookedUpOn: gsDate, url,
-      sample: games.slice(0, 2).map(g => ({
+      teamAname,
+      teamBname,
+      gsDate,
+      url,
+      sample: games.slice(0, 3).map((g) => ({
         home: readTeamName(g, "home"),
         away: readTeamName(g, "away"),
-        status: g?.status ?? g?.state ?? g?.match_status
-      }))
+        status:
+          g?.status ??
+          g?.state ??
+          g?.match_status ??
+          g?.game_status ??
+          g?.status_text,
+      })),
     });
     return Functions.encodeString("ERR");
   }
 
-  const status = match?.status ?? match?.state ?? match?.match_status ?? "";
+  const status =
+    match?.status ??
+    match?.state ??
+    match?.match_status ??
+    match?.game_status ??
+    match?.status_text ??
+    "";
   if (!isFinalStatus(status)) {
-    console.log("[NOT FINAL]", status);
+    console.log("[NOT FINAL]", { status, url, gsDate });
     return Functions.encodeString("ERR");
   }
 
   const homeScore = readScore(match, "home");
   const awayScore = readScore(match, "away");
-
   const homeName = normTeam(readTeamName(match, "home"));
   const awayName = normTeam(readTeamName(match, "away"));
 
-  // Determine whether Team A is home or away in THIS matched game
-  const teamAIsHome =
-    (A && homeName && A === homeName) ? true :
-    (A && awayName && A === awayName) ? false :
-    false;
+  // Determine whether Team A is home in this matched game
+  let teamAIsHome = false;
+  if (A && homeName && A === homeName) {
+    teamAIsHome = true;
+  } else if (A && awayName && A === awayName) {
+    teamAIsHome = false;
+  }
 
-  let winner = "0"; // tie by default
-  if (homeScore > awayScore) winner = teamAIsHome ? "1" : "2";
-  else if (awayScore > homeScore) winner = teamAIsHome ? "2" : "1";
+  let winner = "0"; // tie
+  if (homeScore > awayScore) {
+    winner = teamAIsHome ? "1" : "2";
+  } else if (awayScore > homeScore) {
+    winner = teamAIsHome ? "2" : "1";
+  }
 
-  console.log(`[WINNER] date=${gsDate} url=${url} status=${status} home=${homeScore} away=${awayScore} AisHome=${teamAIsHome} -> ${winner}`);
+  console.log("[WINNER]", {
+    gsDate,
+    url,
+    status,
+    homeScore,
+    awayScore,
+    homeName,
+    awayName,
+    teamAname,
+    teamBname,
+    teamAIsHome,
+    winner,
+  });
+
   return Functions.encodeString(winner);
 }
 
