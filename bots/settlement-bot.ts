@@ -314,23 +314,49 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
-  // common shapes
+
+  // 1) Common shapes
   if (Array.isArray(payload?.games?.game)) return payload.games.game;
   if (Array.isArray(payload?.game)) return payload.game;
-  // scores category (nfl-scores)
+
+  // 2) Goalserve "scores" shape:
+  //    { scores: { category: { match: {...} } } }
+  //    or { scores: { category: { match: [...] } } }
+  //    or { scores: { category: [ { match: ... }, ... ] } }
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
-    const m = cats.flatMap((c: any) => Array.isArray(c?.match) ? c.match : []);
-    if (m.length) return m;
+    const matches: any[] = [];
+    for (const c of cats) {
+      const m = c?.match;
+      if (!m) continue;
+      if (Array.isArray(m)) matches.push(...m);
+      else matches.push(m); // single object
+    }
+    if (matches.length) return matches;
   }
+
+  // 3) Raw array
   if (Array.isArray(payload)) return payload;
+
+  // 4) Fallback: collect any nested arrays / match-lists
   if (typeof payload === "object") {
-    const arrs = Object.values(payload).filter(v => Array.isArray(v)) as any[];
-    if (arrs.length) return arrs.flat();
+    const out: any[] = [];
+    for (const v of Object.values(payload)) {
+      if (Array.isArray(v)) {
+        out.push(...v);
+      } else if (v && typeof v === "object") {
+        const mv = (v as any).match;
+        if (Array.isArray(mv)) out.push(...mv);
+        else if (mv && typeof mv === "object") out.push(mv);
+      }
+    }
+    if (out.length) return out;
   }
+
   return [];
 }
+
 
 function normalizeGameRow(r: any) {
   const homeName = r?.hometeam?.name ?? r?.home_name ?? r?.home ?? "";
