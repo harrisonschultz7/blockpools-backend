@@ -8,6 +8,9 @@ import { fileURLToPath } from "url";
 import { ethers } from "ethers";
 import { gamePoolAbi as IMPORTED_GAMEPOOL_ABI } from "./gamepool.abi";
 
+// ---- debug banner (helps prove which file is running) ----
+console.log(`[BOT BANNER] using LOCAL settlement-bot.ts :: ${new Date().toISOString()}`);
+
 /* ──────────────────────────────────────────────────────────────────────────────
    ESM-safe __dirname / __filename
 ────────────────────────────────────────────────────────────────────────────── */
@@ -25,14 +28,13 @@ const __dirname =
 ────────────────────────────────────────────────────────────────────────────── */
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
-const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                  // uint64
-const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
-const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);            // uint8
+const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);
+const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000);
+const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);
 
-// Accept "1"/"true" and "0"/"false"
 const DRY_RUN = /^(1|true)$/i.test(String(process.env.DRY_RUN || ""));
 
-/** Always require a provider-final check (hard enforced). */
+/** Always require provider-final check */
 const REQUIRE_FINAL_CHECK = true;
 
 /** Minimum time after lock before we consider settlement (seconds). */
@@ -47,9 +49,9 @@ const TX_SEND_CONCURRENCY= Number(process.env.TX_SEND_CONCURRENCY|| 3);
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0);
 
-// 🔐 Goalserve secrets (new)
+// 🔐 Goalserve secrets
 const GOALSERVE_API_KEY  = process.env.GOALSERVE_API_KEY || "";
-const GOALSERVE_BASE_URL = process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
+const GOALSERVE_BASE_URL = (process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed").replace(/\/+$/,"");
 
 // DON pointer (activeSecrets.json) lookup
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
@@ -77,7 +79,7 @@ const SOURCE_CANDIDATES = [
 /* ──────────────────────────────────────────────────────────────────────────────
    ABI loader
 ────────────────────────────────────────────────────────────────────────────── */
-const FALLBACK_MIN_ABI = [
+const MIN_ABI = [
   { inputs: [], name: "league",      outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
   { inputs: [], name: "teamAName",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
   { inputs: [], name: "teamBName",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
@@ -105,7 +107,7 @@ const FALLBACK_MIN_ABI = [
   },
 ] as const;
 
-function loadGamePoolAbi(): { abi: any; source: "artifact" | "imported" | "minimal" } {
+function loadGamePoolAbi(): { abi: any } {
   const ARTIFACT_PATH_ENV = process.env.ARTIFACT_PATH?.trim();
   const candidates = [
     ARTIFACT_PATH_ENV && (path.isAbsolute(ARTIFACT_PATH_ENV) ? ARTIFACT_PATH_ENV : path.resolve(process.cwd(), ARTIFACT_PATH_ENV)),
@@ -119,22 +121,20 @@ function loadGamePoolAbi(): { abi: any; source: "artifact" | "imported" | "minim
       if (fs.existsSync(p)) {
         const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
         console.log(`✅ Using ABI from ${p}`);
-        return { abi: parsed.abi, source: "artifact" };
+        return { abi: parsed.abi };
       }
     } catch {}
   }
 
   if (IMPORTED_GAMEPOOL_ABI && Array.isArray(IMPORTED_GAMEPOOL_ABI) && IMPORTED_GAMEPOOL_ABI.length) {
     console.warn("⚠️  Using ABI from local import (gamepool.abi).");
-    return { abi: IMPORTED_GAMEPOOL_ABI, source: "imported" };
+    return { abi: IMPORTED_GAMEPOOL_ABI };
   }
 
   console.warn("⚠️  Could not locate GamePool.json or imported ABI. Using minimal ABI.");
-  return { abi: FALLBACK_MIN_ABI, source: "minimal" };
+  return { abi: MIN_ABI };
 }
-
 const { abi: poolAbi } = loadGamePoolAbi();
-const iface = new ethers.utils.Interface(poolAbi);
 
 /* ──────────────────────────────────────────────────────────────────────────────
    Small utils
@@ -148,6 +148,24 @@ function limiter(concurrency: number) {
     if (active >= concurrency) await new Promise<void>(res => queue.push(res));
     active++; try { return await fn(); } finally { next(); }
   };
+}
+const finalsSet = new Set(["final", "finished", "full time", "ft"]);
+
+const norm = (s: string) =>
+  (s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[’'`]/g, "")
+    .replace(/[^a-z0-9 ]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+const trimU = (s?: string) => String(s || "").trim().toUpperCase();
+
+function acronym(s: string): string {
+  const parts = (s || "").split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  return parts.map(p => p[0]?.toUpperCase() || "").join("");
 }
 
 function epochToEtISO(epochSec: number) {
@@ -163,6 +181,8 @@ function addDaysISO(iso: string, days: number) {
   dt.setUTCDate(dt.getUTCDate() + days);
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
+
+const finalsRegex = /\bfinal\b/i;
 
 /* ──────────────────────────────────────────────────────────────────────────────
    games.json loader (robust to multiple shapes)
@@ -204,14 +224,6 @@ function readGamesMetaAtPath(p: string): GameMeta[] | null {
 }
 
 function loadGamesMeta(): GameMeta[] {
-  if (GAMES_PATH_OVERRIDE) {
-    const fromOverride = readGamesMetaAtPath(GAMES_PATH_OVERRIDE);
-    if (fromOverride) return fromOverride;
-    console.warn(`GAMES_PATH was set but not readable/usable: ${GAMES_PATH_OVERRIDE}`);
-  }
-  for (const p of GAMES_CANDIDATES) {
-    const fromLocal = readGamesMetaAtPath(p); if (fromLocal) return fromLocal;
-  }
   const envList = (process.env.CONTRACTS || "").trim();
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
@@ -220,6 +232,15 @@ function loadGamesMeta(): GameMeta[] {
       console.log(`Using CONTRACTS from env (${filtered.length})`);
       return Array.from(new Set(filtered)).map(addr => ({ contractAddress: addr }));
     }
+  }
+
+  if (GAMES_PATH_OVERRIDE) {
+    const fromOverride = readGamesMetaAtPath(GAMES_PATH_OVERRIDE);
+    if (fromOverride) return fromOverride;
+    console.warn(`GAMES_PATH was set but not readable/usable: ${GAMES_PATH_OVERRIDE}`);
+  }
+  for (const p of GAMES_CANDIDATES) {
+    const fromLocal = readGamesMetaAtPath(p); if (fromLocal) return fromLocal;
   }
   console.warn("No contracts found in games.json or CONTRACTS env. Nothing to do.");
   return [];
@@ -268,7 +289,7 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
   };
   const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`activeSecrets.json HTTP ${res.status}`);
-  const data = await res.json();
+  const data = await res.json() as any;
   const json = JSON.parse(Buffer.from(data.content, "base64").toString("utf8"));
   return { secretsVersion: Number(json.secretsVersion ?? json.version), donId: json.donId || "fun-ethereum-sepolia-1", source: "github" };
 }
@@ -276,26 +297,6 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 /* ──────────────────────────────────────────────────────────────────────────────
    Goalserve helpers: fetching, parsing, matching
 ────────────────────────────────────────────────────────────────────────────── */
-const finalsSet = new Set(["final", "finished", "full time", "ft"]);
-
-// normalize text for matching
-const norm = (s: string) =>
-  (s || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[’'`]/g, "")
-    .replace(/[^a-z0-9 ]/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-
-const trimU = (s?: string) => String(s || "").trim().toUpperCase();
-
-function acronym(s: string): string {
-  const parts = (s || "").split(/[^a-zA-Z0-9]+/).filter(Boolean);
-  return parts.map(p => p[0]?.toUpperCase() || "").join("");
-}
-
 async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
   let lastErr: any;
   for (let i = 0; i < tries; i++) {
@@ -313,8 +314,16 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
+  // common shapes
   if (Array.isArray(payload?.games?.game)) return payload.games.game;
   if (Array.isArray(payload?.game)) return payload.game;
+  // scores category (nfl-scores)
+  const cat = payload?.scores?.category;
+  if (cat) {
+    const cats = Array.isArray(cat) ? cat : [cat];
+    const m = cats.flatMap((c: any) => Array.isArray(c?.match) ? c.match : []);
+    if (m.length) return m;
+  }
   if (Array.isArray(payload)) return payload;
   if (typeof payload === "object") {
     const arrs = Object.values(payload).filter(v => Array.isArray(v)) as any[];
@@ -330,29 +339,22 @@ function normalizeGameRow(r: any) {
   const homeScore = Number(r?.hometeam?.totalscore ?? r?.home_score ?? 0);
   const awayScore = Number(r?.awayteam?.totalscore ?? r?.away_score ?? 0);
 
-  const status = String(r?.status || "").trim();
+  const status = String(r?.status || r?.game_status || r?.state || r?.status_text || r?.statusShort || "").trim();
 
-  return {
-    homeName,
-    awayName,
-    homeScore,
-    awayScore,
-    status,
-  };
+  return { homeName, awayName, homeScore, awayScore, status, __raw: r };
 }
 
-// Parse "26.10.2025 17:00" (UTC) safely
+// Parse "26.10.2025 17:00" (UTC)
 function parseDatetimeUTC(s?: string): number | undefined {
   if (!s) return;
   const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
   if (!m) return;
   const [_, dd, MM, yyyy, HH, mm] = m;
-  const y = Number(yyyy), mo = Number(MM) - 1, d = Number(dd), h = Number(HH), mi = Number(mm);
-  const t = Date.UTC(y, mo, d, h, mi, 0, 0);
-  return isFinite(t) ? Math.floor(t / 1000) : undefined;
+  const t = Date.UTC(Number(yyyy), Number(MM)-1, Number(dd), Number(HH), Number(mm), 0);
+  return isFinite(t) ? Math.floor(t/1000) : undefined;
 }
 
-// Parse "26.10.2025" + "12:00 PM" (fallback; treat as UTC-ish)
+// Parse "26.10.2025" + "1:00 PM"
 function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | undefined {
   if (!dateStr) return;
   const md = dateStr.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
@@ -372,17 +374,14 @@ function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | und
       if (mh24) { h = Number(mh24[1]); mi = Number(mh24[2]); }
     }
   }
-  const t = Date.UTC(Number(yyyy), Number(MM)-1, Number(dd), h, mi, 0, 0);
-  return isFinite(t) ? Math.floor(t / 1000) : undefined;
+  const t = Date.UTC(Number(yyyy), Number(MM)-1, Number(dd), h, mi, 0);
+  return isFinite(t) ? Math.floor(t/1000) : undefined;
 }
 
 function kickoffEpochFromRaw(raw: any): number | undefined {
   const t1 = parseDatetimeUTC(raw?.datetime_utc);
   if (t1) return t1;
-  return parseDateAndTimeAsUTC(
-    raw?.date ?? raw?.formatted_date,
-    raw?.time ?? raw?.start_time ?? raw?.start
-  );
+  return parseDateAndTimeAsUTC(raw?.date ?? raw?.formatted_date, raw?.time ?? raw?.start_time ?? raw?.start);
 }
 
 // Team matching (unordered: (home,away) == (A,B) or (B,A))
@@ -410,7 +409,7 @@ function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string)
   return false;
 }
 
-function unorderedTeamsMatchByTokens(homeName: string, awayName: string, AName: string, BName: string, ACode: string, BCode: string) {
+function unorderedTeamsMatch(homeName: string, awayName: string, AName: string, BName: string, ACode: string, BCode: string) {
   const hA = teamMatchesOneSide(homeName, AName, ACode);
   const aB = teamMatchesOneSide(awayName, BName, BCode);
   const hB = teamMatchesOneSide(homeName, BName, BCode);
@@ -418,18 +417,13 @@ function unorderedTeamsMatchByTokens(homeName: string, awayName: string, AName: 
   return (hA && aB) || (hB && aA);
 }
 
-/* ──────────────────────────────────────────────────────────────────────────────
-   Goalserve date/path strategy (NFL-first)
-────────────────────────────────────────────────────────────────────────────── */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string, leaguePaths: string[] } {
-  // NFL only (explicit) with fallback legacy path (extend for other leagues)
+  // NFL-first
   return { sportPath: "football", leaguePaths: ["nfl-scores", "nfl"] };
 }
 
 async function tryFetchGoalserve(league: string, lockTime: number) {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
-
-  // ORDER: same day → next day → previous day (UTC roll-over handling)
   const offsets = [0, +1, -1];
   const tried: string[] = [];
 
@@ -450,10 +444,10 @@ async function tryFetchGoalserve(league: string, lockTime: number) {
             const g = normalizeGameRow(r);
             return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
           });
-          return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
+          return { ok: true, dateTried: ddmmyyyy, path: lp, games, url, tried };
         }
       } catch {
-        // try next
+        // continue
       }
     }
   }
@@ -476,11 +470,11 @@ async function confirmFinalGoalserve(params: {
 
   // 1) Filter to team matches (unordered)
   const candidates = resp.games.filter(g =>
-    unorderedTeamsMatchByTokens(g.homeName, g.awayName, aName, bName, aCode, bCode)
+    unorderedTeamsMatch(g.homeName, g.awayName, aName, bName, aCode, bCode)
   );
 
   if (!candidates.length) {
-    const sample = resp.games.slice(0, 3).map(g => `${g.awayName || "?"} @ ${g.homeName || "?"}`).join(" | ");
+    const sample = resp.games.slice(0, 4).map(g => `${g.awayName || "?"} @ ${g.homeName || "?"}`).join(" | ");
     return { ok: false, reason: `no team match (sample: ${sample || "none"})`, debug: { url: resp.url, date: resp.dateTried } };
   }
 
@@ -497,7 +491,15 @@ async function confirmFinalGoalserve(params: {
   });
 
   const match = candidates[0];
-  const isFinal = finalsSet.has((match.status || "").toLowerCase());
+
+  // resilient final detection (field or raw JSON contains "final")
+  let isFinal = finalsSet.has((match.status || "").toLowerCase());
+  if (!isFinal) {
+    try {
+      const rawStr = JSON.stringify(match.__raw || {});
+      if (finalsRegex.test(rawStr)) isFinal = true;
+    } catch {}
+  }
   if (!isFinal) return { ok: false, reason: "not final", debug: { url: resp.url, date: resp.dateTried, picked: match } };
 
   // Decide winner by home/away scores vs which side is A or B
@@ -536,6 +538,7 @@ const FUNCTIONS_ROUTER_ERRORS = [
   "error RequestIsAlreadyPending()", "error UnsupportedDON()"
 ];
 const routerIface = new ethers.utils.Interface(FUNCTIONS_ROUTER_ERRORS);
+const iface = new ethers.utils.Interface(poolAbi);
 function decodeRevert(data?: string) {
   if (!data || typeof data !== "string" || !data.startsWith("0x") || data.length < 10) return "unknown";
   try { return iface.parseError(data).name; } catch {}
@@ -684,7 +687,7 @@ async function main() {
   }
   console.log(`✅ Provider confirmed FINAL for ${finalEligible.length} pool(s). Proceeding.`);
 
-  /* STEP 3: Simulate & send — always 8 args (no idEvent needed) */
+  /* STEP 3: Simulate & send — always 8 args (no event id) */
   const { secretsVersion: sv } = await loadActiveSecrets();
   const donHostedSecretsVersion2 = BigInt(sv);
 
@@ -719,7 +722,7 @@ async function main() {
         FUNCTIONS_GAS_LIMIT,
         DON_SECRETS_SLOT,
         donHostedSecretsVersion2,
-        donBytes
+        ethers.utils.formatBytes32String(s.league.includes("Arbitrum") ? "fun-arbitrum-sepolia-1" : "fun-ethereum-sepolia-1")
       );
     } catch (e: any) {
       const data = e?.data ?? e?.error?.data;
@@ -739,7 +742,7 @@ async function main() {
             FUNCTIONS_GAS_LIMIT,
             DON_SECRETS_SLOT,
             donHostedSecretsVersion2,
-            donBytes
+            ethers.utils.formatBytes32String("fun-ethereum-sepolia-1")
           );
           console.log(`[OK] sendRequest ${s.addr} (args8): ${tx.hash}`);
           submitted++;
