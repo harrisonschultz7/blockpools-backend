@@ -56,14 +56,19 @@ async function fetchJson(url, headers) {
     timeout: 15000,
   });
 
-  // In the Functions runtime, non-2xx or network issues often set `error: true`
   if (res.error) {
     throw new Error(
-      `HTTP_ERR: ${url} :: ${JSON.stringify(res.error)} :: status=${res.response && res.response.status}`
+      `HTTP_ERR: ${url} :: ${JSON.stringify(res.error)} :: status=${
+        res.response && res.response.status
+      }`
     );
   }
   if (!res.data) {
-    throw new Error(`HTTP_NO_DATA: ${url} :: status=${res.response && res.response.status}`);
+    throw new Error(
+      `HTTP_NO_DATA: ${url} :: status=${
+        res.response && res.response.status
+      }`
+    );
   }
   return res.data;
 }
@@ -72,19 +77,12 @@ async function fetchJson(url, headers) {
 function extractGames(payload) {
   if (!payload) return [];
 
-  // 1) Direct array
   if (Array.isArray(payload)) return payload;
 
-  // 2) { games: { game: [...] } }
   if (Array.isArray(payload.games?.game)) return payload.games.game;
 
-  // 3) { game: [...] }
   if (Array.isArray(payload.game)) return payload.game;
 
-  // 4) nfl-scores style:
-  //    { scores: { category: { match: [...] } } }
-  //    { scores: { category: { match: { ... } } } }
-  //    { scores: { category: [ { match: [...] }, ... ] } }
   if (payload.scores && payload.scores.category) {
     const cat = payload.scores.category;
     const cats = Array.isArray(cat) ? cat : [cat];
@@ -97,7 +95,6 @@ function extractGames(payload) {
     if (matches.length) return matches;
   }
 
-  // 5) Fallback: scan object values for arrays
   if (typeof payload === "object") {
     const arrays = Object.values(payload).filter((v) => Array.isArray(v));
     if (arrays.length) return arrays.flat();
@@ -167,8 +164,10 @@ function extractStatus(match) {
   return "";
 }
 
+// IMPORTANT: mirror settlement-bot OT logic.
 function isFinalStatus(raw) {
   const s = String(raw || "").toLowerCase().replace(/\s+/g, " ").trim();
+
   const finals = new Set([
     "final",
     "finished",
@@ -178,14 +177,29 @@ function isFinalStatus(raw) {
     "game over",
     "aot",
     "after overtime",
+    "after over time",
     "final ot",
     "final/ot",
+    "final aot",
+    "final after ot",
     "final overtime",
   ]);
+
   if (finals.has(s)) return true;
 
-  // Sometimes final-ish text is embedded
-  if (/\bfinal\b/i.test(String(raw || ""))) return true;
+  // Phrases that clearly mean the game is done
+  if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot"))
+    return true;
+
+  // Generic final catch, avoid obvious non-end states
+  if (
+    /\bfinal\b/.test(s) &&
+    !s.includes("semi") &&
+    !s.includes("quarter") &&
+    !s.includes("half")
+  ) {
+    return true;
+  }
 
   return false;
 }
@@ -233,14 +247,11 @@ async function main(args) {
   let leaguePath = "nfl-scores";
   const L = String(league || "").toLowerCase();
   if (L !== "nfl") {
-    // For now we still hit nfl-scores; extend here later for other leagues.
     sportPath = "football";
     leaguePath = "nfl-scores";
   }
 
-  // ---- Date selection (CRITICAL) ----
-  // Primary source: _dateFrom (already ET-correct from settlement-bot).
-  // Fallback: derive from lockTime.
+  // ---- Date selection ----
   let baseIso = "";
   if (typeof _dateFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(_dateFrom)) {
     baseIso = _dateFrom;
@@ -248,8 +259,7 @@ async function main(args) {
     baseIso = fmtDateFromLock(lockTimeStr, "ISO");
   }
 
-  const gsDate =
-    dateFmt === "DMY" ? isoToDMY(baseIso) : baseIso;
+  const gsDate = dateFmt === "DMY" ? isoToDMY(baseIso) : baseIso;
 
   // ---- Build URL with auth ----
   const baseClean = String(baseRaw).replace(/\/+$/, "");
@@ -258,7 +268,6 @@ async function main(args) {
   let headers = undefined;
 
   if (authMode === "path") {
-    // If base already looks like /getfeed/<key>, keep it.
     const hasKey = /\/getfeed\/[^/]+$/i.test(baseClean);
     if (!hasKey) {
       if (!apiKey) {
@@ -301,11 +310,7 @@ async function main(args) {
 
     const setWanted = new Set([A, B]);
     const setHave = new Set([home, away]);
-    return (
-      setHave.has(A) &&
-      setHave.has(B) &&
-      setWanted.size === setHave.size
-    );
+    return setHave.has(A) && setHave.has(B) && setWanted.size === setHave.size;
   });
 
   if (!candidates.length) {
@@ -323,10 +328,9 @@ async function main(args) {
     return Functions.encodeString("ERR");
   }
 
-  // If multiple, pick the first with final status; else the first.
+  // Prefer a final game; else first candidate
   let match =
-    candidates.find((g) => isFinalStatus(extractStatus(g))) ||
-    candidates[0];
+    candidates.find((g) => isFinalStatus(extractStatus(g))) || candidates[0];
 
   const status = extractStatus(match);
 
@@ -343,11 +347,11 @@ async function main(args) {
 
   // Determine whether Team A is home or away
   const teamAIsHome =
-    (A && homeName && A === homeName)
+    A && homeName && A === homeName
       ? true
-      : (A && awayName && A === awayName)
+      : A && awayName && A === awayName
       ? false
-      : null; // unknown, but we can still use codes below if unique
+      : null;
 
   // ---- Winner → return team code string ----
   let winnerCode = "TIE";
@@ -355,16 +359,11 @@ async function main(args) {
   if (homeScore > awayScore) {
     if (teamAIsHome === true) winnerCode = teamACode || "TIE";
     else if (teamAIsHome === false) winnerCode = teamBCode || "TIE";
-    else {
-      // Fallback: assume home = A if codes line up
-      winnerCode = teamACode || "TIE";
-    }
+    else winnerCode = teamACode || "TIE";
   } else if (awayScore > homeScore) {
     if (teamAIsHome === true) winnerCode = teamBCode || "TIE";
     else if (teamAIsHome === false) winnerCode = teamACode || "TIE";
-    else {
-      winnerCode = teamBCode || "TIE";
-    }
+    else winnerCode = teamBCode || "TIE";
   }
 
   console.log("[WINNER]", {
