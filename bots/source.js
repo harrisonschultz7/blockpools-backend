@@ -1,6 +1,11 @@
 // @ts-nocheck
 // Chainlink Functions source.js — Goalserve NFL winner resolver
 // Returns: teamACode, teamBCode, "TIE", or "ERR".
+//
+// This version:
+// - Uses BOTH team names and team codes with fuzzy matching (NYG/CHI vs full names works).
+// - Treats OT-style finals like "After Over Time" as final.
+// - Mirrors the settlement-bot matching semantics so they stay in sync.
 
 // ----------------------------- Helpers -------------------------------------
 
@@ -77,12 +82,19 @@ async function fetchJson(url, headers) {
 function extractGames(payload) {
   if (!payload) return [];
 
+  // 1) Direct array
   if (Array.isArray(payload)) return payload;
 
+  // 2) { games: { game: [...] } }
   if (Array.isArray(payload.games?.game)) return payload.games.game;
 
+  // 3) { game: [...] }
   if (Array.isArray(payload.game)) return payload.game;
 
+  // 4) nfl-scores style:
+  //    { scores: { category: { match: [...] } } }
+  //    { scores: { category: { match: { ... } } } }
+  //    { scores: { category: [ { match: [...] }, ... ] } }
   if (payload.scores && payload.scores.category) {
     const cat = payload.scores.category;
     const cats = Array.isArray(cat) ? cat : [cat];
@@ -95,6 +107,7 @@ function extractGames(payload) {
     if (matches.length) return matches;
   }
 
+  // 5) Fallback: scan object values for arrays
   if (typeof payload === "object") {
     const arrays = Object.values(payload).filter((v) => Array.isArray(v));
     if (arrays.length) return arrays.flat();
@@ -164,7 +177,53 @@ function extractStatus(match) {
   return "";
 }
 
-// IMPORTANT: mirror settlement-bot OT logic.
+// Acronym helper: "New York Giants" -> "NYG"
+function acronym(s) {
+  if (!s) return "";
+  const parts = String(s)
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean);
+  return parts.map((p) => p[0].toUpperCase()).join("");
+}
+
+// Fuzzy team match using name + code, mirroring settlement-bot.
+function teamMatchesOneSide(apiName, wantName, wantCode) {
+  const nApi = normTeam(apiName);
+  const nWant = normTeam(wantName);
+  const code = String(wantCode || "").trim().toUpperCase();
+  if (!nApi) return false;
+
+  // Exact normalized name match
+  if (nWant && nApi === nWant) return true;
+
+  // Acronym / code match
+  const apiAcr = acronym(apiName);
+  const wantAcr = acronym(wantName);
+  if (code && apiAcr === code) return true;
+  if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
+
+  // Token overlap ("giants" vs "new york giants", etc.)
+  if (nWant) {
+    const tokens = new Set(nApi.split(" "));
+    const wantTokens = new Set(nWant.split(" "));
+    for (const t of wantTokens) {
+      if (t.length > 2 && tokens.has(t)) return true;
+    }
+  }
+
+  return false;
+}
+
+// Match unordered pair: does this game look like (A,B) in either home/away order?
+function unorderedTeamsMatch(homeName, awayName, AName, BName, ACode, BCode) {
+  const hA = teamMatchesOneSide(homeName, AName, ACode);
+  const aB = teamMatchesOneSide(awayName, BName, BCode);
+  const hB = teamMatchesOneSide(homeName, BName, BCode);
+  const aA = teamMatchesOneSide(awayName, AName, ACode);
+  return (hA && aB) || (hB && aA);
+}
+
+// FINAL status logic: synced with settlement-bot.
 function isFinalStatus(raw) {
   const s = String(raw || "").toLowerCase().replace(/\s+/g, " ").trim();
 
@@ -191,7 +250,7 @@ function isFinalStatus(raw) {
   if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot"))
     return true;
 
-  // Generic final catch, avoid obvious non-end states
+  // Generic "final" catch; avoid obvious non-end stages.
   if (
     /\bfinal\b/.test(s) &&
     !s.includes("semi") &&
@@ -247,6 +306,7 @@ async function main(args) {
   let leaguePath = "nfl-scores";
   const L = String(league || "").toLowerCase();
   if (L !== "nfl") {
+    // For now still NFL-only; extend here when you support more.
     sportPath = "football";
     leaguePath = "nfl-scores";
   }
@@ -295,22 +355,30 @@ async function main(args) {
     return Functions.encodeString("ERR");
   }
 
-  const A = normTeam(teamAname);
-  const B = normTeam(teamBname);
+  const ANameRaw = String(teamAname || "");
+  const BNameRaw = String(teamBname || "");
+
+  const A = normTeam(ANameRaw);
+  const B = normTeam(BNameRaw);
   if (!A || !B) {
     console.log("[BAD INPUT TEAMS]", { teamAname, teamBname });
     return Functions.encodeString("ERR");
   }
 
-  // ---- Find matching game (unordered teams) ----
+  // ---- Find matching game using names + codes (unordered) ----
   const candidates = games.filter((g) => {
-    const home = normTeam(readTeamName(g, "home"));
-    const away = normTeam(readTeamName(g, "away"));
+    const home = readTeamName(g, "home");
+    const away = readTeamName(g, "away");
     if (!home || !away) return false;
 
-    const setWanted = new Set([A, B]);
-    const setHave = new Set([home, away]);
-    return setHave.has(A) && setHave.has(B) && setWanted.size === setHave.size;
+    return unorderedTeamsMatch(
+      home,
+      away,
+      ANameRaw,
+      BNameRaw,
+      teamACode,
+      teamBCode
+    );
   });
 
   if (!candidates.length) {
@@ -319,7 +387,9 @@ async function main(args) {
       gsDate,
       teamAname,
       teamBname,
-      sample: games.slice(0, 3).map((g) => ({
+      teamACode,
+      teamBCode,
+      sample: games.slice(0, 5).map((g) => ({
         home: readTeamName(g, "home"),
         away: readTeamName(g, "away"),
         status: extractStatus(g),
@@ -328,7 +398,7 @@ async function main(args) {
     return Functions.encodeString("ERR");
   }
 
-  // Prefer a final game; else first candidate
+  // Prefer a FINAL candidate; otherwise first candidate
   let match =
     candidates.find((g) => isFinalStatus(extractStatus(g))) || candidates[0];
 
@@ -345,25 +415,35 @@ async function main(args) {
   const homeName = normTeam(readTeamName(match, "home"));
   const awayName = normTeam(readTeamName(match, "away"));
 
-  // Determine whether Team A is home or away
-  const teamAIsHome =
-    A && homeName && A === homeName
-      ? true
-      : A && awayName && A === awayName
-      ? false
-      : null;
+  // Determine whether configured Team A is home or away in this match
+  let teamAIsHome = null;
+  if (teamMatchesOneSide(homeName, ANameRaw, teamACode)) {
+    teamAIsHome = true;
+  } else if (teamMatchesOneSide(awayName, ANameRaw, teamACode)) {
+    teamAIsHome = false;
+  }
 
   // ---- Winner → return team code string ----
   let winnerCode = "TIE";
 
   if (homeScore > awayScore) {
-    if (teamAIsHome === true) winnerCode = teamACode || "TIE";
-    else if (teamAIsHome === false) winnerCode = teamBCode || "TIE";
-    else winnerCode = teamACode || "TIE";
+    if (teamAIsHome === true) {
+      winnerCode = teamACode || "TIE";
+    } else if (teamAIsHome === false) {
+      winnerCode = teamBCode || "TIE";
+    } else {
+      // Fallback: assume home is A if codes/names are ambiguous
+      winnerCode = teamACode || "TIE";
+    }
   } else if (awayScore > homeScore) {
-    if (teamAIsHome === true) winnerCode = teamBCode || "TIE";
-    else if (teamAIsHome === false) winnerCode = teamACode || "TIE";
-    else winnerCode = teamBCode || "TIE";
+    if (teamAIsHome === true) {
+      winnerCode = teamBCode || "TIE";
+    } else if (teamAIsHome === false) {
+      winnerCode = teamACode || "TIE";
+    } else {
+      // Fallback: assume away is B if ambiguous
+      winnerCode = teamBCode || "TIE";
+    }
   }
 
   console.log("[WINNER]", {
