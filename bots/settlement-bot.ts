@@ -302,7 +302,40 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 /* ────────────────────────────────────────────────────────────────────────────
    Goalserve helpers (NFL-only)
 ──────────────────────────────────────────────────────────────────────────── */
-const finalsSet = new Set(["final", "finished", "full time", "ft"]);
+
+// Known explicit "final" labels including OT variants.
+const finalsSet = new Set([
+  "final",
+  "finished",
+  "full time",
+  "ft",
+  "after over time",
+  "after overtime",
+  "final/ot",
+  "final ot",
+  "final aot",
+  "final after ot",
+]);
+
+// Robust "is this game completed?" check so OT / variant strings don't get stuck as pending.
+function isFinalStatus(raw: string): boolean {
+  const s = (raw || "").trim().toLowerCase();
+  if (!s) return false;
+
+  // Exact match against our known labels
+  if (finalsSet.has(s)) return true;
+
+  // Common Goalserve-style & generic patterns
+  if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot"))
+    return true;
+
+  // Many providers include "Final" + extra bits. Accept broadly,
+  // but avoid obvious non-fulltime stages.
+  if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half"))
+    return true;
+
+  return false;
+}
 
 const norm = (s: string) =>
   (s || "")
@@ -520,24 +553,28 @@ async function confirmFinalGoalserve(params: {
     };
   }
 
+  // Prefer games closest to lockTime; break ties by "is final" status.
   candidates.sort((g1: any, g2: any) => {
     const t1 = g1.__kickoff ?? Number.MAX_SAFE_INTEGER;
     const t2 = g2.__kickoff ?? Number.MAX_SAFE_INTEGER;
     const d1 = Math.abs(t1 - params.lockTime);
     const d2 = Math.abs(t2 - params.lockTime);
     if (d1 !== d2) return d1 - d2;
-    const f1 = finalsSet.has((g1.status || "").toLowerCase()) ? 1 : 0;
-    const f2 = finalsSet.has((g2.status || "").toLowerCase()) ? 1 : 0;
+
+    const f1 = isFinalStatus(g1.status || "") ? 1 : 0;
+    const f2 = isFinalStatus(g2.status || "") ? 1 : 0;
     return f2 - f1;
   });
 
   const match = candidates[0];
-  const isFinal = finalsSet.has((match.status || "").toLowerCase());
+  const isFinal = isFinalStatus(match.status || "");
   if (!isFinal) {
     return {
       ok: false,
       reason: "not final",
-      debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried } : undefined,
+      debug: GOALSERVE_DEBUG
+        ? { url: resp.url, date: resp.dateTried, status: match.status }
+        : undefined,
     };
   }
 
@@ -749,6 +786,7 @@ async function main() {
 
   console.log(`✅ Provider confirmed FINAL for ${finalEligible.length} pool(s). Proceeding.`);
 
+  // Re-read secrets in case they rotated during the run
   const { secretsVersion: sv2 } = await loadActiveSecrets();
   const donHostedSecretsVersion2 = BigInt(sv2);
 
