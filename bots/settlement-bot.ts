@@ -314,14 +314,16 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Goalserve helpers (NFL + NBA + NHL)
+   Goalserve helpers (NFL + NBA + NHL + EPL)
+   Shared logic across leagues to keep things tight.
 ──────────────────────────────────────────────────────────────────────────── */
 
-// Known explicit "final" labels including OT variants.
+// Explicit "final" labels, incl soccer variants.
 const finalsSet = new Set([
   "final",
   "finished",
   "full time",
+  "full-time",
   "ft",
   "after over time",
   "after overtime",
@@ -331,21 +333,23 @@ const finalsSet = new Set([
   "final after ot",
 ]);
 
-// Robust "is this game completed?" check so OT / variant strings don't get stuck as pending.
+// "Is this game completed?"
 function isFinalStatus(raw: string): boolean {
   const s = (raw || "").trim().toLowerCase();
   if (!s) return false;
 
-  // Exact match / known labels
   if (finalsSet.has(s)) return true;
 
-  // Pattern matches
   if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot"))
     return true;
 
-  // Generic "Final ..." but exclude non-fulltime contexts
+  if (s.includes("full time") || s.includes("full-time"))
+    return true;
+
   if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half"))
     return true;
+
+  if (s === "full-time" || s === "ft") return true;
 
   return false;
 }
@@ -383,11 +387,12 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 }
 
 /**
- * Map on-chain league label -> Goalserve sportPath + leaguePaths.
+ * Map on-chain league label -> Goalserve path(s).
  *
  * NFL: /football/nfl-scores?date=dd.MM.yyyy&json=1
  * NBA: /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
  * NHL: /hockey/nhl-scores?date=dd.MM.yyyy&json=1
+ * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1  (England - Premier League)
  */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leaguePaths: string[] } {
   const L = String(leagueLabel || "").trim().toLowerCase();
@@ -395,25 +400,39 @@ function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leagueP
   if (L === "nfl") {
     return { sportPath: "football", leaguePaths: ["nfl-scores"] };
   }
-
   if (L === "nba") {
     return { sportPath: "bsktbl", leaguePaths: ["nba-scores"] };
   }
-
   if (L === "nhl") {
     return { sportPath: "hockey", leaguePaths: ["nhl-scores"] };
   }
+  // EPL / England Premier League
+  if (
+    L === "epl" ||
+    L === "premier league" ||
+    L === "england - premier league" ||
+    L === "england premier league"
+  ) {
+    return { sportPath: "commentaries", leaguePaths: ["1204"] };
+  }
 
-  return { sportPath: "", leaguePaths: [] }; // unsupported for now
+  return { sportPath: "", leaguePaths: [] }; // unsupported
 }
 
+/**
+ * Extract candidate matches from various Goalserve shapes.
+ * Supports:
+ * - NFL:   games.game[]
+ * - NBA/NHL: scores.category.match[]
+ * - EPL:   commentaries.tournament.match[]
+ */
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
 
   // NFL style
   if (Array.isArray(payload?.games?.game)) return payload.games.game;
 
-  // NBA / NHL style: scores.category.match[]
+  // NBA / NHL style
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
@@ -423,8 +442,20 @@ function collectCandidateGames(payload: any): any[] {
     if (matches.length) return matches;
   }
 
-  if (Array.isArray(payload?.game)) return payload.game;
+  // EPL commentaries style: commentaries.tournament.match[]
+  const comm = payload?.commentaries?.tournament;
+  if (comm) {
+    const ts = Array.isArray(comm) ? comm : [comm];
+    const matches = ts.flatMap((t: any) => {
+      if (Array.isArray(t?.match)) return t.match;
+      if (t?.match) return [t.match];
+      return [];
+    });
+    if (matches.length) return matches;
+  }
 
+  // Generic fallbacks
+  if (Array.isArray(payload?.game)) return payload.game;
   if (Array.isArray(payload)) return payload;
 
   if (typeof payload === "object") {
@@ -435,69 +466,87 @@ function collectCandidateGames(payload: any): any[] {
   return [];
 }
 
+/**
+ * Normalize a match row across football/basketball/hockey/EPL commentaries.
+ */
 function normalizeGameRow(r: any) {
   const homeName =
     r?.hometeam?.name ??
     r?.home_name ??
     r?.home ??
     r?.home_team ??
+    (r?.localteam && (r.localteam["@name"] || r.localteam.name)) ??
     "";
+
   const awayName =
     r?.awayteam?.name ??
     r?.away_name ??
     r?.away ??
     r?.away_team ??
+    (r?.visitorteam && (r.visitorteam["@name"] || r.visitorteam.name)) ??
     "";
 
   const homeScore = Number(
     r?.hometeam?.totalscore ??
     r?.home_score ??
     r?.home_final ??
+    (r?.localteam &&
+      (r.localteam["@goals"] ??
+       r.localteam["@ft_score"])) ??
     0
   );
+
   const awayScore = Number(
     r?.awayteam?.totalscore ??
     r?.away_score ??
     r?.away_final ??
+    (r?.visitorteam &&
+      (r.visitorteam["@goals"] ??
+       r.visitorteam["@ft_score"])) ??
     0
   );
 
   const status = String(
-    r?.status || r?.game_status || r?.state || ""
+    r?.status ||
+    r?.game_status ||
+    r?.state ||
+    r?.["@status"] ||
+    ""
   ).trim();
 
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
-// Parse "26.10.2025 17:00" (UTC) safely
+// Parse "26.10.2025 17:00" (UTC)
 function parseDatetimeUTC(s?: string): number | undefined {
   if (!s) return;
-  const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
   if (!m) return;
   const [, dd, MM, yyyy, HH, mm] = m;
   const t = Date.UTC(+yyyy, +MM - 1, +dd, +HH, +mm, 0, 0);
   return isFinite(t) ? Math.floor(t / 1000) : undefined;
 }
 
-// Parse "dd.MM.yyyy" with optional time (treated as UTC-ish)
+// Parse "dd.MM.yyyy" with optional time (HH:mm or HH:mm AM/PM) as UTC-ish
 function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | undefined {
   if (!dateStr) return;
-  const md = dateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  const md = String(dateStr).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
   if (!md) return;
   const [, dd, MM, yyyy] = md;
   let h = 0, mi = 0;
 
   if (timeStr) {
-    const ampm = timeStr.trim().toUpperCase();
-    const mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
+    const ampm = String(timeStr).trim().toUpperCase();
+    let mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
     if (mh) {
-      h = +mh[1]; mi = +mh[2];
+      h = +mh[1];
+      mi = +mh[2];
       const mer = mh[3];
       if (mer === "PM" && h < 12) h += 12;
       if (mer === "AM" && h === 12) h = 0;
     } else {
-      const mh24 = ampm.match(/^(\d{1,2}):(\d{2})$/);
-      if (mh24) { h = +mh24[1]; mi = +mh24[2]; }
+      mh = ampm.match(/^(\d{1,2}):(\d{2})$/);
+      if (mh) { h = +mh[1]; mi = +mh[2]; }
     }
   }
 
@@ -505,27 +554,41 @@ function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | und
   return isFinite(t) ? Math.floor(t / 1000) : undefined;
 }
 
+/**
+ * Derive kickoff epoch from raw Goalserve row.
+ * Supports datetime_utc or (formatted_date/date + time), including EPL attributes.
+ */
 function kickoffEpochFromRaw(raw: any): number | undefined {
-  const t1 = parseDatetimeUTC(raw?.datetime_utc);
+  const t1 = parseDatetimeUTC(raw?.datetime_utc || raw?.["@datetime_utc"]);
   if (t1) return t1;
 
-  // Prefer formatted_date when present (Goalserve uses dd.MM.yyyy there)
-  const date = raw?.formatted_date || raw?.date;
-  const time = raw?.time ?? raw?.start_time ?? raw?.start;
+  const date =
+    raw?.formatted_date ||
+    raw?.date ||
+    raw?.["@formatted_date"] ||
+    raw?.["@date"];
+
+  const time =
+    raw?.time ??
+    raw?.start_time ??
+    raw?.start ??
+    raw?.["@time"];
+
   return parseDateAndTimeAsUTC(date, time);
 }
 
-// Team matching
+// Team matching (shared)
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
   const code = trimU(wantCode);
-  if (!nApi) return false;
 
+  if (!nApi) return false;
   if (nApi && nWant && nApi === nWant) return true;
 
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
+
   if (code && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
@@ -550,6 +613,10 @@ function unorderedTeamsMatchByTokens(
   return (hA && aB) || (hB && aA);
 }
 
+/**
+ * Minimal "is this game final and identifiable" check.
+ * Used only as a preflight gate before sending the on-chain request.
+ */
 async function tryFetchGoalserve(league: string, lockTime: number) {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
   if (!sportPath || !leaguePaths.length) {
@@ -620,7 +687,7 @@ async function confirmFinalGoalserve(params: {
     };
   }
 
-  // Prefer games closest to lockTime; break ties by "is final" status.
+  // Prefer closest kickoff to lockTime; break ties by "is final".
   candidates.sort((g1: any, g2: any) => {
     const t1 = g1.__kickoff ?? Number.MAX_SAFE_INTEGER;
     const t2 = g2.__kickoff ?? Number.MAX_SAFE_INTEGER;
@@ -645,6 +712,8 @@ async function confirmFinalGoalserve(params: {
     };
   }
 
+  // Winner resolution here is only for logging;
+  // actual on-chain resolution is done inside source.js.
   const homeIsA = teamMatchesOneSide(match.homeName, aName, aCode);
   const homeIsB = teamMatchesOneSide(match.homeName, bName, bCode);
 
@@ -723,15 +792,13 @@ async function main() {
   console.log(
     `[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`
   );
-  console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL)`);
+  console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL)`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
   const { secretsVersion, donId, source } = await loadActiveSecrets();
-  const donHostedSecretsVersion = BigInt(secretsVersion);
   const donBytes = ethers.utils.formatBytes32String(donId);
-
   console.log(`🔐 Loaded DON pointer from ${source}`);
   console.log(`   secretsVersion = ${secretsVersion}`);
   console.log(`   donId          = ${donId}`);
@@ -748,15 +815,22 @@ async function main() {
   const botAddr = (await wallet.getAddress()).toLowerCase();
 
   type PoolState = {
-    addr: string; league: string;
-    teamAName: string; teamBName: string;
-    teamACode: string; teamBCode: string;
-    isLocked: boolean; requestSent: boolean; winningTeam: number;
-    lockTime: number; isOwner: boolean;
+    addr: string;
+    league: string;
+    teamAName: string;
+    teamBName: string;
+    teamACode: string;
+    teamBCode: string;
+    isLocked: boolean;
+    requestSent: boolean;
+    winningTeam: number;
+    lockTime: number;
+    isOwner: boolean;
   };
 
   const states: PoolState[] = [];
 
+  // Discover pools we own + snapshot state
   await Promise.all(
     gamesMeta.map(({ contractAddress }) =>
       readLimit(async () => {
@@ -810,6 +884,7 @@ async function main() {
     s => s.isOwner && s.isLocked && !s.requestSent && s.winningTeam === 0
   );
 
+  // Enforce time gates
   const timeGated = gated.filter(s =>
     (s.lockTime === 0 || nowSec >= s.lockTime + REQUEST_GAP_SECONDS) &&
     (s.lockTime === 0 || nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED)
@@ -840,7 +915,7 @@ async function main() {
     if (pre.ok) {
       const label = pre.winnerCode || pre.winner || "?";
       console.log(
-        `[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${label}`
+        `[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: confirmed final (winner preview=${label})`
       );
       finalEligible.push(s);
     } else if (pre.reason === "not final") {
@@ -888,7 +963,7 @@ async function main() {
     const pool = new ethers.Contract(s.addr, poolAbi, wallet);
     const args = buildArgs8(s);
 
-    // simulate
+    // Simulate first
     try {
       await pool.callStatic.sendRequest(
         SOURCE,
