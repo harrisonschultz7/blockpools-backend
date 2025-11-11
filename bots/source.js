@@ -1,9 +1,9 @@
 // bots/source.js
 // Chainlink Functions source for BlockPools settlement
-// Supports: NFL, NBA, NHL, EPL via Goalserve
+// Supports: NFL, NBA, NHL, EPL, UCL via Goalserve
 //
 // ARGS (8):
-//  0: league       (e.g. "NFL", "NBA", "NHL", "EPL")
+//  0: league       (e.g. "NFL", "NBA", "NHL", "EPL", "UCL")
 //  1: dateFrom     (yyyy-MM-dd, ET) - usually lockDate
 //  2: dateTo       (yyyy-MM-dd, ET) - usually lockDate+1 for safety
 //  3: teamACode
@@ -55,7 +55,7 @@ const GOALSERVE_BASE_URL =
   secrets.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers (mirrors settlement-bot.ts semantics, incl EPL)
+// Helpers (aligned with settlement-bot.ts semantics)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -64,7 +64,8 @@ const GOALSERVE_BASE_URL =
  * NFL: /football/nfl-scores?date=dd.MM.yyyy&json=1
  * NBA: /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
  * NHL: /hockey/nhl-scores?date=dd.MM.yyyy&json=1
- * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1  (England - Premier League)
+ * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1        (England - Premier League)
+ * UCL: /commentaries/1005?date=dd.MM.yyyy&json=1        (UEFA Champions League)
  */
 function goalserveLeaguePaths(leagueLabel) {
   const L = String(leagueLabel || "").trim().toLowerCase();
@@ -86,18 +87,29 @@ function goalserveLeaguePaths(leagueLabel) {
     L === "england - premier league" ||
     L === "england premier league"
   ) {
-    // This yields: /{APIKEY}/commentaries/1204?date=...&json=1
+    // -> /{APIKEY}/commentaries/1204?date=...&json=1
     return { sportPath: "commentaries", leaguePaths: ["1204"] };
+  }
+
+  // UCL / UEFA Champions League
+  if (
+    L === "ucl" ||
+    L === "uefa champions league" ||
+    L === "champions league"
+  ) {
+    // -> /{APIKEY}/commentaries/1005?date=...&json=1
+    return { sportPath: "commentaries", leaguePaths: ["1005"] };
   }
 
   return { sportPath: "", leaguePaths: [] };
 }
 
-// Known final-ish labels (incl OT variants)
+// Known final-ish labels (incl OT / soccer variants)
 const finalsSet = new Set([
   "final",
   "finished",
   "full time",
+  "full-time",
   "ft",
   "after over time",
   "after overtime",
@@ -117,16 +129,16 @@ function isFinalStatus(raw) {
     s.includes("after over time") ||
     s.includes("after overtime") ||
     s.includes("after ot")
-  )
-    return true;
+  ) return true;
+
+  if (s.includes("full time") || s === "full-time") return true;
 
   if (
     s.includes("final") &&
     !s.includes("semi") &&
     !s.includes("quarter") &&
     !s.includes("half")
-  )
-    return true;
+  ) return true;
 
   return false;
 }
@@ -224,7 +236,7 @@ function kickoffEpochFromRaw(raw) {
   );
   if (t1) return t1;
 
-  // 2) prefer formatted_date/date + time (support both attrs and plain)
+  // 2) prefer formatted_date/date + time
   const date =
     raw?.formatted_date ||
     raw?.date ||
@@ -239,16 +251,16 @@ function kickoffEpochFromRaw(raw) {
   return parseDateAndTimeAsUTC(date, time);
 }
 
-// Extract all candidate games from various Goalserve shapes
+// Extract candidate matches for all supported shapes
 function collectCandidateGames(payload) {
   if (!payload) return [];
 
-  // Classic NFL style
+  // NFL
   if (Array.isArray(payload?.games?.game)) {
     return payload.games.game;
   }
 
-  // NBA/NHL style: scores.category.match[]
+  // NBA / NHL: scores.category.match[]
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
@@ -260,8 +272,7 @@ function collectCandidateGames(payload) {
     if (matches.length) return matches;
   }
 
-  // EPL commentaries style:
-  // commentaries.tournament.match[]
+  // EPL / UCL: commentaries.tournament.match[]
   const comm = payload?.commentaries?.tournament;
   if (comm) {
     const ts = Array.isArray(comm) ? comm : [comm];
@@ -285,15 +296,17 @@ function collectCandidateGames(payload) {
 }
 
 function normalizeGameRow(r) {
-  // Home/local team names
+  // Home/local team
   const homeName =
     r?.hometeam?.name ||
     r?.home_name ||
     r?.home ||
     r?.home_team ||
-    (r?.localteam && (r.localteam["@name"] || r.localteam.name)) ||
+    (r?.localteam &&
+      (r.localteam["@name"] || r.localteam.name)) ||
     "";
 
+  // Away/visitor team
   const awayName =
     r?.awayteam?.name ||
     r?.away_name ||
@@ -304,8 +317,8 @@ function normalizeGameRow(r) {
     "";
 
   // Scores:
-  // - NFL/NBA/NHL: hometeam/awayteam.totalscore or *_score
-  // - EPL commentaries: localteam/visitorteam @goals or ft_score
+  // - NFL/NBA/NHL: hometeam/awayteam.totalscore or *_score / *_final
+  // - EPL/UCL: localteam/visitorteam @goals or @ft_score
   const homeScore = Number(
     r?.hometeam?.totalscore ??
       r?.home_score ??
@@ -337,7 +350,7 @@ function normalizeGameRow(r) {
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
-// Team matching identical to settlement-bot.ts
+// Team matching (shared with settlement-bot.ts)
 function teamMatchesOneSide(apiName, wantName, wantCode) {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -383,7 +396,7 @@ function isoToDdmmyyyy(iso) {
   return `${D}.${M}.${Y}`;
 }
 
-// Iterate dates from fromISO to toISO-1 (safety window)
+// Iterate dates from fromISO to toISO-1
 function* iterateDateRange(fromISO, toISO) {
   if (!fromISO || !toISO) return;
   const from = new Date(fromISO + "T00:00:00Z");
@@ -409,7 +422,7 @@ async function lookupWinner() {
     league
   );
   if (!sportPath || !leaguePaths.length) {
-    // unsupported league, no decision
+    // unsupported league
     return 0;
   }
 
@@ -445,9 +458,7 @@ async function lookupWinner() {
             targetACode,
             targetBCode
           )
-        ) {
-          continue;
-        }
+        ) continue;
 
         const kickoff = kickoffEpochFromRaw(r);
         candidates.push({
@@ -463,13 +474,12 @@ async function lookupWinner() {
   }
 
   if (!candidates.length) {
-    // nothing matched
     return 0;
   }
 
-  // Choose:
-  // 1. Closest kickoff to lockTime (if available)
-  // 2. Prefer final over non-final
+  // Prefer:
+  // 1. closest kickoff to lockTime (if present)
+  // 2. final over non-final
   candidates.sort((a, b) => {
     const t1 =
       typeof a.kickoff === "number"
@@ -490,13 +500,13 @@ async function lookupWinner() {
   const best = candidates[0];
 
   if (!isFinalStatus(best.status)) {
-    // Not final yet; no decision
+    // Not final yet
     return 0;
   }
 
   // Determine winner:
-  // Soccer/EPL supports draws => 3 for Tie when scores equal.
-  let winnerFlag = 3; // Tie / push by default
+  // Supports ties for soccer-style leagues (EPL/UCL).
+  let winnerFlag = 3; // Tie by default
 
   if (best.homeScore > best.awayScore) {
     const homeIsA = teamMatchesOneSide(
