@@ -1,9 +1,9 @@
 // bots/source.js
 // Chainlink Functions source for BlockPools settlement
-// Supports: NFL, NBA, NHL via Goalserve
+// Supports: NFL, NBA, NHL, EPL via Goalserve
 //
 // ARGS (8):
-//  0: league       (e.g. "NFL", "NBA", "NHL")
+//  0: league       (e.g. "NFL", "NBA", "NHL", "EPL")
 //  1: dateFrom     (yyyy-MM-dd, ET) - usually lockDate
 //  2: dateTo       (yyyy-MM-dd, ET) - usually lockDate+1 for safety
 //  3: teamACode
@@ -17,10 +17,6 @@
 //  1 = Team A wins
 //  2 = Team B wins
 //  3 = Tie
-
-// NOTE: This runs in the Chainlink Functions runtime.
-// - Use `secrets.GOALSERVE_API_KEY` + optional `secrets.GOALSERVE_BASE_URL`.
-// - HTTP via Functions.makeHttpRequest.
 
 if (!Array.isArray(args) || args.length < 8) {
   throw Error("Invalid args: expected 8");
@@ -59,9 +55,17 @@ const GOALSERVE_BASE_URL =
   secrets.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers (mirrors settlement-bot.ts semantics)
+// Helpers (mirrors settlement-bot.ts semantics, incl EPL)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Map on-chain league label -> Goalserve path.
+ *
+ * NFL: /football/nfl-scores?date=dd.MM.yyyy&json=1
+ * NBA: /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
+ * NHL: /hockey/nhl-scores?date=dd.MM.yyyy&json=1
+ * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1  (England - Premier League)
+ */
 function goalserveLeaguePaths(leagueLabel) {
   const L = String(leagueLabel || "").trim().toLowerCase();
 
@@ -73,6 +77,17 @@ function goalserveLeaguePaths(leagueLabel) {
   }
   if (L === "nhl") {
     return { sportPath: "hockey", leaguePaths: ["nhl-scores"] };
+  }
+
+  // EPL / England Premier League
+  if (
+    L === "epl" ||
+    L === "premier league" ||
+    L === "england - premier league" ||
+    L === "england premier league"
+  ) {
+    // This yields: /{APIKEY}/commentaries/1204?date=...&json=1
+    return { sportPath: "commentaries", leaguePaths: ["1204"] };
   }
 
   return { sportPath: "", leaguePaths: [] };
@@ -203,13 +218,24 @@ function parseDateAndTimeAsUTC(dateStr, timeStr) {
 }
 
 function kickoffEpochFromRaw(raw) {
-  // Prefer explicit datetime_utc if matches our expected format
-  const t1 = parseDatetimeUTC(raw?.datetime_utc);
+  // 1) explicit datetime_utc if given
+  const t1 = parseDatetimeUTC(
+    raw?.datetime_utc || raw?.["@datetime_utc"]
+  );
   if (t1) return t1;
 
-  // Fall back to formatted_date/date + time/start/start_time
-  const date = raw?.formatted_date || raw?.date;
-  const time = raw?.time || raw?.start_time || raw?.start;
+  // 2) prefer formatted_date/date + time (support both attrs and plain)
+  const date =
+    raw?.formatted_date ||
+    raw?.date ||
+    raw?.["@formatted_date"] ||
+    raw?.["@date"];
+  const time =
+    raw?.time ||
+    raw?.start_time ||
+    raw?.start ||
+    raw?.["@time"];
+
   return parseDateAndTimeAsUTC(date, time);
 }
 
@@ -217,16 +243,31 @@ function kickoffEpochFromRaw(raw) {
 function collectCandidateGames(payload) {
   if (!payload) return [];
 
+  // Classic NFL style
   if (Array.isArray(payload?.games?.game)) {
     return payload.games.game;
   }
 
+  // NBA/NHL style: scores.category.match[]
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
     const matches = cats.flatMap((c) => {
       if (Array.isArray(c?.match)) return c.match;
       if (c?.match) return [c.match];
+      return [];
+    });
+    if (matches.length) return matches;
+  }
+
+  // EPL commentaries style:
+  // commentaries.tournament.match[]
+  const comm = payload?.commentaries?.tournament;
+  if (comm) {
+    const ts = Array.isArray(comm) ? comm : [comm];
+    const matches = ts.flatMap((t) => {
+      if (Array.isArray(t?.match)) return t.match;
+      if (t?.match) return [t.match];
       return [];
     });
     if (matches.length) return matches;
@@ -244,34 +285,53 @@ function collectCandidateGames(payload) {
 }
 
 function normalizeGameRow(r) {
+  // Home/local team names
   const homeName =
     r?.hometeam?.name ||
     r?.home_name ||
     r?.home ||
     r?.home_team ||
+    (r?.localteam && (r.localteam["@name"] || r.localteam.name)) ||
     "";
+
   const awayName =
     r?.awayteam?.name ||
     r?.away_name ||
     r?.away ||
     r?.away_team ||
+    (r?.visitorteam &&
+      (r.visitorteam["@name"] || r.visitorteam.name)) ||
     "";
 
+  // Scores:
+  // - NFL/NBA/NHL: hometeam/awayteam.totalscore or *_score
+  // - EPL commentaries: localteam/visitorteam @goals or ft_score
   const homeScore = Number(
     r?.hometeam?.totalscore ??
       r?.home_score ??
       r?.home_final ??
+      (r?.localteam &&
+        (r.localteam["@goals"] ||
+          r.localteam["@ft_score"])) ??
       0
   );
+
   const awayScore = Number(
     r?.awayteam?.totalscore ??
       r?.away_score ??
       r?.away_final ??
+      (r?.visitorteam &&
+        (r.visitorteam["@goals"] ||
+          r.visitorteam["@ft_score"])) ??
       0
   );
 
   const status = String(
-    r?.status || r?.game_status || r?.state || ""
+    r?.status ||
+      r?.game_status ||
+      r?.state ||
+      r?.["@status"] ||
+      ""
   ).trim();
 
   return { homeName, awayName, homeScore, awayScore, status };
@@ -434,9 +494,11 @@ async function lookupWinner() {
     return 0;
   }
 
-  let winnerFlag = 3; // default Tie/push
+  // Determine winner:
+  // Soccer/EPL supports draws => 3 for Tie when scores equal.
+  let winnerFlag = 3; // Tie / push by default
+
   if (best.homeScore > best.awayScore) {
-    // Decide if home is A or B
     const homeIsA = teamMatchesOneSide(
       best.homeName,
       targetAName,
@@ -464,7 +526,6 @@ async function lookupWinner() {
     else if (awayIsB && !awayIsA) winnerFlag = 2;
   }
 
-  // If we somehow couldn't distinguish, treat as tie (3) instead of error.
   return winnerFlag;
 }
 
@@ -473,6 +534,4 @@ async function lookupWinner() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const winnerEnum = await lookupWinner();
-
-// Encoded uint8: 0,1,2,3
 return Functions.encodeUint8(winnerEnum);
