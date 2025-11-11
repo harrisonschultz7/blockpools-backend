@@ -143,13 +143,16 @@ const iface = new ethers.utils.Interface(poolAbi);
    Small utils
 ──────────────────────────────────────────────────────────────────────────── */
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
 function limiter(concurrency: number) {
   let active = 0;
   const queue: Array<() => void> = [];
   const next = () => { active--; if (queue.length) queue.shift()!(); };
   return async function run<T>(fn: () => Promise<T>): Promise<T> {
     if (active >= concurrency) await new Promise<void>(res => queue.push(res));
-    active++; try { return await fn(); } finally { next(); }
+    active++;
+    try { return await fn(); }
+    finally { next(); }
   };
 }
 
@@ -165,6 +168,7 @@ function epochToEtISO(epochSec: number) {
   for (const p of fmt.formatToParts(dt)) parts[p.type] = p.value;
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
+
 function addDaysISO(iso: string, days: number) {
   const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -186,15 +190,22 @@ function normalizeGameList(raw: any): GameMeta[] {
   if (!raw) return out;
 
   if (!Array.isArray(raw) && typeof raw === "object" && raw.contractAddress) {
-    out.push(raw as GameMeta); return out;
+    out.push(raw as GameMeta);
+    return out;
   }
+
   if (Array.isArray(raw)) {
     for (const it of raw) if (it && it.contractAddress) out.push(it as GameMeta);
     return out;
   }
+
   if (!Array.isArray(raw) && typeof raw === "object") {
     for (const arr of Object.values(raw)) {
-      if (Array.isArray(arr)) for (const it of arr) if (it && it.contractAddress) out.push(it as GameMeta);
+      if (Array.isArray(arr)) {
+        for (const it of arr) {
+          if (it && it.contractAddress) out.push(it as GameMeta);
+        }
+      }
     }
   }
   return out;
@@ -221,10 +232,12 @@ function loadGamesMeta(): GameMeta[] {
     if (fromOverride) return fromOverride;
     console.warn(`GAMES_PATH was set but not readable/usable: ${GAMES_PATH_OVERRIDE}`);
   }
+
   for (const p of GAMES_CANDIDATES) {
     const fromLocal = readGamesMetaAtPath(p);
     if (fromLocal) return fromLocal;
   }
+
   const envList = (process.env.CONTRACTS || "").trim();
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
@@ -236,6 +249,7 @@ function loadGamesMeta(): GameMeta[] {
       return Array.from(new Set(filtered)).map(addr => ({ contractAddress: addr }));
     }
   }
+
   console.warn("No contracts found in games.json or CONTRACTS env. Nothing to do.");
   return [];
 }
@@ -300,7 +314,7 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Goalserve helpers (NFL-only)
+   Goalserve helpers (NFL + NBA)
 ──────────────────────────────────────────────────────────────────────────── */
 
 // Known explicit "final" labels including OT variants.
@@ -322,15 +336,11 @@ function isFinalStatus(raw: string): boolean {
   const s = (raw || "").trim().toLowerCase();
   if (!s) return false;
 
-  // Exact match against our known labels
   if (finalsSet.has(s)) return true;
 
-  // Common Goalserve-style & generic patterns
   if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot"))
     return true;
 
-  // Many providers include "Final" + extra bits. Accept broadly,
-  // but avoid obvious non-fulltime stages.
   if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half"))
     return true;
 
@@ -369,18 +379,34 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
   throw lastErr;
 }
 
-// only NFL for now
+/**
+ * Map on-chain league label -> Goalserve sportPath + leaguePaths.
+ * NFL:
+ *   /football/nfl-scores?date=dd.MM.yyyy&json=1
+ * NBA:
+ *   /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
+ */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leaguePaths: string[] } {
   const L = String(leagueLabel || "").trim().toLowerCase();
-  if (L === "nfl") return { sportPath: "football", leaguePaths: ["nfl-scores"] };
+
+  if (L === "nfl") {
+    return { sportPath: "football", leaguePaths: ["nfl-scores"] };
+  }
+
+  if (L === "nba") {
+    return { sportPath: "bsktbl", leaguePaths: ["nba-scores"] };
+  }
+
   return { sportPath: "", leaguePaths: [] }; // unsupported for now
 }
 
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
-  if (Array.isArray(payload?.games?.game)) return payload.games.game;
-  if (Array.isArray(payload?.game)) return payload.game;
 
+  // NFL style
+  if (Array.isArray(payload?.games?.game)) return payload.games.game;
+
+  // NBA style (per sample): scores.category.match[]
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
@@ -390,20 +416,49 @@ function collectCandidateGames(payload: any): any[] {
     if (matches.length) return matches;
   }
 
+  if (Array.isArray(payload?.game)) return payload.game;
+
   if (Array.isArray(payload)) return payload;
+
   if (typeof payload === "object") {
     const arrs = Object.values(payload).filter(v => Array.isArray(v)) as any[];
     if (arrs.length) return arrs.flat();
   }
+
   return [];
 }
 
 function normalizeGameRow(r: any) {
-  const homeName = r?.hometeam?.name ?? r?.home_name ?? r?.home ?? "";
-  const awayName = r?.awayteam?.name ?? r?.away_name ?? r?.away ?? "";
-  const homeScore = Number(r?.hometeam?.totalscore ?? r?.home_score ?? 0);
-  const awayScore = Number(r?.awayteam?.totalscore ?? r?.away_score ?? 0);
-  const status = String(r?.status || r?.game_status || r?.state || "").trim();
+  const homeName =
+    r?.hometeam?.name ??
+    r?.home_name ??
+    r?.home ??
+    r?.home_team ??
+    "";
+  const awayName =
+    r?.awayteam?.name ??
+    r?.away_name ??
+    r?.away ??
+    r?.away_team ??
+    "";
+
+  const homeScore = Number(
+    r?.hometeam?.totalscore ??
+    r?.home_score ??
+    r?.home_final ??
+    0
+  );
+  const awayScore = Number(
+    r?.awayteam?.totalscore ??
+    r?.away_score ??
+    r?.away_final ??
+    0
+  );
+
+  const status = String(
+    r?.status || r?.game_status || r?.state || ""
+  ).trim();
+
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
@@ -424,6 +479,7 @@ function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | und
   if (!md) return;
   const [, dd, MM, yyyy] = md;
   let h = 0, mi = 0;
+
   if (timeStr) {
     const ampm = timeStr.trim().toUpperCase();
     const mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
@@ -437,6 +493,7 @@ function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | und
       if (mh24) { h = +mh24[1]; mi = +mh24[2]; }
     }
   }
+
   const t = Date.UTC(+yyyy, +MM - 1, +dd, h, mi, 0, 0);
   return isFinite(t) ? Math.floor(t / 1000) : undefined;
 }
@@ -444,6 +501,7 @@ function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | und
 function kickoffEpochFromRaw(raw: any): number | undefined {
   const t1 = parseDatetimeUTC(raw?.datetime_utc);
   if (t1) return t1;
+
   return parseDateAndTimeAsUTC(
     raw?.date ?? raw?.formatted_date,
     raw?.time ?? raw?.start_time ?? raw?.start
@@ -502,7 +560,9 @@ async function tryFetchGoalserve(league: string, lockTime: number) {
     const url = `${GOALSERVE_BASE_URL.replace(/\/+$/, "")}/${encodeURIComponent(
       GOALSERVE_API_KEY
     )}/${sportPath}/${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
+
     tried.push(url);
+
     try {
       const payload = await fetchJsonWithRetry(url, 3, 500);
       const rawGames = collectCandidateGames(payload);
@@ -582,8 +642,11 @@ async function confirmFinalGoalserve(params: {
   const homeIsB = teamMatchesOneSide(match.homeName, bName, bCode);
 
   let winner: "A" | "B" | "TIE" = "TIE";
-  if (match.homeScore > match.awayScore) winner = homeIsA ? "A" : homeIsB ? "B" : "TIE";
-  else if (match.awayScore > match.homeScore) winner = homeIsA ? "B" : homeIsB ? "A" : "TIE";
+  if (match.homeScore > match.awayScore) {
+    winner = homeIsA ? "A" : homeIsB ? "B" : "TIE";
+  } else if (match.awayScore > match.homeScore) {
+    winner = homeIsA ? "B" : homeIsB ? "A" : "TIE";
+  }
 
   let winnerCode = "Tie";
   if (winner === "A") winnerCode = params.teamACode || params.teamAName;
@@ -593,18 +656,20 @@ async function confirmFinalGoalserve(params: {
     ok: true,
     winner,
     winnerCode,
-    debug: {
-      url: resp.url,
-      date: resp.dateTried,
-      picked: {
-        home: match.homeName,
-        away: match.awayName,
-        status: match.status,
-        homeScore: match.homeScore,
-        awayScore: match.awayScore,
-        kickoff: match.__kickoff,
-      },
-    },
+    debug: GOALSERVE_DEBUG
+      ? {
+          url: resp.url,
+          date: resp.dateTried,
+          picked: {
+            home: match.homeName,
+            away: match.awayName,
+            status: match.status,
+            homeScore: match.homeScore,
+            awayScore: match.awayScore,
+            kickoff: match.__kickoff,
+          },
+        }
+      : undefined,
   };
 }
 
@@ -648,15 +713,18 @@ async function main() {
 
   console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
-  console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
-  console.log(`[CFG] Provider=Goalserve (NFL only)`);
+  console.log(
+    `[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`
+  );
+  console.log(`[CFG] Provider=Goalserve (NFL + NBA)`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
   const { secretsVersion, donId, source } = await loadActiveSecrets();
-  const donHostedSecretsVersion = BigInt(secretsVersion);
+  const donHostedSecretsVersion = BigInt(secretsVersion); // kept for completeness
   const donBytes = ethers.utils.formatBytes32String(donId);
+
   console.log(`🔐 Loaded DON pointer from ${source}`);
   console.log(`   secretsVersion = ${secretsVersion}`);
   console.log(`   donId          = ${donId}`);
