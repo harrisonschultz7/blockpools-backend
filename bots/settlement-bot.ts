@@ -314,7 +314,7 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Goalserve helpers (NFL + NBA + NHL + EPL)
+   Goalserve helpers (NFL + NBA + NHL + EPL + UCL)
    Shared logic across leagues to keep things tight.
 ──────────────────────────────────────────────────────────────────────────── */
 
@@ -392,7 +392,8 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
  * NFL: /football/nfl-scores?date=dd.MM.yyyy&json=1
  * NBA: /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
  * NHL: /hockey/nhl-scores?date=dd.MM.yyyy&json=1
- * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1  (England - Premier League)
+ * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1
+ * UCL: /commentaries/1005?date=dd.MM.yyyy&json=1
  */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leaguePaths: string[] } {
   const L = String(leagueLabel || "").trim().toLowerCase();
@@ -415,6 +416,14 @@ function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leagueP
   ) {
     return { sportPath: "commentaries", leaguePaths: ["1204"] };
   }
+  // UCL / Champions League
+  if (
+    L === "ucl" ||
+    L === "uefa champions league" ||
+    L === "champions league"
+  ) {
+    return { sportPath: "commentaries", leaguePaths: ["1005"] };
+  }
 
   return { sportPath: "", leaguePaths: [] }; // unsupported
 }
@@ -422,9 +431,9 @@ function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leagueP
 /**
  * Extract candidate matches from various Goalserve shapes.
  * Supports:
- * - NFL:   games.game[]
+ * - NFL: games.game[]
  * - NBA/NHL: scores.category.match[]
- * - EPL:   commentaries.tournament.match[]
+ * - EPL/UCL: commentaries.tournament.match[]
  */
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
@@ -442,7 +451,7 @@ function collectCandidateGames(payload: any): any[] {
     if (matches.length) return matches;
   }
 
-  // EPL commentaries style: commentaries.tournament.match[]
+  // EPL / UCL commentaries style
   const comm = payload?.commentaries?.tournament;
   if (comm) {
     const ts = Array.isArray(comm) ? comm : [comm];
@@ -467,7 +476,7 @@ function collectCandidateGames(payload: any): any[] {
 }
 
 /**
- * Normalize a match row across football/basketball/hockey/EPL commentaries.
+ * Normalize a match row across football/basketball/hockey/EPL/UCL commentaries.
  */
 function normalizeGameRow(r: any) {
   const homeName =
@@ -556,7 +565,7 @@ function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | und
 
 /**
  * Derive kickoff epoch from raw Goalserve row.
- * Supports datetime_utc or (formatted_date/date + time), including EPL attributes.
+ * Supports datetime_utc or (formatted_date/date + time), including EPL/UCL attributes.
  */
 function kickoffEpochFromRaw(raw: any): number | undefined {
   const t1 = parseDatetimeUTC(raw?.datetime_utc || raw?.["@datetime_utc"]);
@@ -713,7 +722,7 @@ async function confirmFinalGoalserve(params: {
   }
 
   // Winner resolution here is only for logging;
-  // actual on-chain resolution is done inside source.js.
+  // actual on-chain logic is in source.js.
   const homeIsA = teamMatchesOneSide(match.homeName, aName, aCode);
   const homeIsB = teamMatchesOneSide(match.homeName, bName, bCode);
 
@@ -792,7 +801,7 @@ async function main() {
   console.log(
     `[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`
   );
-  console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL)`);
+  console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL + UCL)`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
