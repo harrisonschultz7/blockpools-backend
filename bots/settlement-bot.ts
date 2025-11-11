@@ -315,10 +315,9 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 
 /* ────────────────────────────────────────────────────────────────────────────
    Goalserve helpers (NFL + NBA + NHL + EPL + UCL)
-   Shared logic across leagues to keep things tight.
 ──────────────────────────────────────────────────────────────────────────── */
 
-// Explicit "final" labels, incl soccer variants.
+// final-ish labels
 const finalsSet = new Set([
   "final",
   "finished",
@@ -333,7 +332,6 @@ const finalsSet = new Set([
   "final after ot",
 ]);
 
-// "Is this game completed?"
 function isFinalStatus(raw: string): boolean {
   const s = (raw || "").trim().toLowerCase();
   if (!s) return false;
@@ -343,13 +341,10 @@ function isFinalStatus(raw: string): boolean {
   if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot"))
     return true;
 
-  if (s.includes("full time") || s.includes("full-time"))
-    return true;
+  if (s.includes("full time") || s === "full-time") return true;
 
   if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half"))
     return true;
-
-  if (s === "full-time" || s === "ft") return true;
 
   return false;
 }
@@ -368,7 +363,7 @@ const trimU = (s?: string) => String(s || "").trim().toUpperCase();
 
 function acronym(s: string): string {
   const parts = (s || "").split(/[^a-zA-Z0-9]+/).filter(Boolean);
-  return parts.map(p => p[0]?.toUpperCase() || "").join("");
+  return parts.map(p => (p[0] || "").toUpperCase()).join("");
 }
 
 async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
@@ -387,7 +382,7 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 }
 
 /**
- * Map on-chain league label -> Goalserve path(s).
+ * Map on-chain league label -> Goalserve sportPath + leaguePaths.
  *
  * NFL: /football/nfl-scores?date=dd.MM.yyyy&json=1
  * NBA: /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
@@ -398,60 +393,98 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leaguePaths: string[] } {
   const L = String(leagueLabel || "").trim().toLowerCase();
 
-  if (L === "nfl") {
-    return { sportPath: "football", leaguePaths: ["nfl-scores"] };
-  }
-  if (L === "nba") {
-    return { sportPath: "bsktbl", leaguePaths: ["nba-scores"] };
-  }
-  if (L === "nhl") {
-    return { sportPath: "hockey", leaguePaths: ["nhl-scores"] };
-  }
-  // EPL / England Premier League
+  if (L === "nfl")  return { sportPath: "football",     leaguePaths: ["nfl-scores"] };
+  if (L === "nba")  return { sportPath: "bsktbl",       leaguePaths: ["nba-scores"] };
+  if (L === "nhl")  return { sportPath: "hockey",       leaguePaths: ["nhl-scores"] };
+
   if (
     L === "epl" ||
     L === "premier league" ||
     L === "england - premier league" ||
     L === "england premier league"
-  ) {
-    return { sportPath: "commentaries", leaguePaths: ["1204"] };
-  }
-  // UCL / Champions League
+  ) return { sportPath: "commentaries", leaguePaths: ["1204"] };
+
   if (
     L === "ucl" ||
     L === "uefa champions league" ||
     L === "champions league"
-  ) {
-    return { sportPath: "commentaries", leaguePaths: ["1005"] };
-  }
+  ) return { sportPath: "commentaries", leaguePaths: ["1005"] };
 
   return { sportPath: "", leaguePaths: [] }; // unsupported
 }
 
-/**
- * Extract candidate matches from various Goalserve shapes.
- * Supports:
- * - NFL: games.game[]
- * - NBA/NHL: scores.category.match[]
- * - EPL/UCL: commentaries.tournament.match[]
- */
+function parseDatetimeUTC(s?: string): number | undefined {
+  if (!s) return;
+  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+  if (!m) return;
+  const [, dd, MM, yyyy, HH, mm] = m;
+  const t = Date.UTC(+yyyy, +MM - 1, +dd, +HH, +mm, 0, 0);
+  return isFinite(t) ? Math.floor(t / 1000) : undefined;
+}
+
+function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | undefined {
+  if (!dateStr) return;
+  const md = String(dateStr).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (!md) return;
+  const [, dd, MM, yyyy] = md;
+  let h = 0, mi = 0;
+
+  if (timeStr) {
+    const ampm = String(timeStr).trim().toUpperCase();
+    let mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
+    if (mh) {
+      h = +mh[1]; mi = +mh[2];
+      const mer = mh[3];
+      if (mer === "PM" && h < 12) h += 12;
+      if (mer === "AM" && h === 12) h = 0;
+    } else {
+      mh = ampm.match(/^(\d{1,2}):(\d{2})$/);
+      if (mh) { h = +mh[1]; mi = +mh[2]; }
+    }
+  }
+
+  const t = Date.UTC(+yyyy, +MM - 1, +dd, h, mi, 0, 0);
+  return isFinite(t) ? Math.floor(t / 1000) : undefined;
+}
+
+function kickoffEpochFromRaw(raw: any): number | undefined {
+  const t1 = parseDatetimeUTC(raw?.datetime_utc || raw?.["@datetime_utc"]);
+  if (t1) return t1;
+
+  const date =
+    raw?.formatted_date ||
+    raw?.date ||
+    raw?.["@formatted_date"] ||
+    raw?.["@date"];
+  const time =
+    raw?.time ||
+    raw?.start_time ||
+    raw?.start ||
+    raw?.["@time"];
+
+  return parseDateAndTimeAsUTC(date, time);
+}
+
+// Extract all candidate games for supported shapes
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
 
   // NFL style
   if (Array.isArray(payload?.games?.game)) return payload.games.game;
 
-  // NBA / NHL style
+  // NBA / NHL: scores.category.match[]
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
-    const matches = cats.flatMap((c: any) =>
-      Array.isArray(c?.match) ? c.match : c?.match ? [c.match] : []
-    );
+    const matches = cats.flatMap((c: any) => {
+      if (Array.isArray(c?.match)) return c.match;
+      if (c?.match) return [c.match];
+      return [];
+    });
     if (matches.length) return matches;
   }
 
-  // EPL / UCL commentaries style
+  // EPL / UCL: commentaries.tournament.match[]
   const comm = payload?.commentaries?.tournament;
   if (comm) {
     const ts = Array.isArray(comm) ? comm : [comm];
@@ -463,7 +496,6 @@ function collectCandidateGames(payload: any): any[] {
     if (matches.length) return matches;
   }
 
-  // Generic fallbacks
   if (Array.isArray(payload?.game)) return payload.game;
   if (Array.isArray(payload)) return payload;
 
@@ -475,33 +507,28 @@ function collectCandidateGames(payload: any): any[] {
   return [];
 }
 
-/**
- * Normalize a match row across football/basketball/hockey/EPL/UCL commentaries.
- */
 function normalizeGameRow(r: any) {
   const homeName =
-    r?.hometeam?.name ??
-    r?.home_name ??
-    r?.home ??
-    r?.home_team ??
-    (r?.localteam && (r.localteam["@name"] || r.localteam.name)) ??
+    r?.hometeam?.name ||
+    r?.home_name ||
+    r?.home ||
+    r?.home_team ||
+    (r?.localteam && (r.localteam["@name"] || r.localteam.name)) ||
     "";
 
   const awayName =
-    r?.awayteam?.name ??
-    r?.away_name ??
-    r?.away ??
-    r?.away_team ??
-    (r?.visitorteam && (r.visitorteam["@name"] || r.visitorteam.name)) ??
+    r?.awayteam?.name ||
+    r?.away_name ||
+    r?.away ||
+    r?.away_team ||
+    (r?.visitorteam && (r.visitorteam["@name"] || r.visitorteam.name)) ||
     "";
 
   const homeScore = Number(
     r?.hometeam?.totalscore ??
     r?.home_score ??
     r?.home_final ??
-    (r?.localteam &&
-      (r.localteam["@goals"] ??
-       r.localteam["@ft_score"])) ??
+    (r?.localteam && (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
     0
   );
 
@@ -509,9 +536,7 @@ function normalizeGameRow(r: any) {
     r?.awayteam?.totalscore ??
     r?.away_score ??
     r?.away_final ??
-    (r?.visitorteam &&
-      (r.visitorteam["@goals"] ??
-       r.visitorteam["@ft_score"])) ??
+    (r?.visitorteam && (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
     0
   );
 
@@ -526,78 +551,17 @@ function normalizeGameRow(r: any) {
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
-// Parse "26.10.2025 17:00" (UTC)
-function parseDatetimeUTC(s?: string): number | undefined {
-  if (!s) return;
-  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
-  if (!m) return;
-  const [, dd, MM, yyyy, HH, mm] = m;
-  const t = Date.UTC(+yyyy, +MM - 1, +dd, +HH, +mm, 0, 0);
-  return isFinite(t) ? Math.floor(t / 1000) : undefined;
-}
-
-// Parse "dd.MM.yyyy" with optional time (HH:mm or HH:mm AM/PM) as UTC-ish
-function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | undefined {
-  if (!dateStr) return;
-  const md = String(dateStr).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-  if (!md) return;
-  const [, dd, MM, yyyy] = md;
-  let h = 0, mi = 0;
-
-  if (timeStr) {
-    const ampm = String(timeStr).trim().toUpperCase();
-    let mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
-    if (mh) {
-      h = +mh[1];
-      mi = +mh[2];
-      const mer = mh[3];
-      if (mer === "PM" && h < 12) h += 12;
-      if (mer === "AM" && h === 12) h = 0;
-    } else {
-      mh = ampm.match(/^(\d{1,2}):(\d{2})$/);
-      if (mh) { h = +mh[1]; mi = +mh[2]; }
-    }
-  }
-
-  const t = Date.UTC(+yyyy, +MM - 1, +dd, h, mi, 0, 0);
-  return isFinite(t) ? Math.floor(t / 1000) : undefined;
-}
-
-/**
- * Derive kickoff epoch from raw Goalserve row.
- * Supports datetime_utc or (formatted_date/date + time), including EPL/UCL attributes.
- */
-function kickoffEpochFromRaw(raw: any): number | undefined {
-  const t1 = parseDatetimeUTC(raw?.datetime_utc || raw?.["@datetime_utc"]);
-  if (t1) return t1;
-
-  const date =
-    raw?.formatted_date ||
-    raw?.date ||
-    raw?.["@formatted_date"] ||
-    raw?.["@date"];
-
-  const time =
-    raw?.time ??
-    raw?.start_time ??
-    raw?.start ??
-    raw?.["@time"];
-
-  return parseDateAndTimeAsUTC(date, time);
-}
-
-// Team matching (shared)
+// Team matching
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
   const code = trimU(wantCode);
-
   if (!nApi) return false;
+
   if (nApi && nWant && nApi === nWant) return true;
 
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
-
   if (code && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
@@ -622,40 +586,35 @@ function unorderedTeamsMatchByTokens(
   return (hA && aB) || (hB && aA);
 }
 
-/**
- * Minimal "is this game final and identifiable" check.
- * Used only as a preflight gate before sending the on-chain request.
- */
+// Try fetch & pick matching/final game (used only as pre-check)
 async function tryFetchGoalserve(league: string, lockTime: number) {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
   if (!sportPath || !leaguePaths.length) {
     return { ok: false, reason: "unsupported league" };
   }
 
-  // base date: ET -> ISO -> dd.MM.yyyy
   const baseISO = epochToEtISO(lockTime);
   const [Y, M, D] = baseISO.split("-");
   const ddmmyyyy = `${D}.${M}.${Y}`;
-
   const tried: string[] = [];
 
   for (const lp of leaguePaths) {
-    const url = `${GOALSERVE_BASE_URL.replace(/\/+$/, "")}/${encodeURIComponent(
-      GOALSERVE_API_KEY
-    )}/${sportPath}/${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
-
+    const url =
+      `${GOALSERVE_BASE_URL.replace(/\/+$/, "")}/${encodeURIComponent(GOALSERVE_API_KEY)}` +
+      `/${sportPath}/${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
     tried.push(url);
 
     try {
       const payload = await fetchJsonWithRetry(url, 3, 500);
       const rawGames = collectCandidateGames(payload);
-      if (rawGames.length) {
-        const games = rawGames.map((r: any) => {
-          const g = normalizeGameRow(r);
-          return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
-        });
-        return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
-      }
+      if (!rawGames.length) continue;
+
+      const games = rawGames.map((r: any) => {
+        const g = normalizeGameRow(r);
+        return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
+      });
+
+      return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
     } catch (e: any) {
       if (GOALSERVE_DEBUG) {
         console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
@@ -696,7 +655,6 @@ async function confirmFinalGoalserve(params: {
     };
   }
 
-  // Prefer closest kickoff to lockTime; break ties by "is final".
   candidates.sort((g1: any, g2: any) => {
     const t1 = g1.__kickoff ?? Number.MAX_SAFE_INTEGER;
     const t2 = g2.__kickoff ?? Number.MAX_SAFE_INTEGER;
@@ -721,8 +679,6 @@ async function confirmFinalGoalserve(params: {
     };
   }
 
-  // Winner resolution here is only for logging;
-  // actual on-chain logic is in source.js.
   const homeIsA = teamMatchesOneSide(match.homeName, aName, aCode);
   const homeIsB = teamMatchesOneSide(match.homeName, bName, bCode);
 
@@ -807,7 +763,9 @@ async function main() {
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
   const { secretsVersion, donId, source } = await loadActiveSecrets();
+  const donHostedSecretsVersion = BigInt(secretsVersion);
   const donBytes = ethers.utils.formatBytes32String(donId);
+
   console.log(`🔐 Loaded DON pointer from ${source}`);
   console.log(`   secretsVersion = ${secretsVersion}`);
   console.log(`   donId          = ${donId}`);
@@ -824,22 +782,15 @@ async function main() {
   const botAddr = (await wallet.getAddress()).toLowerCase();
 
   type PoolState = {
-    addr: string;
-    league: string;
-    teamAName: string;
-    teamBName: string;
-    teamACode: string;
-    teamBCode: string;
-    isLocked: boolean;
-    requestSent: boolean;
-    winningTeam: number;
-    lockTime: number;
-    isOwner: boolean;
+    addr: string; league: string;
+    teamAName: string; teamBName: string;
+    teamACode: string; teamBCode: string;
+    isLocked: boolean; requestSent: boolean; winningTeam: number;
+    lockTime: number; isOwner: boolean;
   };
 
   const states: PoolState[] = [];
 
-  // Discover pools we own + snapshot state
   await Promise.all(
     gamesMeta.map(({ contractAddress }) =>
       readLimit(async () => {
@@ -893,7 +844,6 @@ async function main() {
     s => s.isOwner && s.isLocked && !s.requestSent && s.winningTeam === 0
   );
 
-  // Enforce time gates
   const timeGated = gated.filter(s =>
     (s.lockTime === 0 || nowSec >= s.lockTime + REQUEST_GAP_SECONDS) &&
     (s.lockTime === 0 || nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED)
@@ -924,7 +874,7 @@ async function main() {
     if (pre.ok) {
       const label = pre.winnerCode || pre.winner || "?";
       console.log(
-        `[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: confirmed final (winner preview=${label})`
+        `[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${label}`
       );
       finalEligible.push(s);
     } else if (pre.reason === "not final") {
@@ -972,7 +922,7 @@ async function main() {
     const pool = new ethers.Contract(s.addr, poolAbi, wallet);
     const args = buildArgs8(s);
 
-    // Simulate first
+    // simulate
     try {
       await pool.callStatic.sendRequest(
         SOURCE,
