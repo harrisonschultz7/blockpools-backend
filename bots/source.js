@@ -1,35 +1,66 @@
 // bots/source.js
-// Chainlink Functions source for BlockPools: NFL + NBA final score resolver via Goalserve.
-// Expects args:
-// [0] league        (e.g. "NFL", "NBA")
-// [1] fromDateIso   (YYYY-MM-DD) - game day ET
-// [2] toDateIso     (YYYY-MM-DD) - unused for Goalserve, kept for future providers
-// [3] teamACode
-// [4] teamBCode
-// [5] teamAName
-// [6] teamBName
-// [7] lockTime (epoch seconds, as string)
+// Chainlink Functions source for BlockPools settlement
+// Supports: NFL, NBA, NHL via Goalserve
+//
+// ARGS (8):
+//  0: league       (e.g. "NFL", "NBA", "NHL")
+//  1: dateFrom     (yyyy-MM-dd, ET) - usually lockDate
+//  2: dateTo       (yyyy-MM-dd, ET) - usually lockDate+1 for safety
+//  3: teamACode
+//  4: teamBCode
+//  5: teamAName
+//  6: teamBName
+//  7: lockTime     (epoch seconds)
+//
+// RETURNS (uint8 encoded):
+//  0 = no decision / not final / no matching game
+//  1 = Team A wins
+//  2 = Team B wins
+//  3 = Tie
 
-const GOALSERVE_API_KEY = Secrets.GOALSERVE_API_KEY;
-const GOALSERVE_BASE_URL =
-  Secrets.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
+// NOTE: This runs in the Chainlink Functions runtime.
+// - Use `secrets.GOALSERVE_API_KEY` + optional `secrets.GOALSERVE_BASE_URL`.
+// - HTTP via Functions.makeHttpRequest.
 
-if (!GOALSERVE_API_KEY) {
-  throw Error("Missing GOALSERVE_API_KEY in DON-hosted secrets");
+if (!Array.isArray(args) || args.length < 8) {
+  throw Error("Invalid args: expected 8");
 }
 
 const [
-  league,
-  fromDateIso,
-  _toDateIso,
-  teamACode,
-  teamBCode,
-  teamAName,
-  teamBName,
-  lockTimeStr,
+  leagueRaw,
+  dateFromISO,
+  dateToISO,
+  teamACodeRaw,
+  teamBCodeRaw,
+  teamANameRaw,
+  teamBNameRaw,
+  lockTimeRaw,
 ] = args;
 
-// ───────────────────────── helpers: league → path ─────────────────────────
+const league = String(leagueRaw || "").trim().toLowerCase();
+const dateFrom = String(dateFromISO || "").trim();
+const dateTo = String(dateToISO || "").trim();
+const teamACode = String(teamACodeRaw || "").trim().toUpperCase();
+const teamBCode = String(teamBCodeRaw || "").trim().toUpperCase();
+const teamAName = String(teamANameRaw || "").trim();
+const teamBName = String(teamBNameRaw || "").trim();
+const lockTime = Number(lockTimeRaw || 0);
+
+if (!league || !dateFrom || !dateTo || !teamAName || !teamBName) {
+  throw Error("Missing required args");
+}
+
+const GOALSERVE_API_KEY = secrets.GOALSERVE_API_KEY;
+if (!GOALSERVE_API_KEY) {
+  throw Error("Missing GOALSERVE_API_KEY in secrets");
+}
+
+const GOALSERVE_BASE_URL =
+  secrets.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers (mirrors settlement-bot.ts semantics)
+// ─────────────────────────────────────────────────────────────────────────────
 
 function goalserveLeaguePaths(leagueLabel) {
   const L = String(leagueLabel || "").trim().toLowerCase();
@@ -37,18 +68,17 @@ function goalserveLeaguePaths(leagueLabel) {
   if (L === "nfl") {
     return { sportPath: "football", leaguePaths: ["nfl-scores"] };
   }
-
   if (L === "nba") {
-    // As per provider docs & your sample:
-    // /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
     return { sportPath: "bsktbl", leaguePaths: ["nba-scores"] };
+  }
+  if (L === "nhl") {
+    return { sportPath: "hockey", leaguePaths: ["nhl-scores"] };
   }
 
   return { sportPath: "", leaguePaths: [] };
 }
 
-// ───────────────────────── helpers: status / names ─────────────────────────
-
+// Known final-ish labels (incl OT variants)
 const finalsSet = new Set([
   "final",
   "finished",
@@ -63,15 +93,18 @@ const finalsSet = new Set([
 ]);
 
 function isFinalStatus(raw) {
-  const s = String(raw || "").trim().toLowerCase();
+  const s = (raw || "").trim().toLowerCase();
   if (!s) return false;
+
   if (finalsSet.has(s)) return true;
+
   if (
     s.includes("after over time") ||
     s.includes("after overtime") ||
     s.includes("after ot")
   )
     return true;
+
   if (
     s.includes("final") &&
     !s.includes("semi") &&
@@ -79,11 +112,12 @@ function isFinalStatus(raw) {
     !s.includes("half")
   )
     return true;
+
   return false;
 }
 
-const norm = (s) =>
-  String(s || "")
+function norm(str) {
+  return (str || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[’'`]/g, "")
@@ -91,64 +125,37 @@ const norm = (s) =>
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
 
-const trimU = (s) => String(s || "").trim().toUpperCase();
+function trimU(s) {
+  return String(s || "").trim().toUpperCase();
+}
 
 function acronym(s) {
-  const parts = String(s || "")
-    .split(/[^a-zA-Z0-9]+/)
-    .filter(Boolean);
-  return parts.map((p) => p[0]?.toUpperCase() || "").join("");
+  const parts = (s || "").split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  return parts.map((p) => (p[0] || "").toUpperCase()).join("");
 }
 
-// ───────────────────────── helpers: payload parsing ─────────────────────────
-
-function collectCandidateGames(payload) {
-  if (!payload) return [];
-
-  // NFL style: payload.games.game[]
-  if (Array.isArray(payload?.games?.game)) return payload.games.game;
-
-  // Basketball sample: scores.category.match[]
-  const cat = payload?.scores?.category;
-  if (cat) {
-    const cats = Array.isArray(cat) ? cat : [cat];
-    const matches = cats.flatMap((c) =>
-      Array.isArray(c?.match) ? c.match : c?.match ? [c.match] : []
-    );
-    if (matches.length) return matches;
+async function fetchJsonWithRetry(url, tries = 3) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    const resp = await Functions.makeHttpRequest({ url });
+    if (!resp) {
+      lastErr = Error("No response");
+    } else if (resp.error) {
+      lastErr = Error(`HTTP error: ${resp.error}`);
+    } else if (resp.status < 200 || resp.status >= 300) {
+      lastErr = Error(`HTTP ${resp.status}`);
+    } else if (resp.data == null) {
+      lastErr = Error("Empty body");
+    } else {
+      return resp.data;
+    }
   }
-
-  if (Array.isArray(payload?.game)) return payload.game;
-
-  // Last-resort: flatten array-like values
-  if (Array.isArray(payload)) return payload;
-  if (typeof payload === "object") {
-    const arrs = Object.values(payload).filter((v) => Array.isArray(v));
-    if (arrs.length) return arrs.flat();
-  }
-
-  return [];
+  throw lastErr;
 }
 
-function normalizeGameRow(r) {
-  const homeName =
-    r?.hometeam?.name ?? r?.home_name ?? r?.home ?? r?.home_team ?? "";
-  const awayName =
-    r?.awayteam?.name ?? r?.away_name ?? r?.away ?? r?.away_team ?? "";
-  const homeScore = Number(
-    r?.hometeam?.totalscore ?? r?.home_score ?? r?.home_final ?? 0
-  );
-  const awayScore = Number(
-    r?.awayteam?.totalscore ?? r?.away_score ?? r?.away_final ?? 0
-  );
-  const status = String(
-    r?.status || r?.game_status || r?.state || ""
-  ).trim();
-  return { homeName, awayName, homeScore, awayScore, status };
-}
-
-// datetime_utc: "11.10.2025 23:00"
+// Parse "dd.MM.yyyy HH:mm" as UTC
 function parseDatetimeUTC(s) {
   if (!s) return;
   const m = String(s).match(
@@ -161,18 +168,20 @@ function parseDatetimeUTC(s) {
   return Math.floor(t / 1000);
 }
 
-// date: "11.10.2025", time: "7:00 PM" or "19:00"
+// Parse "dd.MM.yyyy" + optional time as UTC-ish
 function parseDateAndTimeAsUTC(dateStr, timeStr) {
   if (!dateStr) return;
-  const md = String(dateStr).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  const md = String(dateStr).match(
+    /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/
+  );
   if (!md) return;
   const [, dd, MM, yyyy] = md;
-  let h = 0;
-  let mi = 0;
 
+  let h = 0,
+    mi = 0;
   if (timeStr) {
-    const t = String(timeStr).trim().toUpperCase();
-    const mh = t.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
+    const ampm = String(timeStr).trim().toUpperCase();
+    let mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
     if (mh) {
       h = +mh[1];
       mi = +mh[2];
@@ -180,30 +189,95 @@ function parseDateAndTimeAsUTC(dateStr, timeStr) {
       if (mer === "PM" && h < 12) h += 12;
       if (mer === "AM" && h === 12) h = 0;
     } else {
-      const mh24 = t.match(/^(\d{1,2}):(\d{2})$/);
-      if (mh24) {
-        h = +mh24[1];
-        mi = +mh24[2];
+      mh = ampm.match(/^(\d{1,2}):(\d{2})$/);
+      if (mh) {
+        h = +mh[1];
+        mi = +mh[2];
       }
     }
   }
 
-  const ts = Date.UTC(+yyyy, +MM - 1, +dd, h, mi, 0, 0);
-  if (!isFinite(ts)) return;
-  return Math.floor(ts / 1000);
+  const t = Date.UTC(+yyyy, +MM - 1, +dd, h, mi, 0, 0);
+  if (!isFinite(t)) return;
+  return Math.floor(t / 1000);
 }
 
-function kickoffEpochFromRaw(r) {
-  const t1 = parseDatetimeUTC(r?.datetime_utc);
+function kickoffEpochFromRaw(raw) {
+  // Prefer explicit datetime_utc if matches our expected format
+  const t1 = parseDatetimeUTC(raw?.datetime_utc);
   if (t1) return t1;
-  return parseDateAndTimeAsUTC(
-    r?.date ?? r?.formatted_date,
-    r?.time ?? r?.start_time ?? r?.start
-  );
+
+  // Fall back to formatted_date/date + time/start/start_time
+  const date = raw?.formatted_date || raw?.date;
+  const time = raw?.time || raw?.start_time || raw?.start;
+  return parseDateAndTimeAsUTC(date, time);
 }
 
-// ───────────────────────── helpers: team matching ─────────────────────────
+// Extract all candidate games from various Goalserve shapes
+function collectCandidateGames(payload) {
+  if (!payload) return [];
 
+  if (Array.isArray(payload?.games?.game)) {
+    return payload.games.game;
+  }
+
+  const cat = payload?.scores?.category;
+  if (cat) {
+    const cats = Array.isArray(cat) ? cat : [cat];
+    const matches = cats.flatMap((c) => {
+      if (Array.isArray(c?.match)) return c.match;
+      if (c?.match) return [c.match];
+      return [];
+    });
+    if (matches.length) return matches;
+  }
+
+  if (Array.isArray(payload?.game)) return payload.game;
+  if (Array.isArray(payload)) return payload;
+
+  if (typeof payload === "object") {
+    const arrs = Object.values(payload).filter(Array.isArray);
+    if (arrs.length) return arrs.flat();
+  }
+
+  return [];
+}
+
+function normalizeGameRow(r) {
+  const homeName =
+    r?.hometeam?.name ||
+    r?.home_name ||
+    r?.home ||
+    r?.home_team ||
+    "";
+  const awayName =
+    r?.awayteam?.name ||
+    r?.away_name ||
+    r?.away ||
+    r?.away_team ||
+    "";
+
+  const homeScore = Number(
+    r?.hometeam?.totalscore ??
+      r?.home_score ??
+      r?.home_final ??
+      0
+  );
+  const awayScore = Number(
+    r?.awayteam?.totalscore ??
+      r?.away_score ??
+      r?.away_final ??
+      0
+  );
+
+  const status = String(
+    r?.status || r?.game_status || r?.state || ""
+  ).trim();
+
+  return { homeName, awayName, homeScore, awayScore, status };
+}
+
+// Team matching identical to settlement-bot.ts
 function teamMatchesOneSide(apiName, wantName, wantCode) {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -211,20 +285,20 @@ function teamMatchesOneSide(apiName, wantName, wantCode) {
 
   if (!nApi) return false;
 
-  // exact normalized
   if (nApi && nWant && nApi === nWant) return true;
 
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
+
   if (code && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
-  // token overlap heuristic
   const tokens = new Set(nApi.split(" "));
   const wantTokens = new Set(nWant.split(" "));
   const overlap = [...wantTokens].some(
     (t) => t.length > 2 && tokens.has(t)
   );
+
   return overlap;
 }
 
@@ -243,138 +317,162 @@ function unorderedTeamsMatchByTokens(
   return (hA && aB) || (hB && aA);
 }
 
-// ───────────────────────── HTTP helper (via Functions) ─────────────────────────
-
-async function fetchJsonWithRetry(url, tries = 3, backoffMs = 400) {
-  let lastError;
-  for (let i = 0; i < tries; i++) {
-    const res = await Functions.makeHttpRequest({ url });
-    if (!res || res.error || res.response?.status >= 400) {
-      lastError = res?.error || res?.response?.status;
-      if (i < tries - 1) {
-        await new Promise((r) =>
-          setTimeout(r, backoffMs * (i + 1))
-        );
-      }
-    } else {
-      return res.data;
-    }
-  }
-  throw Error(
-    `HTTP error for ${url}: ${lastError || "unknown"}`
-  );
+// yyyy-MM-dd -> dd.MM.yyyy
+function isoToDdmmyyyy(iso) {
+  const [Y, M, D] = String(iso).split("-");
+  return `${D}.${M}.${Y}`;
 }
 
-// ───────────────────────── main resolver ─────────────────────────
+// Iterate dates from fromISO to toISO-1 (safety window)
+function* iterateDateRange(fromISO, toISO) {
+  if (!fromISO || !toISO) return;
+  const from = new Date(fromISO + "T00:00:00Z");
+  const to = new Date(toISO + "T00:00:00Z");
+  for (
+    let d = new Date(from);
+    d < to;
+    d.setUTCDate(d.getUTCDate() + 1)
+  ) {
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    yield `${yyyy}-${mm}-${dd}`;
+  }
+}
 
-async function resolveWinner() {
-  const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
+// ─────────────────────────────────────────────────────────────────────────────
+// Core lookup
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function lookupWinner() {
+  const { sportPath, leaguePaths } = goalserveLeaguePaths(
+    league
+  );
   if (!sportPath || !leaguePaths.length) {
-    // unsupported league → return 0
-    return Functions.encodeUint256(0);
+    // unsupported league, no decision
+    return 0;
   }
 
-  // fromDateIso: "YYYY-MM-DD" → "dd.MM.yyyy"
-  const [Y, M, D] = String(fromDateIso || "").split("-");
-  if (!Y || !M || !D) {
-    return Functions.encodeUint256(0);
+  const targetAName = teamAName;
+  const targetBName = teamBName;
+  const targetACode = teamACode;
+  const targetBCode = teamBCode;
+
+  const candidates = [];
+
+  for (const iso of iterateDateRange(dateFrom, dateTo)) {
+    const ddmmyyyy = isoToDdmmyyyy(iso);
+
+    for (const lp of leaguePaths) {
+      const url =
+        `${GOALSERVE_BASE_URL.replace(/\/+$/, "")}/` +
+        `${encodeURIComponent(GOALSERVE_API_KEY)}/` +
+        `${sportPath}/` +
+        `${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
+
+      const payload = await fetchJsonWithRetry(url);
+      const rawGames = collectCandidateGames(payload);
+      if (!rawGames.length) continue;
+
+      for (const r of rawGames) {
+        const g = normalizeGameRow(r);
+        if (
+          !unorderedTeamsMatchByTokens(
+            g.homeName,
+            g.awayName,
+            targetAName,
+            targetBName,
+            targetACode,
+            targetBCode
+          )
+        ) {
+          continue;
+        }
+
+        const kickoff = kickoffEpochFromRaw(r);
+        candidates.push({
+          homeName: g.homeName,
+          awayName: g.awayName,
+          homeScore: g.homeScore,
+          awayScore: g.awayScore,
+          status: g.status,
+          kickoff,
+        });
+      }
+    }
   }
-  const ddmmyyyy = `${D}.${M}.${Y}`;
-  const lockTime = Number(lockTimeStr || 0);
 
-  const AName = String(teamAName || "");
-  const BName = String(teamBName || "");
-  const ACode = String(teamACode || "");
-  const BCode = String(teamBCode || "");
+  if (!candidates.length) {
+    // nothing matched
+    return 0;
+  }
 
-  for (const lp of leaguePaths) {
-    const url = `${GOALSERVE_BASE_URL.replace(
-      /\/+$/,
-      ""
-    )}/${GOALSERVE_API_KEY}/${sportPath}/${lp}?date=${ddmmyyyy}&json=1`;
+  // Choose:
+  // 1. Closest kickoff to lockTime (if available)
+  // 2. Prefer final over non-final
+  candidates.sort((a, b) => {
+    const t1 =
+      typeof a.kickoff === "number"
+        ? Math.abs(a.kickoff - lockTime)
+        : Number.MAX_SAFE_INTEGER;
+    const t2 =
+      typeof b.kickoff === "number"
+        ? Math.abs(b.kickoff - lockTime)
+        : Number.MAX_SAFE_INTEGER;
 
-    const payload = await fetchJsonWithRetry(url);
-    const rawGames = collectCandidateGames(payload);
-    if (!rawGames.length) continue;
+    if (t1 !== t2) return t1 - t2;
 
-    const games = rawGames.map((r) => {
-      const g = normalizeGameRow(r);
-      return {
-        ...g,
-        __kickoff: kickoffEpochFromRaw(r),
-      };
-    });
+    const f1 = isFinalStatus(a.status) ? 1 : 0;
+    const f2 = isFinalStatus(b.status) ? 1 : 0;
+    return f2 - f1;
+  });
 
-    const candidates = games.filter((g) =>
-      unorderedTeamsMatchByTokens(
-        g.homeName,
-        g.awayName,
-        AName,
-        BName,
-        ACode,
-        BCode
-      )
-    );
+  const best = candidates[0];
 
-    if (!candidates.length) {
-      continue;
-    }
+  if (!isFinalStatus(best.status)) {
+    // Not final yet; no decision
+    return 0;
+  }
 
-    // Prefer closest to lockTime, then final
-    candidates.sort((g1, g2) => {
-      const t1 =
-        typeof g1.__kickoff === "number"
-          ? g1.__kickoff
-          : Number.MAX_SAFE_INTEGER;
-      const t2 =
-        typeof g2.__kickoff === "number"
-          ? g2.__kickoff
-          : Number.MAX_SAFE_INTEGER;
-
-      const d1 = Math.abs(t1 - lockTime);
-      const d2 = Math.abs(t2 - lockTime);
-      if (d1 !== d2) return d1 - d2;
-
-      const f1 = isFinalStatus(g1.status) ? 1 : 0;
-      const f2 = isFinalStatus(g2.status) ? 1 : 0;
-      return f2 - f1;
-    });
-
-    const match = candidates[0];
-
-    if (!isFinalStatus(match.status)) {
-      // Not final yet → 0 (bot will treat as pending)
-      return Functions.encodeUint256(0);
-    }
-
+  let winnerFlag = 3; // default Tie/push
+  if (best.homeScore > best.awayScore) {
+    // Decide if home is A or B
     const homeIsA = teamMatchesOneSide(
-      match.homeName,
-      AName,
-      ACode
+      best.homeName,
+      targetAName,
+      targetACode
     );
     const homeIsB = teamMatchesOneSide(
-      match.homeName,
-      BName,
-      BCode
+      best.homeName,
+      targetBName,
+      targetBCode
     );
-
-    let winner = "TIE";
-    if (match.homeScore > match.awayScore) {
-      winner = homeIsA ? "A" : homeIsB ? "B" : "TIE";
-    } else if (match.awayScore > match.homeScore) {
-      winner = homeIsA ? "B" : homeIsB ? "A" : "TIE";
-    }
-
-    let winnerIdx = 0;
-    if (winner === "A") winnerIdx = 1;
-    else if (winner === "B") winnerIdx = 2;
-    else if (winner === "TIE") winnerIdx = 3;
-
-    return Functions.encodeUint256(winnerIdx);
+    if (homeIsA && !homeIsB) winnerFlag = 1;
+    else if (homeIsB && !homeIsA) winnerFlag = 2;
+  } else if (best.awayScore > best.homeScore) {
+    const awayIsA = teamMatchesOneSide(
+      best.awayName,
+      targetAName,
+      targetACode
+    );
+    const awayIsB = teamMatchesOneSide(
+      best.awayName,
+      targetBName,
+      targetBCode
+    );
+    if (awayIsA && !awayIsB) winnerFlag = 1;
+    else if (awayIsB && !awayIsA) winnerFlag = 2;
   }
 
-  // No matching game found
-  return Functions.encodeUint256(0);
+  // If we somehow couldn't distinguish, treat as tie (3) instead of error.
+  return winnerFlag;
 }
 
-return await resolveWinner();
+// ─────────────────────────────────────────────────────────────────────────────
+// EXEC
+// ─────────────────────────────────────────────────────────────────────────────
+
+const winnerEnum = await lookupWinner();
+
+// Encoded uint8: 0,1,2,3
+return Functions.encodeUint8(winnerEnum);
