@@ -314,7 +314,7 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Goalserve helpers (NFL + NBA)
+   Goalserve helpers (NFL + NBA + NHL)
 ──────────────────────────────────────────────────────────────────────────── */
 
 // Known explicit "final" labels including OT variants.
@@ -336,11 +336,14 @@ function isFinalStatus(raw: string): boolean {
   const s = (raw || "").trim().toLowerCase();
   if (!s) return false;
 
+  // Exact match / known labels
   if (finalsSet.has(s)) return true;
 
+  // Pattern matches
   if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot"))
     return true;
 
+  // Generic "Final ..." but exclude non-fulltime contexts
   if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half"))
     return true;
 
@@ -381,10 +384,10 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 
 /**
  * Map on-chain league label -> Goalserve sportPath + leaguePaths.
- * NFL:
- *   /football/nfl-scores?date=dd.MM.yyyy&json=1
- * NBA:
- *   /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
+ *
+ * NFL: /football/nfl-scores?date=dd.MM.yyyy&json=1
+ * NBA: /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
+ * NHL: /hockey/nhl-scores?date=dd.MM.yyyy&json=1
  */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leaguePaths: string[] } {
   const L = String(leagueLabel || "").trim().toLowerCase();
@@ -397,6 +400,10 @@ function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leagueP
     return { sportPath: "bsktbl", leaguePaths: ["nba-scores"] };
   }
 
+  if (L === "nhl") {
+    return { sportPath: "hockey", leaguePaths: ["nhl-scores"] };
+  }
+
   return { sportPath: "", leaguePaths: [] }; // unsupported for now
 }
 
@@ -406,7 +413,7 @@ function collectCandidateGames(payload: any): any[] {
   // NFL style
   if (Array.isArray(payload?.games?.game)) return payload.games.game;
 
-  // NBA style (per sample): scores.category.match[]
+  // NBA / NHL style: scores.category.match[]
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
@@ -472,7 +479,7 @@ function parseDatetimeUTC(s?: string): number | undefined {
   return isFinite(t) ? Math.floor(t / 1000) : undefined;
 }
 
-// Parse "26.10.2025" with optional time (treated as UTC-ish)
+// Parse "dd.MM.yyyy" with optional time (treated as UTC-ish)
 function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | undefined {
   if (!dateStr) return;
   const md = dateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
@@ -502,10 +509,10 @@ function kickoffEpochFromRaw(raw: any): number | undefined {
   const t1 = parseDatetimeUTC(raw?.datetime_utc);
   if (t1) return t1;
 
-  return parseDateAndTimeAsUTC(
-    raw?.date ?? raw?.formatted_date,
-    raw?.time ?? raw?.start_time ?? raw?.start
-  );
+  // Prefer formatted_date when present (Goalserve uses dd.MM.yyyy there)
+  const date = raw?.formatted_date || raw?.date;
+  const time = raw?.time ?? raw?.start_time ?? raw?.start;
+  return parseDateAndTimeAsUTC(date, time);
 }
 
 // Team matching
@@ -549,7 +556,7 @@ async function tryFetchGoalserve(league: string, lockTime: number) {
     return { ok: false, reason: "unsupported league" };
   }
 
-  // base date: ET -> ISO -> DMY
+  // base date: ET -> ISO -> dd.MM.yyyy
   const baseISO = epochToEtISO(lockTime);
   const [Y, M, D] = baseISO.split("-");
   const ddmmyyyy = `${D}.${M}.${Y}`;
@@ -716,13 +723,13 @@ async function main() {
   console.log(
     `[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`
   );
-  console.log(`[CFG] Provider=Goalserve (NFL + NBA)`);
+  console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL)`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
   const { secretsVersion, donId, source } = await loadActiveSecrets();
-  const donHostedSecretsVersion = BigInt(secretsVersion); // kept for completeness
+  const donHostedSecretsVersion = BigInt(secretsVersion);
   const donBytes = ethers.utils.formatBytes32String(donId);
 
   console.log(`🔐 Loaded DON pointer from ${source}`);
