@@ -32,21 +32,13 @@ const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                  /
 const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
 const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);            // uint8
 
-// Accept "1"/"true" and "0"/"false"
 const DRY_RUN = /^(1|true)$/i.test(String(process.env.DRY_RUN || ""));
-
-/** Always require a provider-final check. */
 const REQUIRE_FINAL_CHECK = true;
-
-/** Minimum time after lock before we consider settlement (seconds). */
 const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);
-/** Cooldown after lock, to avoid racey starts (seconds). */
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
-// Concurrency controls
 const READ_CONCURRENCY    = Number(process.env.READ_CONCURRENCY    || 25);
 const TX_SEND_CONCURRENCY = Number(process.env.TX_SEND_CONCURRENCY || 3);
-
 const MAX_TX_PER_RUN   = Number(process.env.MAX_TX_PER_RUN || 8);
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0);
 
@@ -55,7 +47,7 @@ const GOALSERVE_API_KEY  = process.env.GOALSERVE_API_KEY || "";
 const GOALSERVE_BASE_URL = process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
 const GOALSERVE_DEBUG    = /^(1|true)$/i.test(String(process.env.GOALSERVE_DEBUG || ""));
 
-// Git (for activeSecrets.json fallback — now used only in reuse mode)
+// Git (for activeSecrets.json fallback)
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
 const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
 const GITHUB_REF   = process.env.GITHUB_REF   || "main";
@@ -271,84 +263,18 @@ function loadSourceCode(): string {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   DON secrets: upload-first strategy (restored behavior)
+   DON pointer helpers (activeSecrets.json)
 ──────────────────────────────────────────────────────────────────────────── */
 type Pointer = { donId: string; secretsVersion: number; uploadedAt?: string; expiresAt?: string };
 
 function readPointer(file = path.resolve(__dirname, "../activeSecrets.json")): Pointer | null {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
 }
+
 function pointerExpiringSoon(p?: Pointer, bufferMs = 60_000): boolean {
   if (!p?.expiresAt) return false;
   const t = Date.parse(p.expiresAt);
   return Number.isFinite(t) && Date.now() >= (t - bufferMs);
-}
-
-/**
- * Ensures we have a fresh DON-hosted secrets pointer.
- * Default: upload every run (deterministic). Set SECRETS_STRATEGY=reuse to only upload when missing/expiring.
- * Requires upload-secrets.js to print a JSON blob { donId, secretsVersion, uploadedAt, expiresAt } to stdout
- * and also write activeSecrets.json atomically.
- */
-function ensureFreshPointer(): Pointer {
-  const strategy = (process.env.SECRETS_STRATEGY || "upload").toLowerCase(); // "upload" | "reuse"
-  const pointerPath = path.resolve(__dirname, "../activeSecrets.json");
-
-  const upload = (): Pointer => {
-    console.log("[SECRETS] Uploading DON-hosted secrets...");
-    const out = execFileSync("node", ["--enable-source-maps", "upload-secrets.js"], {
-      cwd: path.resolve(__dirname, ".."),
-      stdio: ["ignore", "pipe", "inherit"],
-      encoding: "utf8",
-    }).trim();
-
-    let p: Pointer;
-    try { p = JSON.parse(out); }
-    catch { throw new Error(`[SECRETS] Uploader did not return valid JSON. Got: ${out.slice(0, 200)}...`); }
-
-    if (!p?.donId || !p?.secretsVersion) {
-      throw new Error("[SECRETS] Uploader JSON missing donId or secretsVersion.");
-    }
-
-    // Atomic write (in case uploader didn't)
-    const tmp = `${pointerPath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(p, null, 2));
-    fs.renameSync(tmp, pointerPath);
-
-    console.log(`[SECRETS] Pointer refreshed donId=${p.donId} secretsVersion=${p.secretsVersion}`);
-    if (p.expiresAt) console.log(`[SECRETS] ExpiresAt=${p.expiresAt}`);
-    return p;
-  };
-
-  if (strategy === "upload") return upload();
-
-  const current = readPointer(pointerPath);
-  if (!current) {
-    console.log("[SECRETS] No activeSecrets.json found. Uploading...");
-    return upload();
-  }
-  if (pointerExpiringSoon(current)) {
-    console.log("[SECRETS] Pointer expiring soon. Uploading...");
-    return upload();
-  }
-  console.log(`[SECRETS] Reusing pointer donId=${current.donId} secretsVersion=${current.secretsVersion}`);
-  return current;
-}
-
-/* ────────────────────────────────────────────────────────────────────────────
-   *Fallback* loader (only used if SECRETS_STRATEGY=reuse and local is missing)
-──────────────────────────────────────────────────────────────────────────── */
-function loadActiveSecretsLocal(): { secretsVersion: number; donId: string } | null {
-  const p = path.join(process.cwd(), "activeSecrets.json");
-  try {
-    if (fs.existsSync(p)) {
-      const j = JSON.parse(fs.readFileSync(p, "utf8"));
-      if (j?.secretsVersion && j?.donId) {
-        return { secretsVersion: Number(j.secretsVersion), donId: String(j.donId) };
-      }
-    }
-  } catch {}
-  return null;
 }
 
 async function loadActiveSecretsFromGithub(): Promise<{ secretsVersion: number; donId: string }> {
@@ -359,7 +285,7 @@ async function loadActiveSecretsFromGithub(): Promise<{ secretsVersion: number; 
     "User-Agent": "blockpools-settlement-bot/1.0",
     Accept: "application/vnd.github+json",
   };
-  const res = await fetch(url, { headers });
+  const res = await fetch(url, { headers } as any);
   if (!res.ok) throw new Error(`activeSecrets.json HTTP ${res.status}`);
   const data = await res.json();
   const json = JSON.parse(Buffer.from(data.content, "base64").toString("utf8"));
@@ -369,8 +295,80 @@ async function loadActiveSecretsFromGithub(): Promise<{ secretsVersion: number; 
   };
 }
 
+/**
+ * Ensure we have a pointer. Default strategy is **reuse**:
+ *  - local activeSecrets.json (preferred; written by upload-and-settle.sh step 1)
+ *  - else GitHub activeSecrets.json
+ *  - else env DON_SECRETS_VERSION + DON_ID
+ * If strategy=upload, try uploader and gracefully fall back to reuse on native errors.
+ */
+function ensureFreshPointer(): Pointer {
+  const strategy = (process.env.SECRETS_STRATEGY || "reuse").toLowerCase(); // default: reuse
+  const pointerPath = path.resolve(__dirname, "../activeSecrets.json");
+
+  const reuse = (): Pointer => {
+    const local = readPointer(pointerPath);
+    if (local?.donId && local?.secretsVersion) {
+      console.log("🔐 Loaded DON pointer from local");
+      console.log(`   secretsVersion = ${local.secretsVersion}`);
+      console.log(`   donId          = ${local.donId}`);
+      return local;
+    }
+    const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
+    const envDonId = process.env.DON_ID;
+    if (envVersion && envDonId) {
+      const p = { secretsVersion: Number(envVersion), donId: String(envDonId) };
+      console.log("🔐 Loaded DON pointer from env");
+      console.log(`   secretsVersion = ${p.secretsVersion}`);
+      console.log(`   donId          = ${p.donId}`);
+      return p as any;
+    }
+    throw new Error("No activeSecrets.json locally and no env DON_SECRETS_VERSION/DON_ID set.");
+  };
+
+  if (strategy !== "upload") return reuse();
+
+  // upload path (try/catch → fallback to reuse on native addon errors)
+  const upload = (): Pointer => {
+    console.log("[SECRETS] Uploading DON-hosted secrets...");
+    let out: string;
+    try {
+      out = execFileSync("node", ["--enable-source-maps", "upload-secrets.js"], {
+        cwd: path.resolve(__dirname, ".."),
+        stdio: ["ignore", "pipe", "inherit"],
+        encoding: "utf8",
+      }).trim();
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      if (/bcrypto|native|loady/i.test(msg)) {
+        console.warn("[SECRETS] Native uploader path failed; reusing existing pointer instead.");
+        return reuse();
+      }
+      throw e;
+    }
+
+    let p: Pointer;
+    try { p = JSON.parse(out); }
+    catch { throw new Error(`[SECRETS] Uploader did not return valid JSON. Got: ${out.slice(0, 200)}...`); }
+
+    if (!p?.donId || !p?.secretsVersion) {
+      throw new Error("[SECRETS] Uploader JSON missing donId or secretsVersion.");
+    }
+
+    const tmp = `${pointerPath}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(p, null, 2));
+    fs.renameSync(tmp, pointerPath);
+
+    console.log(`[SECRETS] Pointer refreshed donId=${p.donId} secretsVersion=${p.secretsVersion}`);
+    if (p.expiresAt) console.log(`[SECRETS] ExpiresAt=${p.expiresAt}`);
+    return p;
+  };
+
+  return upload();
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
-   Goalserve helpers (NFL + NBA + NHL + EPL + UCL)
+   Goalserve helpers
 ──────────────────────────────────────────────────────────────────────────── */
 
 // final-ish labels
@@ -432,34 +430,17 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 
 /**
  * Map on-chain league label -> Goalserve sportPath + leaguePaths.
- *
- * NFL: /football/nfl-scores?date=dd.MM.yyyy&json=1
- * NBA: /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
- * NHL: /hockey/nhl-scores?date=dd.MM.yyyy&json=1
- * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1
- * UCL: /commentaries/1005?date=dd.MM.yyyy&json=1
  */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leaguePaths: string[] } {
   const L = String(leagueLabel || "").trim().toLowerCase();
-
   if (L === "nfl")  return { sportPath: "football",     leaguePaths: ["nfl-scores"] };
   if (L === "nba")  return { sportPath: "bsktbl",       leaguePaths: ["nba-scores"] };
   if (L === "nhl")  return { sportPath: "hockey",       leaguePaths: ["nhl-scores"] };
-
-  if (
-    L === "epl" ||
-    L === "premier league" ||
-    L === "england - premier league" ||
-    L === "england premier league"
-  ) return { sportPath: "commentaries", leaguePaths: ["1204"] };
-
-  if (
-    L === "ucl" ||
-    L === "uefa champions league" ||
-    L === "champions league"
-  ) return { sportPath: "commentaries", leaguePaths: ["1005"] };
-
-  return { sportPath: "", leaguePaths: [] }; // unsupported
+  if (L === "epl" || L === "premier league" || L === "england - premier league" || L === "england premier league")
+    return { sportPath: "commentaries", leaguePaths: ["1204"] };
+  if (L === "ucl" || L === "uefa champions league" || L === "champions league")
+    return { sportPath: "commentaries", leaguePaths: ["1005"] };
+  return { sportPath: "", leaguePaths: [] };
 }
 
 function parseDatetimeUTC(s?: string): number | undefined {
@@ -514,14 +495,9 @@ function kickoffEpochFromRaw(raw: any): number | undefined {
   return parseDateAndTimeAsUTC(date, time);
 }
 
-// Extract all candidate games for supported shapes
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
-
-  // NFL style
   if (Array.isArray(payload?.games?.game)) return payload.games.game;
-
-  // NBA / NHL: scores.category.match[]
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
@@ -532,8 +508,6 @@ function collectCandidateGames(payload: any): any[] {
     });
     if (matches.length) return matches;
   }
-
-  // EPL / UCL: commentaries.tournament.match[]
   const comm = payload?.commentaries?.tournament;
   if (comm) {
     const ts = Array.isArray(comm) ? comm : [comm];
@@ -544,15 +518,12 @@ function collectCandidateGames(payload: any): any[] {
     });
     if (matches.length) return matches;
   }
-
   if (Array.isArray(payload?.game)) return payload.game;
   if (Array.isArray(payload)) return payload;
-
   if (typeof payload === "object") {
     const arrs = Object.values(payload).filter(v => Array.isArray(v)) as any[];
     if (arrs.length) return arrs.flat();
   }
-
   return [];
 }
 
@@ -600,7 +571,6 @@ function normalizeGameRow(r: any) {
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
-// Team matching
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -635,12 +605,9 @@ function unorderedTeamsMatchByTokens(
   return (hA && aB) || (hB && aA);
 }
 
-// Try fetch & pick matching/final game (used only as pre-check)
 async function tryFetchGoalserve(league: string, lockTime: number) {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
-  if (!sportPath || !leaguePaths.length) {
-    return { ok: false, reason: "unsupported league" };
-  }
+  if (!sportPath || !leaguePaths.length) return { ok: false, reason: "unsupported league" };
 
   const baseISO = epochToEtISO(lockTime);
   const [Y, M, D] = baseISO.split("-");
@@ -665,9 +632,7 @@ async function tryFetchGoalserve(league: string, lockTime: number) {
 
       return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
     } catch (e: any) {
-      if (GOALSERVE_DEBUG) {
-        console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
-      }
+      if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
     }
   }
 
@@ -697,11 +662,7 @@ async function confirmFinalGoalserve(params: {
   );
 
   if (!candidates.length) {
-    return {
-      ok: false,
-      reason: "no team match",
-      debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried } : undefined,
-    };
+    return { ok: false, reason: "no team match", debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried } : undefined };
   }
 
   candidates.sort((g1: any, g2: any) => {
@@ -719,24 +680,15 @@ async function confirmFinalGoalserve(params: {
   const match = candidates[0];
   const isFinal = isFinalStatus(match.status || "");
   if (!isFinal) {
-    return {
-      ok: false,
-      reason: "not final",
-      debug: GOALSERVE_DEBUG
-        ? { url: resp.url, date: resp.dateTried, status: match.status }
-        : undefined,
-    };
+    return { ok: false, reason: "not final", debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried, status: match.status } : undefined };
   }
 
   const homeIsA = teamMatchesOneSide(match.homeName, aName, aCode);
   const homeIsB = teamMatchesOneSide(match.homeName, bName, bCode);
 
   let winner: "A" | "B" | "TIE" = "TIE";
-  if (match.homeScore > match.awayScore) {
-    winner = homeIsA ? "A" : homeIsB ? "B" : "TIE";
-  } else if (match.awayScore > match.homeScore) {
-    winner = homeIsA ? "B" : homeIsB ? "A" : "TIE";
-  }
+  if (match.homeScore > match.awayScore) winner = homeIsA ? "A" : homeIsB ? "B" : "TIE";
+  else if (match.awayScore > match.homeScore) winner = homeIsA ? "B" : homeIsB ? "A" : "TIE";
 
   let winnerCode = "Tie";
   if (winner === "A") winnerCode = params.teamACode || params.teamAName;
@@ -746,20 +698,18 @@ async function confirmFinalGoalserve(params: {
     ok: true,
     winner,
     winnerCode,
-    debug: GOALSERVE_DEBUG
-      ? {
-          url: resp.url,
-          date: resp.dateTried,
-          picked: {
-            home: match.homeName,
-            away: match.awayName,
-            status: match.status,
-            homeScore: match.homeScore,
-            awayScore: match.awayScore,
-            kickoff: match.__kickoff,
-          },
-        }
-      : undefined,
+    debug: GOALSERVE_DEBUG ? {
+      url: resp.url,
+      date: resp.dateTried,
+      picked: {
+        home: match.homeName,
+        away: match.awayName,
+        status: match.status,
+        homeScore: match.homeScore,
+        awayScore: match.awayScore,
+        kickoff: match.__kickoff,
+      },
+    } : undefined,
   };
 }
 
@@ -803,25 +753,16 @@ async function main() {
 
   console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
   console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
-  console.log(
-    `[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`
-  );
+  console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
   console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL + UCL)`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
-  // === RESTORED: upload secrets now, write activeSecrets.json, and use it ===
+  // === REUSE FIRST: read pointer written by step [1/3] in your shell script ===
   const pointer = ensureFreshPointer();
-  if (process.env.DON_ID && process.env.DON_ID !== pointer.donId) {
-    throw new Error(`[SECRETS] DON mismatch: pointer=${pointer.donId} env=${process.env.DON_ID}`);
-  }
   const donHostedSecretsVersion = BigInt(pointer.secretsVersion);
   const donBytes = ethers.utils.formatBytes32String(pointer.donId);
-
-  console.log("🔐 Ready with fresh DON pointer");
-  console.log(`   secretsVersion = ${pointer.secretsVersion}`);
-  console.log(`   donId          = ${pointer.donId}`);
 
   const SOURCE = loadSourceCode();
   const gamesMeta = loadGamesMeta();
@@ -882,9 +823,7 @@ async function main() {
             isOwner,
           });
         } catch (e: any) {
-          if (GOALSERVE_DEBUG) {
-            console.warn(`[READ FAIL] ${addr}:`, e?.message || e);
-          }
+          if (GOALSERVE_DEBUG) console.warn(`[READ FAIL] ${addr}:`, e?.message || e);
         }
       })
     )
@@ -892,7 +831,6 @@ async function main() {
 
   const nowSec = Math.floor(Date.now() / 1000);
 
-  // Pools we own, locked, no request yet, no winner
   const gated = states.filter(
     s => s.isOwner && s.isLocked && !s.requestSent && s.winningTeam === 0
   );
@@ -926,18 +864,12 @@ async function main() {
 
     if (pre.ok) {
       const label = pre.winnerCode || pre.winner || "?";
-      console.log(
-        `[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${label}`
-      );
+      console.log(`[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${label}`);
       finalEligible.push(s);
     } else if (pre.reason === "not final") {
-      console.log(
-        `[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`
-      );
+      console.log(`[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`);
     } else if (GOALSERVE_DEBUG) {
-      console.log(
-        `[SKIP][DBG] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`
-      );
+      console.log(`[SKIP][DBG] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
     }
   }
 
@@ -948,10 +880,16 @@ async function main() {
 
   console.log(`✅ Provider confirmed FINAL for ${finalEligible.length} pool(s). Proceeding.`);
 
-  // Optional: refresh pointer once more just before submit (covers long prechecks)
-  const pointer2 = (process.env.SECRETS_STRATEGY || "upload").toLowerCase() === "upload"
-    ? ensureFreshPointer()
-    : (loadActiveSecretsLocal() ?? await loadActiveSecretsFromGithub());
+  // Refresh pointer JUST by reuse (local→GitHub), no internal upload
+  let pointer2: Pointer | null = readPointer(path.resolve(__dirname, "../activeSecrets.json"));
+  if (!pointer2) {
+    try {
+      const gh = await loadActiveSecretsFromGithub();
+      pointer2 = { donId: gh.donId, secretsVersion: gh.secretsVersion };
+    } catch {
+      pointer2 = pointer; // fall back to initial pointer
+    }
+  }
   const donHostedSecretsVersion2 = BigInt(pointer2.secretsVersion);
   const donBytes2 = ethers.utils.formatBytes32String(pointer2.donId);
 
@@ -978,7 +916,6 @@ async function main() {
     const pool = new ethers.Contract(s.addr, poolAbi, wallet);
     const args = buildArgs8(s);
 
-    // simulate
     try {
       await pool.callStatic.sendRequest(
         SOURCE,
@@ -992,14 +929,12 @@ async function main() {
     } catch (e: any) {
       const data = e?.data ?? e?.error?.data;
       const decoded = decodeRevert(data);
-      console.error(
-        `[SIM ERR] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) => ${decoded}`
-      );
+      console.error(`[SIM ERR] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) => ${decoded}`);
       continue;
     }
 
     if (!DRY_RUN) {
-      await sendLimit(async () => {
+      await limiter(TX_SEND_CONCURRENCY)(async () => {
         try {
           if (REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
           const tx = await pool.sendRequest(
@@ -1011,27 +946,16 @@ async function main() {
             donHostedSecretsVersion2,
             donBytes2
           );
-          console.log(
-            `[TX] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) :: ${tx.hash}`
-          );
+          console.log(`[TX] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) :: ${tx.hash}`);
           submitted++;
         } catch (e: any) {
           const data = e?.data ?? e?.error?.data;
-          console.error(
-            `[ERR] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}):`,
-            e?.reason || e?.message || e
-          );
-          if (data?.slice) {
-            console.error(
-              ` selector = ${data.slice(0, 10)} (${decodeRevert(data)})`
-            );
-          }
+          console.error(`[ERR] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}):`, e?.reason || e?.message || e);
+          if (data?.slice) console.error(` selector = ${data.slice(0, 10)} (${decodeRevert(data)})`);
         }
       });
     } else {
-      console.log(
-        `[DRY_RUN] Would sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`
-      );
+      console.log(`[DRY_RUN] Would sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
     }
   }
 
