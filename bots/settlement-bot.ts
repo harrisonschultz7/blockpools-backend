@@ -6,6 +6,7 @@ try { require("dotenv").config(); } catch {}
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { execFileSync } from "child_process";
 import { ethers } from "ethers";
 import { gamePoolAbi as IMPORTED_GAMEPOOL_ABI } from "./gamepool.abi";
 
@@ -54,7 +55,7 @@ const GOALSERVE_API_KEY  = process.env.GOALSERVE_API_KEY || "";
 const GOALSERVE_BASE_URL = process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
 const GOALSERVE_DEBUG    = /^(1|true)$/i.test(String(process.env.GOALSERVE_DEBUG || ""));
 
-// Git (for activeSecrets.json fallback)
+// Git (for activeSecrets.json fallback — now used only in reuse mode)
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
 const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
 const GITHUB_REF   = process.env.GITHUB_REF   || "main";
@@ -270,7 +271,72 @@ function loadSourceCode(): string {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   DON pointer (activeSecrets.json)
+   DON secrets: upload-first strategy (restored behavior)
+──────────────────────────────────────────────────────────────────────────── */
+type Pointer = { donId: string; secretsVersion: number; uploadedAt?: string; expiresAt?: string };
+
+function readPointer(file = path.resolve(__dirname, "../activeSecrets.json")): Pointer | null {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+}
+function pointerExpiringSoon(p?: Pointer, bufferMs = 60_000): boolean {
+  if (!p?.expiresAt) return false;
+  const t = Date.parse(p.expiresAt);
+  return Number.isFinite(t) && Date.now() >= (t - bufferMs);
+}
+
+/**
+ * Ensures we have a fresh DON-hosted secrets pointer.
+ * Default: upload every run (deterministic). Set SECRETS_STRATEGY=reuse to only upload when missing/expiring.
+ * Requires upload-secrets.js to print a JSON blob { donId, secretsVersion, uploadedAt, expiresAt } to stdout
+ * and also write activeSecrets.json atomically.
+ */
+function ensureFreshPointer(): Pointer {
+  const strategy = (process.env.SECRETS_STRATEGY || "upload").toLowerCase(); // "upload" | "reuse"
+  const pointerPath = path.resolve(__dirname, "../activeSecrets.json");
+
+  const upload = (): Pointer => {
+    console.log("[SECRETS] Uploading DON-hosted secrets...");
+    const out = execFileSync("node", ["--enable-source-maps", "upload-secrets.js"], {
+      cwd: path.resolve(__dirname, ".."),
+      stdio: ["ignore", "pipe", "inherit"],
+      encoding: "utf8",
+    }).trim();
+
+    let p: Pointer;
+    try { p = JSON.parse(out); }
+    catch { throw new Error(`[SECRETS] Uploader did not return valid JSON. Got: ${out.slice(0, 200)}...`); }
+
+    if (!p?.donId || !p?.secretsVersion) {
+      throw new Error("[SECRETS] Uploader JSON missing donId or secretsVersion.");
+    }
+
+    // Atomic write (in case uploader didn't)
+    const tmp = `${pointerPath}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(p, null, 2));
+    fs.renameSync(tmp, pointerPath);
+
+    console.log(`[SECRETS] Pointer refreshed donId=${p.donId} secretsVersion=${p.secretsVersion}`);
+    if (p.expiresAt) console.log(`[SECRETS] ExpiresAt=${p.expiresAt}`);
+    return p;
+  };
+
+  if (strategy === "upload") return upload();
+
+  const current = readPointer(pointerPath);
+  if (!current) {
+    console.log("[SECRETS] No activeSecrets.json found. Uploading...");
+    return upload();
+  }
+  if (pointerExpiringSoon(current)) {
+    console.log("[SECRETS] Pointer expiring soon. Uploading...");
+    return upload();
+  }
+  console.log(`[SECRETS] Reusing pointer donId=${current.donId} secretsVersion=${current.secretsVersion}`);
+  return current;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   *Fallback* loader (only used if SECRETS_STRATEGY=reuse and local is missing)
 ──────────────────────────────────────────────────────────────────────────── */
 function loadActiveSecretsLocal(): { secretsVersion: number; donId: string } | null {
   const p = path.join(process.cwd(), "activeSecrets.json");
@@ -285,16 +351,7 @@ function loadActiveSecretsLocal(): { secretsVersion: number; donId: string } | n
   return null;
 }
 
-async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: string; source: string }> {
-  const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
-  const envDonId = process.env.DON_ID;
-  if (envVersion && envDonId) {
-    return { secretsVersion: Number(envVersion), donId: envDonId, source: "env" };
-  }
-
-  const local = loadActiveSecretsLocal();
-  if (local) return { ...local, source: "local" };
-
+async function loadActiveSecretsFromGithub(): Promise<{ secretsVersion: number; donId: string }> {
   const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/activeSecrets.json?ref=${GITHUB_REF}`;
   const headers: any = {
     ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
@@ -309,7 +366,6 @@ async function loadActiveSecrets(): Promise<{ secretsVersion: number; donId: str
   return {
     secretsVersion: Number(json.secretsVersion ?? json.version),
     donId: json.donId || "fun-ethereum-sepolia-1",
-    source: "github",
   };
 }
 
@@ -335,17 +391,10 @@ const finalsSet = new Set([
 function isFinalStatus(raw: string): boolean {
   const s = (raw || "").trim().toLowerCase();
   if (!s) return false;
-
   if (finalsSet.has(s)) return true;
-
-  if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot"))
-    return true;
-
+  if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot")) return true;
   if (s.includes("full time") || s === "full-time") return true;
-
-  if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half"))
-    return true;
-
+  if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half")) return true;
   return false;
 }
 
@@ -762,13 +811,17 @@ async function main() {
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
-  const { secretsVersion, donId, source } = await loadActiveSecrets();
-  const donHostedSecretsVersion = BigInt(secretsVersion);
-  const donBytes = ethers.utils.formatBytes32String(donId);
+  // === RESTORED: upload secrets now, write activeSecrets.json, and use it ===
+  const pointer = ensureFreshPointer();
+  if (process.env.DON_ID && process.env.DON_ID !== pointer.donId) {
+    throw new Error(`[SECRETS] DON mismatch: pointer=${pointer.donId} env=${process.env.DON_ID}`);
+  }
+  const donHostedSecretsVersion = BigInt(pointer.secretsVersion);
+  const donBytes = ethers.utils.formatBytes32String(pointer.donId);
 
-  console.log(`🔐 Loaded DON pointer from ${source}`);
-  console.log(`   secretsVersion = ${secretsVersion}`);
-  console.log(`   donId          = ${donId}`);
+  console.log("🔐 Ready with fresh DON pointer");
+  console.log(`   secretsVersion = ${pointer.secretsVersion}`);
+  console.log(`   donId          = ${pointer.donId}`);
 
   const SOURCE = loadSourceCode();
   const gamesMeta = loadGamesMeta();
@@ -895,9 +948,12 @@ async function main() {
 
   console.log(`✅ Provider confirmed FINAL for ${finalEligible.length} pool(s). Proceeding.`);
 
-  // Re-read secrets in case they rotated during the run
-  const { secretsVersion: sv2 } = await loadActiveSecrets();
-  const donHostedSecretsVersion2 = BigInt(sv2);
+  // Optional: refresh pointer once more just before submit (covers long prechecks)
+  const pointer2 = (process.env.SECRETS_STRATEGY || "upload").toLowerCase() === "upload"
+    ? ensureFreshPointer()
+    : (loadActiveSecretsLocal() ?? await loadActiveSecretsFromGithub());
+  const donHostedSecretsVersion2 = BigInt(pointer2.secretsVersion);
+  const donBytes2 = ethers.utils.formatBytes32String(pointer2.donId);
 
   const buildArgs8 = (s: PoolState): string[] => {
     const d0 = epochToEtISO(s.lockTime);
@@ -931,7 +987,7 @@ async function main() {
         FUNCTIONS_GAS_LIMIT,
         DON_SECRETS_SLOT,
         donHostedSecretsVersion2,
-        donBytes
+        donBytes2
       );
     } catch (e: any) {
       const data = e?.data ?? e?.error?.data;
@@ -953,7 +1009,7 @@ async function main() {
             FUNCTIONS_GAS_LIMIT,
             DON_SECRETS_SLOT,
             donHostedSecretsVersion2,
-            donBytes
+            donBytes2
           );
           console.log(
             `[TX] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) :: ${tx.hash}`
