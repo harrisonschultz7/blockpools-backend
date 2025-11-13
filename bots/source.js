@@ -544,4 +544,12 @@ async function lookupWinner() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const winnerEnum = await lookupWinner();
-return Functions.encodeUint8(winnerEnum);
+
+// Clamp just in case (0: no decision, 1: A, 2: B, 3: tie)
+const safeWinner = Number(winnerEnum);
+if (![0, 1, 2, 3].includes(safeWinner)) {
+  throw Error(`Invalid winnerEnum: ${winnerEnum}`);
+}
+
+console.log(`WINNER_ENUM: ${safeWinner}`);
+return Functions.encodeUint256(safeWinner);
