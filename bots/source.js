@@ -12,11 +12,15 @@
 //  6: teamBName
 //  7: lockTime     (epoch seconds)
 //
-// RETURNS (uint8 encoded):
-//  0 = no decision / not final / no matching game
-//  1 = Team A wins
-//  2 = Team B wins
-//  3 = Tie
+//
+// RETURNS (string, via Functions.encodeString):
+//  - teamACode        => Team A wins  (e.g. "PHI")
+//  - teamBCode        => Team B wins  (e.g. "KC")
+//  - "TIE" / "Tie"    => Tie
+//
+// The GamePool.fulfillRequest() compares keccak256(response) to
+// keccak256(bytes(teamACode)), keccak256(bytes(teamBCode)), or "TIE"/"Tie".
+//
 
 if (!Array.isArray(args) || args.length < 8) {
   throw Error("Invalid args: expected 8");
@@ -138,7 +142,8 @@ function isFinalStatus(raw) {
     !s.includes("semi") &&
     !s.includes("quarter") &&
     !s.includes("half")
-  ) return true;
+  )
+    return true;
 
   return false;
 }
@@ -185,9 +190,7 @@ async function fetchJsonWithRetry(url, tries = 3) {
 // Parse "dd.MM.yyyy HH:mm" as UTC
 function parseDatetimeUTC(s) {
   if (!s) return;
-  const m = String(s).match(
-    /^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/
-  );
+  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
   if (!m) return;
   const [, dd, MM, yyyy, HH, mm] = m;
   const t = Date.UTC(+yyyy, +MM - 1, +dd, +HH, +mm, 0, 0);
@@ -198,9 +201,7 @@ function parseDatetimeUTC(s) {
 // Parse "dd.MM.yyyy" + optional time as UTC-ish
 function parseDateAndTimeAsUTC(dateStr, timeStr) {
   if (!dateStr) return;
-  const md = String(dateStr).match(
-    /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/
-  );
+  const md = String(dateStr).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
   if (!md) return;
   const [, dd, MM, yyyy] = md;
 
@@ -231,9 +232,7 @@ function parseDateAndTimeAsUTC(dateStr, timeStr) {
 
 function kickoffEpochFromRaw(raw) {
   // 1) explicit datetime_utc if given
-  const t1 = parseDatetimeUTC(
-    raw?.datetime_utc || raw?.["@datetime_utc"]
-  );
+  const t1 = parseDatetimeUTC(raw?.datetime_utc || raw?.["@datetime_utc"]);
   if (t1) return t1;
 
   // 2) prefer formatted_date/date + time
@@ -243,10 +242,7 @@ function kickoffEpochFromRaw(raw) {
     raw?.["@formatted_date"] ||
     raw?.["@date"];
   const time =
-    raw?.time ||
-    raw?.start_time ||
-    raw?.start ||
-    raw?.["@time"];
+    raw?.time || raw?.start_time || raw?.start || raw?.["@time"];
 
   return parseDateAndTimeAsUTC(date, time);
 }
@@ -302,8 +298,7 @@ function normalizeGameRow(r) {
     r?.home_name ||
     r?.home ||
     r?.home_team ||
-    (r?.localteam &&
-      (r.localteam["@name"] || r.localteam.name)) ||
+    (r?.localteam && (r.localteam["@name"] || r.localteam.name)) ||
     "";
 
   // Away/visitor team
@@ -312,8 +307,7 @@ function normalizeGameRow(r) {
     r?.away_name ||
     r?.away ||
     r?.away_team ||
-    (r?.visitorteam &&
-      (r.visitorteam["@name"] || r.visitorteam.name)) ||
+    (r?.visitorteam && (r.visitorteam["@name"] || r.visitorteam.name)) ||
     "";
 
   // Scores:
@@ -324,8 +318,7 @@ function normalizeGameRow(r) {
       r?.home_score ??
       r?.home_final ??
       (r?.localteam &&
-        (r.localteam["@goals"] ||
-          r.localteam["@ft_score"])) ??
+        (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
       0
   );
 
@@ -334,8 +327,7 @@ function normalizeGameRow(r) {
       r?.away_score ??
       r?.away_final ??
       (r?.visitorteam &&
-        (r.visitorteam["@goals"] ||
-          r.visitorteam["@ft_score"])) ??
+        (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
       0
   );
 
@@ -401,11 +393,7 @@ function* iterateDateRange(fromISO, toISO) {
   if (!fromISO || !toISO) return;
   const from = new Date(fromISO + "T00:00:00Z");
   const to = new Date(toISO + "T00:00:00Z");
-  for (
-    let d = new Date(from);
-    d < to;
-    d.setUTCDate(d.getUTCDate() + 1)
-  ) {
+  for (let d = new Date(from); d < to; d.setUTCDate(d.getUTCDate() + 1)) {
     const yyyy = d.getUTCFullYear();
     const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
     const dd = String(d.getUTCDate()).padStart(2, "0");
@@ -417,13 +405,10 @@ function* iterateDateRange(fromISO, toISO) {
 // Core lookup
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function lookupWinner() {
-  const { sportPath, leaguePaths } = goalserveLeaguePaths(
-    league
-  );
+async function lookupWinnerCode() {
+  const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
   if (!sportPath || !leaguePaths.length) {
-    // unsupported league
-    return 0;
+    throw Error(`Unsupported league: ${league}`);
   }
 
   const targetAName = teamAName;
@@ -458,7 +443,8 @@ async function lookupWinner() {
             targetACode,
             targetBCode
           )
-        ) continue;
+        )
+          continue;
 
         const kickoff = kickoffEpochFromRaw(r);
         candidates.push({
@@ -474,7 +460,7 @@ async function lookupWinner() {
   }
 
   if (!candidates.length) {
-    return 0;
+    throw Error("No matching games found in Goalserve feed");
   }
 
   // Prefer:
@@ -500,13 +486,11 @@ async function lookupWinner() {
   const best = candidates[0];
 
   if (!isFinalStatus(best.status)) {
-    // Not final yet
-    return 0;
+    throw Error(`Game not final yet (status="${best.status}")`);
   }
 
-  // Determine winner:
-  // Supports ties for soccer-style leagues (EPL/UCL).
-  let winnerFlag = 3; // Tie by default
+  // Determine winner and return the *team code* your contract expects.
+  let winnerCode = "TIE"; // Default to tie
 
   if (best.homeScore > best.awayScore) {
     const homeIsA = teamMatchesOneSide(
@@ -519,8 +503,9 @@ async function lookupWinner() {
       targetBName,
       targetBCode
     );
-    if (homeIsA && !homeIsB) winnerFlag = 1;
-    else if (homeIsB && !homeIsA) winnerFlag = 2;
+    if (homeIsA && !homeIsB) winnerCode = targetACode;
+    else if (homeIsB && !homeIsA) winnerCode = targetBCode;
+    else winnerCode = "TIE"; // ambiguous
   } else if (best.awayScore > best.homeScore) {
     const awayIsA = teamMatchesOneSide(
       best.awayName,
@@ -532,24 +517,26 @@ async function lookupWinner() {
       targetBName,
       targetBCode
     );
-    if (awayIsA && !awayIsB) winnerFlag = 1;
-    else if (awayIsB && !awayIsA) winnerFlag = 2;
+    if (awayIsA && !awayIsB) winnerCode = targetACode;
+    else if (awayIsB && !awayIsA) winnerCode = targetBCode;
+    else winnerCode = "TIE";
+  } else {
+    // scores equal
+    winnerCode = "TIE";
   }
 
-  return winnerFlag;
+  console.log(
+    `WINNER_CODE: ${winnerCode} | ${best.homeName} vs ${best.awayName} | ${best.homeScore}-${best.awayScore} | status=${best.status}`
+  );
+
+  return winnerCode;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXEC
 // ─────────────────────────────────────────────────────────────────────────────
 
-const winnerEnum = await lookupWinner();
+const winnerCode = await lookupWinnerCode();
 
-// Clamp just in case (0: no decision, 1: A, 2: B, 3: tie)
-const safeWinner = Number(winnerEnum);
-if (![0, 1, 2, 3].includes(safeWinner)) {
-  throw Error(`Invalid winnerEnum: ${winnerEnum}`);
-}
-
-console.log(`WINNER_ENUM: ${safeWinner}`);
-return Functions.encodeUint256(safeWinner);
+// Return a raw string (e.g. "PHI", "KC", "TIE"), which matches GamePool.fulfillRequest()
+return Functions.encodeString(winnerCode);
