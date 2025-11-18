@@ -546,6 +546,8 @@ function normalizeGameRow(r: any) {
 
   const homeScore = Number(
     r?.hometeam?.totalscore ??
+
+
     r?.home_score ??
     r?.home_final ??
     (r?.localteam && (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
@@ -678,9 +680,22 @@ async function confirmFinalGoalserve(params: {
   });
 
   const match = candidates[0];
+
+  // 🔍 NEW LOG: show how Goalserve mapped teams & scores for this pool
+  console.log(
+    `[GOALSERVE] ${params.league} | Team A: ${params.teamAName} (${params.teamACode || "-"}) ` +
+    `vs Team B: ${params.teamBName} (${params.teamBCode || "-"}) | ` +
+    `API Home: ${match.homeName} ${match.homeScore} | API Away: ${match.awayName} ${match.awayScore} | ` +
+    `status=${match.status || ""}`
+  );
+
   const isFinal = isFinalStatus(match.status || "");
   if (!isFinal) {
-    return { ok: false, reason: "not final", debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried, status: match.status } : undefined };
+    return {
+      ok: false,
+      reason: "not final",
+      debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried, status: match.status } : undefined,
+    };
   }
 
   const homeIsA = teamMatchesOneSide(match.homeName, aName, aCode);
