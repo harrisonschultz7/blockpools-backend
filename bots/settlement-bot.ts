@@ -291,7 +291,8 @@ async function loadActiveSecretsFromGithub(): Promise<{ secretsVersion: number; 
   const json = JSON.parse(Buffer.from(data.content, "base64").toString("utf8"));
   return {
     secretsVersion: Number(json.secretsVersion ?? json.version),
-    donId: json.donId || "fun-ethereum-sepolia-1",
+    // 🔁 DEFAULT DON ID NOW ARBITRUM MAINNET
+    donId: json.donId || "fun-arbitrum-mainnet-1",
   };
 }
 
@@ -546,8 +547,6 @@ function normalizeGameRow(r: any) {
 
   const homeScore = Number(
     r?.hometeam?.totalscore ??
-
-
     r?.home_score ??
     r?.home_final ??
     (r?.localteam && (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
@@ -681,7 +680,7 @@ async function confirmFinalGoalserve(params: {
 
   const match = candidates[0];
 
-  // 🔍 NEW LOG: show how Goalserve mapped teams & scores for this pool
+  // 🔍 LOG: show how Goalserve mapped teams & scores for this pool
   console.log(
     `[GOALSERVE] ${params.league} | Team A: ${params.teamAName} (${params.teamACode || "-"}) ` +
     `vs Team B: ${params.teamBName} (${params.teamBCode || "-"}) | ` +
