@@ -3,6 +3,9 @@
 // 2) Writes activeSecrets.json atomically to repo root
 // 3) Commits & pushes to GitHub
 // 4) Prints clean JSON {donId, secretsVersion, uploadedAt, expiresAt} to STDOUT
+//
+// If native toolkit (bcrypto) is unavailable, we **reuse** activeSecrets.json
+// and skip uploading, so the script does NOT fail on the VPS.
 
 try { require("dotenv").config(); } catch (_) {}
 
@@ -12,7 +15,11 @@ const crypto = require("crypto");
 const util = require("util");
 const { execSync, exec } = require("child_process");
 const { ethers } = require("ethers");
-const { SecretsManager } = require("@chainlink/functions-toolkit");
+
+// NOTE: we will require this lazily so we can catch bcrypto/loady errors.
+let SecretsManager;
+
+// ───────────────────────── helpers ─────────────────────────
 
 function must(name) {
   const v = process.env[name];
@@ -22,20 +29,19 @@ function must(name) {
 
 const FUNCTIONS_ROUTER =
   process.env.CHAINLINK_FUNCTIONS_ROUTER ||
-  "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0"; // default (overridden by env for Arbitrum)
+  "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0"; // default only; env should override on Arbitrum
 const DON_ID = process.env.DON_ID || "fun-ethereum-sepolia-1";
 
 const SLOT_ID = Number(process.env.SLOT_ID ?? 0);
 const TTL_MINUTES = Math.max(5, Math.min(10080, Number(process.env.DON_TTL_MINUTES || 1440)));
 const TTL_SECONDS = TTL_MINUTES * 60;
 
-// 🔁 IMPORTANT: mainnet gateways for fun-arbitrum-mainnet-1
+// MAINNET gateways (critical for fun-arbitrum-mainnet-1)
 const GATEWAY_URLS = [
   "https://01.functions-gateway.chain.link/",
   "https://02.functions-gateway.chain.link/",
 ];
 
-// --- helpers to normalize toolkit variations (no TS) ---
 function to0xString(val) {
   if (val == null) return null;
   if (typeof val === "string") {
@@ -66,7 +72,70 @@ function extractHexDeep(enc, depth = 0) {
   return null;
 }
 
+// ────────────────────── bcrypto fallback ──────────────────────
+
+function isNativeCryptoError(e) {
+  const msg = String(e && (e.message || e));
+  return /bcrypto|loady|secp256k1|native/i.test(msg);
+}
+
+/**
+ * Fallback: if we can't use the toolkit (bcrypto missing), reuse an existing
+ * activeSecrets.json and just echo a minimal pointer to stdout.
+ */
+function reusePointerAndExit() {
+  const outPath = path.join(process.cwd(), "activeSecrets.json");
+  try {
+    const raw = fs.readFileSync(outPath, "utf8");
+    const json = JSON.parse(raw);
+
+    const donId =
+      json.donId ||
+      process.env.DON_ID ||
+      "fun-arbitrum-mainnet-1";
+
+    const version =
+      Number(json.secretsVersion ?? json.version ?? 0);
+
+    const uploadedAt = json.uploadedAt || new Date().toISOString();
+    const expiresAt =
+      json.expiresAt ||
+      new Date(Date.now() + TTL_SECONDS * 1000).toISOString();
+
+    const record = {
+      donId,
+      secretsVersion: version,
+      uploadedAt,
+      expiresAt,
+    };
+
+    console.error("[SECRETS] Native crypto unavailable; reusing existing activeSecrets.json pointer.");
+    console.error("         ", JSON.stringify(record));
+
+    // Print pointer for any caller (e.g. settlement-bot) and exit cleanly.
+    process.stdout.write(JSON.stringify(record));
+    process.exit(0);
+  } catch (e) {
+    console.error("[SECRETS] Native crypto unavailable AND no usable activeSecrets.json to reuse.");
+    console.error("          You must upload secrets from another machine and commit activeSecrets.json.");
+    process.exit(1);
+  }
+}
+
+// ───────────────────────── main ─────────────────────────
+
 (async () => {
+  // Try to require the toolkit lazily so we can catch bcrypto/loady issues.
+  try {
+    ({ SecretsManager } = require("@chainlink/functions-toolkit"));
+  } catch (e) {
+    if (isNativeCryptoError(e)) {
+      reusePointerAndExit();
+      return;
+    }
+    throw e;
+  }
+
   // ===== Build secrets bag =====
   const secrets = { CANARY: `upload ${new Date().toISOString()}` };
   const put = (k, v) => { if (v && String(v).trim()) secrets[k] = v; };
@@ -106,13 +175,27 @@ function extractHexDeep(enc, depth = 0) {
       slotId = resp && (resp.slotId ?? SLOT_ID);
       console.error("[PATH] Used uploadSecretsToDON");
     } catch (e) {
+      if (isNativeCryptoError(e)) {
+        reusePointerAndExit();
+        return;
+      }
       console.warn("[PATH] uploadSecretsToDON failed, trying encrypt+gateway:", e && e.message || e);
     }
   }
 
   // Path 2: encrypt + gateway
   if (!version) {
-    const enc = await sm.encryptSecrets(secrets);
+    let enc;
+    try {
+      enc = await sm.encryptSecrets(secrets);
+    } catch (e) {
+      if (isNativeCryptoError(e)) {
+        reusePointerAndExit();
+        return;
+      }
+      throw e;
+    }
+
     const maybeHex = extractHexDeep(enc);
     if (!maybeHex || maybeHex.length < 10) {
       console.error("[DEBUG] encryptSecrets() typeof:", typeof enc, enc && enc.constructor && enc.constructor.name);
@@ -120,12 +203,23 @@ function extractHexDeep(enc, depth = 0) {
       try { console.error("[DEBUG] preview:", util.inspect(enc, { depth: 2, maxArrayLength: 10 })); } catch {}
       throw new Error("Could not normalize encrypted payload from encryptSecrets()");
     }
-    const resp = await sm.uploadEncryptedSecretsToDON({
-      encryptedSecretsHexstring: maybeHex,
-      gatewayUrls: GATEWAY_URLS,
-      minutesUntilExpiration: TTL_MINUTES,
-      slotId: SLOT_ID,
-    });
+
+    let resp;
+    try {
+      resp = await sm.uploadEncryptedSecretsToDON({
+        encryptedSecretsHexstring: maybeHex,
+        gatewayUrls: GATEWAY_URLS,
+        minutesUntilExpiration: TTL_MINUTES,
+        slotId: SLOT_ID,
+      });
+    } catch (e) {
+      if (isNativeCryptoError(e)) {
+        reusePointerAndExit();
+        return;
+      }
+      throw e;
+    }
+
     version = resp && (resp.version ?? resp.secretsVersion ?? resp);
     slotId = resp && (resp.slotId ?? SLOT_ID);
     console.error("[PATH] Used encryptSecrets + uploadEncryptedSecretsToDON");
@@ -202,6 +296,10 @@ function extractHexDeep(enc, depth = 0) {
     expiresAt: record.expiresAt
   }));
 })().catch((e) => {
+  if (isNativeCryptoError(e)) {
+    reusePointerAndExit();
+    return;
+  }
   console.error("Upload failed:", e && (e.stack || e.message) || e);
   process.exit(1);
 });
