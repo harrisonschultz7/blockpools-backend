@@ -20,18 +20,20 @@ function must(name) {
   return v;
 }
 
+// 🔁 DEFAULTS UPDATED TO ARBITRUM MAINNET
 const FUNCTIONS_ROUTER =
   process.env.CHAINLINK_FUNCTIONS_ROUTER ||
-  "0xb83E47C2bC239B3bf370bc41e1459A34b41238D0"; // Ethereum Sepolia
-const DON_ID = process.env.DON_ID || "fun-ethereum-sepolia-1";
+  "0x97083E831F8F0638855e2A515c90EdCF158DF238"; // Arbitrum One Functions router
+const DON_ID = process.env.DON_ID || "fun-arbitrum-mainnet-1";
 
 const SLOT_ID = Number(process.env.SLOT_ID ?? 0);
 const TTL_MINUTES = Math.max(5, Math.min(10080, Number(process.env.DON_TTL_MINUTES || 1440)));
 const TTL_SECONDS = TTL_MINUTES * 60;
 
+// 🔁 MAINNET GATEWAYS (not testnet)
 const GATEWAY_URLS = [
-  "https://01.functions-gateway.testnet.chain.link/",
-  "https://02.functions-gateway.testnet.chain.link/",
+  "https://01.functions-gateway.chain.link/",
+  "https://02.functions-gateway.chain.link/",
 ];
 
 // --- helpers to normalize toolkit variations (no TS) ---
@@ -84,7 +86,8 @@ function extractHexDeep(enc, depth = 0) {
   console.error("[CHAINLINK]", { functionsRouter: FUNCTIONS_ROUTER, donId: DON_ID });
 
   // ===== Signer =====
-  const rpcUrl = process.env.RPC_URL || must("SEPOLIA_RPC_URL");
+  // 🔁 Prefer RPC_URL or ARBITRUM_RPC_URL (no more SEPOLIA-only fallback)
+  const rpcUrl = process.env.RPC_URL || process.env.ARBITRUM_RPC_URL || must("RPC_URL");
   const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
   const signer = new ethers.Wallet(must("PRIVATE_KEY"), provider);
 
@@ -176,7 +179,8 @@ function extractHexDeep(enc, depth = 0) {
   try { execSync("git add activeSecrets.json", { cwd: repoDir, stdio: "inherit" }); } catch {}
   try {
     // commit only if there are staged changes
-    execSync(`bash -lc 'git diff --cached --quiet || git commit -m "chore(bot): update active secrets to ${record.secretsVersion}"'`, { cwd: repoDir, stdio: "inherit" });
+    execSync(`bash -lc 'git diff --cached --quiet || git
+ commit -m "chore(bot): update active secrets to ${record.secretsVersion}"'`, { cwd: repoDir, stdio: "inherit" });
   } catch {}
   try { execSync(`git push -q origin ${branch}`, { cwd: repoDir, stdio: "inherit" }); } catch {}
 
