@@ -1,6 +1,6 @@
 // src/services/authService.ts
 import { PrivyClient } from '@privy-io/server-auth';
-import pool from '../db'; // 👈 if your db helper file has a different path/name, adjust this import
+import { pool } from "../db";
 
 const APP_ID = process.env.PRIVY_APP_ID!;
 const APP_SECRET = process.env.PRIVY_APP_SECRET!;

@@ -1,3 +1,3 @@
-import { requireAuth } from '../middleware/auth';
 // src/middleware/auth.ts
-export { requireAuth } from './authPrivy';
+export { authPrivy as requireAuth } from "./authPrivy";
+export type { AuthedRequest } from "./authPrivy";
