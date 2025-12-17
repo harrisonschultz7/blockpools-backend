@@ -1,5 +1,5 @@
 // src/routes/profile.ts
-import { Router, Response } from "express";
+import { Router, Response, NextFunction } from "express";
 import { pool } from "../db";
 import { authPrivy, AuthedRequest } from "../middleware/authPrivy";
 import multer from "multer";
@@ -36,8 +36,8 @@ function getPublicBaseUrl(req?: any): string {
   const xfHost = (req?.headers?.["x-forwarded-host"] as string | undefined)
     ?.split(",")[0]
     ?.trim();
-  const host = xfHost || req?.headers?.host;
 
+  const host = xfHost || req?.headers?.host;
   if (host) {
     const proto = xfProto || req?.protocol || "http";
     return `${proto}://${host}`.replace(/\/+$/, "");
@@ -49,7 +49,7 @@ function getPublicBaseUrl(req?: any): string {
 
 /**
  * Normalize avatar_url values that were previously stored with localhost
- * (e.g., http://localhost:3001/uploads/avatars/xxx) to the real public host.
+ * to the real public host.
  */
 function normalizeAvatarUrl(
   avatarUrl: string | null | undefined,
@@ -83,14 +83,15 @@ function normalizeProfileRow(row: any, publicBaseUrl: string) {
  * Optional auth: if Authorization Bearer is present and valid, populate req.user.
  * If missing/invalid, continue as anonymous.
  */
-const PRIVY_APP_ID = process.env.PRIVY_APP_ID || "";
-const PRIVY_APP_SECRET = process.env.PRIVY_APP_SECRET || "";
+const PRIVY_APP_ID = (process.env.PRIVY_APP_ID || "").trim();
+const PRIVY_APP_SECRET = (process.env.PRIVY_APP_SECRET || "").trim();
+
 const privyOptionalClient =
   PRIVY_APP_ID && PRIVY_APP_SECRET
     ? new PrivyClient(PRIVY_APP_ID, PRIVY_APP_SECRET)
     : null;
 
-async function authPrivyOptional(req: AuthedRequest, _res: Response, next: any) {
+async function authPrivyOptional(req: AuthedRequest, _res: Response, next: NextFunction) {
   try {
     if (!privyOptionalClient) return next();
 
@@ -186,7 +187,7 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
     const primaryAddress = req.user.primaryAddress.toLowerCase();
     const eoaAddress = req.user.eoaAddress ? req.user.eoaAddress.toLowerCase() : null;
 
-    const { username, display_name, x_handle, instagram_handle, avatar_url } = req.body;
+    const { username, display_name, x_handle, instagram_handle, avatar_url } = req.body || {};
 
     if (!username || typeof username !== "string") {
       return res.status(400).json({ error: "username is required" });
@@ -245,7 +246,7 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     const publicBaseUrl = getPublicBaseUrl(req);
     return res.json(normalizeProfileRow(result.rows[0], publicBaseUrl));
-  } catch (err: any) {
+  } catch (err) {
     console.error("[POST /api/profile] error", err);
     return res.status(500).json({ error: "Internal server error" });
   }
@@ -307,17 +308,12 @@ router.post(
 /**
  * POST /api/profile/by-addresses
  * Public lookup: { addresses: string[] } -> Profile[]
- * Used by leaderboard + public profile pages.
  */
 router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
   try {
-    let addresses: string[] = req.body?.addresses || [];
-    if (!Array.isArray(addresses)) {
-      return res.status(400).json({ error: "addresses must be an array" });
-    }
-
+    const addresses = Array.isArray(req.body?.addresses) ? req.body.addresses : [];
     const addrLower = Array.from(
-      new Set(addresses.filter(Boolean).map((a) => String(a).toLowerCase()))
+      new Set(addresses.filter(Boolean).map((a: any) => String(a).toLowerCase()))
     );
 
     if (addrLower.length === 0) return res.json([]);
@@ -345,8 +341,7 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
     );
 
     const publicBaseUrl = getPublicBaseUrl(req);
-    const rows = (result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl));
-    return res.json(rows);
+    return res.json((result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl)));
   } catch (err) {
     console.error("[POST /api/profile/by-addresses] error", err);
     return res.status(500).json({ error: "Internal server error" });
@@ -354,20 +349,17 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
 });
 
 /**
- * ✅ NEW (recommended): GET /api/profile/by-id?profileId=<users.id>
- * Public profile lookup by ID (users.id / Privy DID).
+ * ✅ Recommended: GET /api/profile/by-id?profileId=<users.id>
+ * Public lookup by users.id (Privy DID) using query param (avoids path encoding issues).
  * If Authorization bearer is present+valid, includes is_followed_by_me.
  */
 router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response) => {
   try {
-    const raw = req.query.profileId;
-    const profileId = typeof raw === "string" ? raw : "";
-
-    if (!profileId) {
-      return res.status(400).json({ error: "profileId is required" });
-    }
+    const profileId = typeof req.query.profileId === "string" ? req.query.profileId : "";
+    if (!profileId) return res.status(400).json({ error: "profileId is required" });
 
     const viewerId = req.user?.id;
+    const params = viewerId ? [profileId, viewerId] : [profileId];
 
     const result = await pool.query(
       `
@@ -393,12 +385,10 @@ router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response
       WHERE u.id = $1
       LIMIT 1
       `,
-      viewerId ? [profileId, viewerId] : [profileId]
+      params
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Profile not found" });
-    }
+    if (result.rows.length === 0) return res.status(404).json({ error: "Profile not found" });
 
     const publicBaseUrl = getPublicBaseUrl(req);
     return res.json(normalizeProfileRow(result.rows[0], publicBaseUrl));
@@ -410,17 +400,18 @@ router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response
 
 /**
  * GET /api/profile/:profileId
- * Keep this for backwards compatibility, but DIDs in the path are brittle.
+ * Backwards compatibility endpoint.
+ * Note: DIDs in a path are brittle; prefer /by-id.
+ * If you still call this publicly, it will work. If auth is present, it can include follow info only
+ * if something upstream already populated req.user (generally not, so treat as legacy).
  */
 router.get("/:profileId", async (req: AuthedRequest, res: Response) => {
   try {
     const { profileId } = req.params;
+    if (!profileId) return res.status(400).json({ error: "profileId is required" });
 
-    if (!profileId) {
-      return res.status(400).json({ error: "profileId is required" });
-    }
-
-    const viewerId = req.user?.id; // Optional (only if something upstream sets it)
+    const viewerId = req.user?.id;
+    const params = viewerId ? [profileId, viewerId] : [profileId];
 
     const result = await pool.query(
       `
@@ -446,12 +437,10 @@ router.get("/:profileId", async (req: AuthedRequest, res: Response) => {
       WHERE u.id = $1
       LIMIT 1
       `,
-      viewerId ? [profileId, viewerId] : [profileId]
+      params
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Profile not found" });
-    }
+    if (result.rows.length === 0) return res.status(404).json({ error: "Profile not found" });
 
     const publicBaseUrl = getPublicBaseUrl(req);
     return res.json(normalizeProfileRow(result.rows[0], publicBaseUrl));
@@ -472,14 +461,10 @@ router.post("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: Res
     const { profileId } = req.params;
 
     if (!profileId) return res.status(400).json({ error: "profileId is required" });
-    if (viewerId === profileId) {
-      return res.status(400).json({ error: "Cannot follow your own profile" });
-    }
+    if (viewerId === profileId) return res.status(400).json({ error: "Cannot follow your own profile" });
 
     const targetRes = await pool.query(`SELECT id FROM users WHERE id = $1`, [profileId]);
-    if (targetRes.rows.length === 0) {
-      return res.status(404).json({ error: "Target profile not found" });
-    }
+    if (targetRes.rows.length === 0) return res.status(404).json({ error: "Target profile not found" });
 
     await pool.query(
       `
