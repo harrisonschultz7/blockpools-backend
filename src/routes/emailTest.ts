@@ -4,15 +4,17 @@ import { sendTestEmail } from "../services/emailService";
 
 const router = Router();
 
-/**
- * POST /api/email/test
- * Body: { to: "you@example.com" }
- *
- * Temporary dev-only endpoint to validate Resend sending.
- * Remove or lock down before production.
- */
 router.post("/email/test", async (req, res) => {
   try {
+    // Require admin key in prod
+    const adminKey = process.env.ADMIN_API_KEY;
+    if (process.env.NODE_ENV === "production") {
+      const provided = String(req.headers["x-admin-key"] || "");
+      if (!adminKey || provided !== adminKey) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+
     const to = String(req.body?.to || "").trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
       return res.status(400).json({ error: "Invalid 'to' email" });
