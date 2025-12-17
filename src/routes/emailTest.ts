@@ -1,29 +1,24 @@
 // src/routes/emailTest.ts
-import { Router } from "express";
+import { Router, Response } from "express";
 import { sendTestEmail } from "../services/emailService";
+import { authPrivy, AuthedRequest } from "../middleware/authPrivy";
 
 const router = Router();
 
-router.post("/email/test", async (req, res) => {
+/**
+ * POST /api/email/test
+ * Body: { to: string }
+ * Protected so random people can't spam your Resend account.
+ */
+router.post("/test", authPrivy, async (req: AuthedRequest, res: Response) => {
   try {
-    // Require admin key in prod
-    const adminKey = process.env.ADMIN_API_KEY;
-    if (process.env.NODE_ENV === "production") {
-      const provided = String(req.headers["x-admin-key"] || "");
-      if (!adminKey || provided !== adminKey) {
-        return res.status(403).json({ error: "Forbidden" });
-      }
-    }
+    const to = (req.body?.to || "").toString().trim();
+    if (!to) return res.status(400).json({ error: "Missing 'to' in body" });
 
-    const to = String(req.body?.to || "").trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
-      return res.status(400).json({ error: "Invalid 'to' email" });
-    }
-
-    const result = await sendTestEmail(to);
+    const result = await sendTestEmail({ to });
     return res.json({ ok: true, result });
   } catch (e: any) {
-    return res.status(500).json({ ok: false, error: e?.message || "Failed" });
+    return res.status(500).json({ error: e?.message || "Email test failed" });
   }
 });
 
