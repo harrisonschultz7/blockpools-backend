@@ -317,11 +317,26 @@ export async function sendInviteEmail(opts: {
     html: renderBrandedEmail({
       title: "You’re invited to BlockPools",
       preheader: `${inviterSafe} invited you to join BlockPools.`,
-      // We put the “real” content in bodyHtml to control layout more precisely
       intro: "",
       bodyHtml: heroBlock,
       button: { label: "Accept invite", href: opts.inviteUrl },
       footerNote: "If you weren’t expecting this, you can ignore this email.",
+    }),
+  });
+}
+
+export async function sendTestEmail(opts: { to: string }) {
+  const from = requireEnv("EMAIL_FROM_WELCOME");
+
+  return resend.emails.send({
+    from,
+    to: opts.to,
+    subject: "BlockPools email test",
+    html: renderBrandedEmail({
+      title: "Email delivery test",
+      preheader: "Resend is working.",
+      intro: "If you received this, Resend email delivery is working correctly.",
+      footerNote: "You can ignore this message.",
     }),
   });
 }
