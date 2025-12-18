@@ -230,10 +230,9 @@ export async function sendInviteEmail(opts: {
 }) {
   const fromInvites = requireEnv("EMAIL_FROM_INVITES");
 
-  const inviter = (opts.inviterLabel || "").trim();
-  const inviterSafe = inviter ? escapeHtml(inviter) : "A friend";
+  const inviterRaw = (opts.inviterLabel || "").trim();
+  const inviterName = inviterRaw ? escapeHtml(inviterRaw) : "Someone you know";
 
-  // “Thinking of you” hero line with inviter
   const heroBlock = `
     <tr>
       <td style="padding: 14px 18px 0;">
@@ -248,7 +247,7 @@ export async function sendInviteEmail(opts: {
           background: rgba(250,204,21,0.10);
           border: 1px solid rgba(250,204,21,0.22);
           border-radius: 999px;
-          padding: 8px 12px;
+          padding: 7px 11px;
         ">
           Invite
         </div>
@@ -260,20 +259,21 @@ export async function sendInviteEmail(opts: {
         <div style="
           font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
           color: rgba(255,255,255,0.96);
-          font-size: 18px;
+          font-size: 16px;
           font-weight: 800;
           line-height: 1.35;
         ">
-          💛 Your friend is thinking of you.
+          ${inviterName} invited you to BlockPools
         </div>
+
         <div style="
-          margin-top: 6px;
+          margin-top: 8px;
           font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
           color: rgba(255,255,255,0.78);
           font-size: 14px;
-          line-height: 1.6;
+          line-height: 1.7;
         ">
-          <b style="color: rgba(255,255,255,0.92)">${inviterSafe}</b> invited you to join BlockPools.
+          Trade sports markets with USDC. Track your positions in real time, and settle on-chain.
         </div>
       </td>
     </tr>
@@ -282,12 +282,14 @@ export async function sendInviteEmail(opts: {
       <td style="padding: 12px 18px 0;">
         <div style="
           font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-          color: rgba(255,255,255,0.75);
+          color: rgba(255,255,255,0.70);
           font-size: 13px;
-          line-height: 1.65;
+          line-height: 1.7;
         ">
-          BlockPools is a sports markets experience with real-time prices and clean, on-chain settlement.
-          Tap below to accept your invite and jump straight into the Markets page.
+          <b style="color: rgba(255,255,255,0.92)">What you can do in BlockPools:</b><br/>
+          • Browse live Markets<br/>
+          • Buy or sell a position<br/>
+          • Claim winnings after the game settles
         </div>
       </td>
     </tr>
@@ -298,13 +300,14 @@ export async function sendInviteEmail(opts: {
           font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
           color: rgba(255,255,255,0.55);
           font-size: 12px;
-          line-height: 1.5;
+          line-height: 1.6;
         ">
-          If the button doesn’t work, paste this link into your browser:
-          <br />
-          <a href="${opts.inviteUrl}" style="color: rgba(250,204,21,0.95); text-decoration: none;">
-            ${opts.inviteUrl}
-          </a>
+          If the button doesn’t work, paste this link into your browser:<br/>
+          <a href="${opts.inviteUrl}" style="
+            color: rgba(250,204,21,0.95);
+            text-decoration: none;
+            word-break: break-all;
+          ">${opts.inviteUrl}</a>
         </div>
       </td>
     </tr>
@@ -313,30 +316,16 @@ export async function sendInviteEmail(opts: {
   return resend.emails.send({
     from: fromInvites,
     to: opts.to,
-    subject: `${inviterSafe} invited you to BlockPools`,
+    subject: `${inviterRaw ? inviterName : "Invite"} • Join BlockPools`,
     html: renderBrandedEmail({
-      title: "You’re invited to BlockPools",
-      preheader: `${inviterSafe} invited you to join BlockPools.`,
-      intro: "",
+      title: "BlockPools Invite",
+      preheader: inviterRaw
+        ? `${inviterRaw} invited you to BlockPools.`
+        : "You’ve been invited to BlockPools.",
+      intro: "", // keep empty; we’re using heroBlock
       bodyHtml: heroBlock,
       button: { label: "Accept invite", href: opts.inviteUrl },
       footerNote: "If you weren’t expecting this, you can ignore this email.",
-    }),
-  });
-}
-
-export async function sendTestEmail(opts: { to: string }) {
-  const from = requireEnv("EMAIL_FROM_WELCOME");
-
-  return resend.emails.send({
-    from,
-    to: opts.to,
-    subject: "BlockPools email test",
-    html: renderBrandedEmail({
-      title: "Email delivery test",
-      preheader: "Resend is working.",
-      intro: "If you received this, Resend email delivery is working correctly.",
-      footerNote: "You can ignore this message.",
     }),
   });
 }
