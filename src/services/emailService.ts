@@ -258,7 +258,7 @@ export async function sendInviteEmail(opts: {
           font-size: 14px;
           line-height: 1.7;
         ">
-          BlockPools turns sports predictions into ownership — fees flow into team-linked tokens.
+          A Sports Prediction Market Designed for Real Fans
         </div>
       </td>
     </tr>
