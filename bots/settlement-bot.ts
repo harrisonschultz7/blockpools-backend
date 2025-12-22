@@ -130,7 +130,7 @@ function loadGamePoolAbi(): { abi: any; source: "artifact" | "imported" | "minim
 }
 
 const { abi: poolAbi } = loadGamePoolAbi();
-const iface = new ethers.utils.Interface(poolAbi);
+const iface = new ethers.Interface(poolAbi);
 
 /* ────────────────────────────────────────────────────────────────────────────
    Small utils
@@ -235,7 +235,7 @@ function loadGamesMeta(): GameMeta[] {
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
     const filtered = arr.filter(a => {
-      try { return ethers.utils.isAddress(a); } catch { return false; }
+      try { return ethers.isAddress(a); } catch { return false; }
     });
     if (filtered.length) {
       console.log(`Using CONTRACTS from env (${filtered.length})`);
@@ -800,7 +800,7 @@ const FUNCTIONS_ROUTER_ERRORS = [
   "error RequestIsAlreadyPending()",
   "error UnsupportedDON()",
 ];
-const routerIface = new ethers.utils.Interface(FUNCTIONS_ROUTER_ERRORS);
+const routerIface = new ethers.Interface(FUNCTIONS_ROUTER_ERRORS);
 
 function decodeRevert(data?: string) {
   if (!data || typeof data !== "string" || !data.startsWith("0x") || data.length < 10) return "unknown";
@@ -808,7 +808,7 @@ function decodeRevert(data?: string) {
   try { return routerIface.parseError(data).name; } catch {}
   try {
     if (data.slice(0, 10) === "0x08c379a0") {
-      const [msg] = ethers.utils.defaultAbiCoder.decode(["string"], "0x" + data.slice(10));
+const [msg] = ethers.AbiCoder.defaultAbiCoder().decode(["string"], "0x" + data.slice(10));
       return `Error("${msg}")`;
     }
   } catch {}
@@ -829,13 +829,13 @@ async function main() {
   console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
   console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL + UCL)`);
 
-  const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
+const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
   // === REUSE FIRST: read pointer written by step [1/3] in your shell script ===
   const pointer = ensureFreshPointer();
   const donHostedSecretsVersion = BigInt(pointer.secretsVersion);
-  const donBytes = ethers.utils.formatBytes32String(pointer.donId);
+const donBytes = ethers.encodeBytes32String(pointer.donId);
 
   const SOURCE = loadSourceCode();
   const gamesMeta = loadGamesMeta();
@@ -965,8 +965,7 @@ async function main() {
     }
   }
   const donHostedSecretsVersion2 = BigInt(pointer2.secretsVersion);
-  const donBytes2 = ethers.utils.formatBytes32String(pointer2.donId);
-
+const donBytes2 = ethers.encodeBytes32String(pointer2.donId);
   const buildArgs8 = (s: PoolState): string[] => {
     const d0 = epochToEtISO(s.lockTime);
     const d1 = addDaysISO(d0, 1);
