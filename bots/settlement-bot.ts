@@ -989,22 +989,36 @@ const donBytes2 = ethers.encodeBytes32String(pointer2.donId);
     const pool = new ethers.Contract(s.addr, poolAbi, wallet);
     const args = buildArgs8(s);
 
-    try {
-      await pool.callStatic.sendRequest(
-        SOURCE,
-        args,
-        SUBSCRIPTION_ID,
-        FUNCTIONS_GAS_LIMIT,
-        DON_SECRETS_SLOT,
-        donHostedSecretsVersion2,
-        donBytes2
-      );
-    } catch (e: any) {
-      const data = e?.data ?? e?.error?.data;
-      const decoded = decodeRevert(data);
-      console.error(`[SIM ERR] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) => ${decoded}`);
-      continue;
-    }
+try {
+  await pool.sendRequest.staticCall(
+    SOURCE,
+    args,
+    SUBSCRIPTION_ID,
+    FUNCTIONS_GAS_LIMIT,
+    DON_SECRETS_SLOT,
+    donHostedSecretsVersion2,
+    donBytes2
+  );
+} catch (e: any) {
+  const data =
+    e?.data ??
+    e?.error?.data ??
+    e?.info?.error?.data ??
+    e?.receipt?.revertReason;
+
+  const decoded = decodeRevert(data);
+  const selector = typeof data === "string" ? data.slice(0, 10) : "n/a";
+
+  console.error(
+    `[SIM ERR] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) => ${decoded} selector=${selector}`
+  );
+
+  // optional: log the raw message ethers v6 provides
+  if (e?.shortMessage) console.error(`         shortMessage=${e.shortMessage}`);
+  if (e?.reason) console.error(`         reason=${e.reason}`);
+
+  continue;
+}
 
 if (!DRY_RUN) {
   await sendLimit(async () => {
