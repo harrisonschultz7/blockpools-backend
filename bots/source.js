@@ -343,6 +343,7 @@ function normalizeGameRow(r) {
 }
 
 // Team matching (shared with settlement-bot.ts)
+// Strict to avoid "New York" vs "New Orleans" false positives.
 function teamMatchesOneSide(apiName, wantName, wantCode) {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -350,21 +351,29 @@ function teamMatchesOneSide(apiName, wantName, wantCode) {
 
   if (!nApi) return false;
 
-  if (nApi && nWant && nApi === nWant) return true;
+  // 1) Strongest: exact normalized name
+  if (nWant && nApi === nWant) return true;
 
+  // 2) Strong: code/acronym match (NYJ, NOS, etc.)
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
-
-  if (code && apiAcr === code) return true;
+  if (code && apiAcr && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
-  const tokens = new Set(nApi.split(" "));
-  const wantTokens = new Set(nWant.split(" "));
-  const overlap = [...wantTokens].some(
-    (t) => t.length > 2 && tokens.has(t)
-  );
+  // 3) Safe fallback: mascot (last meaningful token)
+  //    "new york jets" -> "jets", "new orleans saints" -> "saints"
+  const apiParts = nApi.split(" ").filter(Boolean);
+  const wantParts = nWant.split(" ").filter(Boolean);
 
-  return overlap;
+  if (!apiParts.length || !wantParts.length) return false;
+
+  const apiMascot = apiParts[apiParts.length - 1];
+  const wantMascot = wantParts[wantParts.length - 1];
+
+  if (apiMascot && wantMascot && apiMascot === wantMascot) return true;
+
+  // 4) Otherwise: NO fuzzy token-overlap (intentionally removed)
+  return false;
 }
 
 function unorderedTeamsMatchByTokens(
@@ -493,30 +502,28 @@ async function lookupWinnerCode() {
   let winnerCode = "TIE"; // Default to tie
 
   if (best.homeScore > best.awayScore) {
-    const homeIsA = teamMatchesOneSide(
-      best.homeName,
-      targetAName,
-      targetACode
-    );
-    const homeIsB = teamMatchesOneSide(
-      best.homeName,
-      targetBName,
-      targetBCode
-    );
+    const homeIsA = teamMatchesOneSide(best.homeName, targetAName, targetACode);
+    const homeIsB = teamMatchesOneSide(best.homeName, targetBName, targetBCode);
+
+    if (homeIsA && homeIsB) {
+      console.log(
+        `AMBIGUOUS_TEAM_MATCH(home): home="${best.homeName}" A="${targetAName}"(${targetACode}) B="${targetBName}"(${targetBCode})`
+      );
+    }
+
     if (homeIsA && !homeIsB) winnerCode = targetACode;
     else if (homeIsB && !homeIsA) winnerCode = targetBCode;
-    else winnerCode = "TIE"; // ambiguous
+    else winnerCode = "TIE";
   } else if (best.awayScore > best.homeScore) {
-    const awayIsA = teamMatchesOneSide(
-      best.awayName,
-      targetAName,
-      targetACode
-    );
-    const awayIsB = teamMatchesOneSide(
-      best.awayName,
-      targetBName,
-      targetBCode
-    );
+    const awayIsA = teamMatchesOneSide(best.awayName, targetAName, targetACode);
+    const awayIsB = teamMatchesOneSide(best.awayName, targetBName, targetBCode);
+
+    if (awayIsA && awayIsB) {
+      console.log(
+        `AMBIGUOUS_TEAM_MATCH(away): away="${best.awayName}" A="${targetAName}"(${targetACode}) B="${targetBName}"(${targetBCode})`
+      );
+    }
+
     if (awayIsA && !awayIsB) winnerCode = targetACode;
     else if (awayIsB && !awayIsA) winnerCode = targetBCode;
     else winnerCode = "TIE";

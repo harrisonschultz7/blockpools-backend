@@ -572,23 +572,38 @@ function normalizeGameRow(r: any) {
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
+// Strict to avoid "New York" vs "New Orleans" false positives.
+// Strict to avoid "New York" vs "New Orleans" false positives.
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
   const code = trimU(wantCode);
+
   if (!nApi) return false;
 
-  if (nApi && nWant && nApi === nWant) return true;
+  // 1) Strongest: exact normalized name
+  if (nWant && nApi === nWant) return true;
 
+  // 2) Strong: code/acronym match (NYJ, NOS, etc.)
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
-  if (code && apiAcr === code) return true;
+  if (code && apiAcr && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
-  const tokens = new Set(nApi.split(" "));
-  const wantTokens = new Set(nWant.split(" "));
-  const overlap = [...wantTokens].some(t => t.length > 2 && tokens.has(t));
-  return overlap;
+  // 3) Safe fallback: mascot (last meaningful token)
+  //    "new york jets" -> "jets", "new orleans saints" -> "saints"
+  const apiParts = nApi.split(" ").filter(Boolean);
+  const wantParts = nWant.split(" ").filter(Boolean);
+
+  if (!apiParts.length || !wantParts.length) return false;
+
+  const apiMascot = apiParts[apiParts.length - 1];
+  const wantMascot = wantParts[wantParts.length - 1];
+
+  if (apiMascot && wantMascot && apiMascot === wantMascot) return true;
+
+  // 4) Otherwise: NO fuzzy token-overlap (intentionally removed)
+  return false;
 }
 
 function unorderedTeamsMatchByTokens(
@@ -610,10 +625,15 @@ async function tryFetchGoalserve(league: string, lockTime: number) {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
   if (!sportPath || !leaguePaths.length) return { ok: false, reason: "unsupported league" };
 
-  const baseISO = epochToEtISO(lockTime);
-  const [Y, M, D] = baseISO.split("-");
+const d0 = epochToEtISO(lockTime);
+const d1 = addDaysISO(d0, 1);
+const dateIsos = [d0, d1];
+
+const tried: string[] = [];
+
+for (const iso of dateIsos) {
+  const [Y, M, D] = iso.split("-");
   const ddmmyyyy = `${D}.${M}.${Y}`;
-  const tried: string[] = [];
 
   for (const lp of leaguePaths) {
     const url =
@@ -621,23 +641,25 @@ async function tryFetchGoalserve(league: string, lockTime: number) {
       `/${sportPath}/${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
     tried.push(url);
 
-    try {
-      const payload = await fetchJsonWithRetry(url, 3, 500);
-      const rawGames = collectCandidateGames(payload);
-      if (!rawGames.length) continue;
+try {
+  const payload = await fetchJsonWithRetry(url, 3, 500);
+  const rawGames = collectCandidateGames(payload);
+  if (!rawGames.length) continue;
 
-      const games = rawGames.map((r: any) => {
-        const g = normalizeGameRow(r);
-        return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
-      });
+  const games = rawGames.map((r: any) => {
+    const g = normalizeGameRow(r);
+    return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
+  });
 
-      return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
-    } catch (e: any) {
-      if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
-    }
+  return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
+} catch (e: any) {
+  if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
+}
+
   }
+}
 
-  return { ok: false, reason: "no games", tried };
+return { ok: false, reason: "no games", tried };
 }
 
 async function confirmFinalGoalserve(params: {
@@ -699,10 +721,47 @@ async function confirmFinalGoalserve(params: {
 
   const homeIsA = teamMatchesOneSide(match.homeName, aName, aCode);
   const homeIsB = teamMatchesOneSide(match.homeName, bName, bCode);
+  const awayIsA = teamMatchesOneSide(match.awayName, aName, aCode);
+  const awayIsB = teamMatchesOneSide(match.awayName, bName, bCode);
+
+  // Require a clean, unambiguous mapping:
+  // Either (home=A AND away=B) OR (home=B AND away=A). Anything else => skip as unsafe.
+  const mapsHomeA_AwayB = homeIsA && awayIsB && !homeIsB && !awayIsA;
+  const mapsHomeB_AwayA = homeIsB && awayIsA && !homeIsA && !awayIsB;
+
+  if (!mapsHomeA_AwayB && !mapsHomeB_AwayA) {
+    return {
+      ok: false,
+      reason: "ambiguous team mapping",
+      debug: GOALSERVE_DEBUG
+        ? {
+            url: resp.url,
+            date: resp.dateTried,
+            picked: {
+              home: match.homeName,
+              away: match.awayName,
+              homeScore: match.homeScore,
+              awayScore: match.awayScore,
+              status: match.status,
+              kickoff: match.__kickoff,
+            },
+            flags: { homeIsA, homeIsB, awayIsA, awayIsB },
+          }
+        : undefined,
+    };
+  }
 
   let winner: "A" | "B" | "TIE" = "TIE";
-  if (match.homeScore > match.awayScore) winner = homeIsA ? "A" : homeIsB ? "B" : "TIE";
-  else if (match.awayScore > match.homeScore) winner = homeIsA ? "B" : homeIsB ? "A" : "TIE";
+
+  if (match.homeScore === match.awayScore) {
+    winner = "TIE";
+  } else if (match.homeScore > match.awayScore) {
+    // Home team won
+    winner = mapsHomeA_AwayB ? "A" : "B";
+  } else {
+    // Away team won
+    winner = mapsHomeA_AwayB ? "B" : "A";
+  }
 
   let winnerCode = "Tie";
   if (winner === "A") winnerCode = params.teamACode || params.teamAName;
@@ -877,8 +936,9 @@ async function main() {
     });
 
     if (pre.ok) {
-      const label = pre.winnerCode || pre.winner || "?";
-      console.log(`[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${label}`);
+      console.log(
+        `[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${pre.winner} (${pre.winnerCode})`
+      );
       finalEligible.push(s);
     } else if (pre.reason === "not final") {
       console.log(`[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`);
@@ -947,28 +1007,29 @@ async function main() {
       continue;
     }
 
-    if (!DRY_RUN) {
-      await limiter(TX_SEND_CONCURRENCY)(async () => {
-        try {
-          if (REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
-          const tx = await pool.sendRequest(
-            SOURCE,
-            args,
-            SUBSCRIPTION_ID,
-            FUNCTIONS_GAS_LIMIT,
-            DON_SECRETS_SLOT,
-            donHostedSecretsVersion2,
-            donBytes2
-          );
-          console.log(`[TX] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) :: ${tx.hash}`);
-          submitted++;
-        } catch (e: any) {
-          const data = e?.data ?? e?.error?.data;
-          console.error(`[ERR] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}):`, e?.reason || e?.message || e);
-          if (data?.slice) console.error(` selector = ${data.slice(0, 10)} (${decodeRevert(data)})`);
-        }
-      });
-    } else {
+if (!DRY_RUN) {
+  await sendLimit(async () => {
+    try {
+      if (REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
+      const tx = await pool.sendRequest(
+        SOURCE,
+        args,
+        SUBSCRIPTION_ID,
+        FUNCTIONS_GAS_LIMIT,
+        DON_SECRETS_SLOT,
+        donHostedSecretsVersion2,
+        donBytes2
+      );
+      console.log(`[TX] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) :: ${tx.hash}`);
+      submitted++;
+    } catch (e: any) {
+      const data = e?.data ?? e?.error?.data;
+      console.error(`[ERR] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}):`, e?.reason || e?.message || e);
+      if (data?.slice) console.error(` selector = ${data.slice(0, 10)} (${decodeRevert(data)})`);
+    }
+  });
+}
+ else {
       console.log(`[DRY_RUN] Would sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
     }
   }
