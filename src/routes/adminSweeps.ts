@@ -12,6 +12,15 @@ function requireAdminKey(req: Request) {
   return got && got === expected;
 }
 
+// Prefer camelCase, but allow snake_case fallbacks
+function pick(b: any, camel: string, snake: string) {
+  const v = b?.[camel];
+  if (v !== undefined && v !== null) return v;
+  const s = b?.[snake];
+  if (s !== undefined && s !== null) return s;
+  return null;
+}
+
 /**
  * POST /api/admin/sweeps
  * Body: sweep report payload from the hardhat sweeper script
@@ -24,7 +33,7 @@ router.post("/sweeps", async (req: Request, res: Response) => {
 
     const b = req.body ?? {};
 
-    // Minimal required fields (tighten/expand as desired)
+    // Minimal required fields
     const chainId = Number(b.chainId);
     const contractAddress = String(b.contractAddress || "").toLowerCase();
     const txHash = String(b.txHash || "").toLowerCase();
@@ -67,6 +76,11 @@ router.post("/sweeps", async (req: Request, res: Response) => {
 
         gas_used, effective_gas_price, gas_cost_native,
 
+        -- NEW: bettors + prices at lock / avg prices
+        bettors_team_a, bettors_team_b,
+        lock_price_team_a_bps, lock_price_team_b_bps,
+        avg_price_team_a_bps, avg_price_team_b_bps,
+
         swept_at
       )
       values (
@@ -100,7 +114,11 @@ router.post("/sweeps", async (req: Request, res: Response) => {
 
         $41, $42, $43,
 
-        $44
+        $44, $45,
+        $46, $47,
+        $48, $49,
+
+        $50
       )
       on conflict (chain_id, contract_address, tx_hash)
       do nothing
@@ -112,56 +130,76 @@ router.post("/sweeps", async (req: Request, res: Response) => {
       contractAddress,
       txHash,
 
-      b.lockedAt ?? null,
-      b.winningTeam ?? null,
+      // locked_at, winning_team
+      pick(b, "lockedAt", "locked_at"),
+      pick(b, "winningTeam", "winning_team"),
 
-      b.contractUSDCBefore ?? null,
-      b.contractUSDCAfter ?? null,
-      b.treasuryUSDCBefore ?? null,
-      b.treasuryUSDCAfter ?? null,
+      // balances
+      pick(b, "contractUSDCBefore", "contract_usdc_before"),
+      pick(b, "contractUSDCAfter", "contract_usdc_after"),
+      pick(b, "treasuryUSDCBefore", "treasury_usdc_before"),
+      pick(b, "treasuryUSDCAfter", "treasury_usdc_after"),
 
-      b.amountSwept ?? null,
-      b.poolBalanceBefore ?? null,
-      b.poolBalanceAfter ?? null,
-      b.liabilityBefore ?? null,
-      b.liabilityAfter ?? null,
-      b.expectedExcessBefore ?? null,
+      // core sweep economics
+      pick(b, "amountSwept", "amount_swept"),
+      pick(b, "poolBalanceBefore", "pool_balance_before"),
+      pick(b, "poolBalanceAfter", "pool_balance_after"),
+      pick(b, "liabilityBefore", "liability_before"),
+      pick(b, "liabilityAfter", "liability_after"),
+      pick(b, "expectedExcessBefore", "expected_excess_before"),
 
-      b.stakeTeamA_before ?? null,
-      b.stakeTeamB_before ?? null,
-      b.totalSharesTeamA_before ?? null,
-      b.totalSharesTeamB_before ?? null,
-      b.stakeTeamA_after ?? null,
-      b.stakeTeamB_after ?? null,
-      b.totalSharesTeamA_after ?? null,
-      b.totalSharesTeamB_after ?? null,
+      // side snapshots
+      pick(b, "stakeTeamA_before", "stake_team_a_before"),
+      pick(b, "stakeTeamB_before", "stake_team_b_before"),
+      pick(b, "totalSharesTeamA_before", "total_shares_team_a_before"),
+      pick(b, "totalSharesTeamB_before", "total_shares_team_b_before"),
+      pick(b, "stakeTeamA_after", "stake_team_a_after"),
+      pick(b, "stakeTeamB_after", "stake_team_b_after"),
+      pick(b, "totalSharesTeamA_after", "total_shares_team_a_after"),
+      pick(b, "totalSharesTeamB_after", "total_shares_team_b_after"),
 
-      b.totalVolumeTeamA_gross ?? null,
-      b.totalVolumeTeamB_gross ?? null,
-      b.totalFees_1pct ?? null,
+      // volumes + fees
+      pick(b, "totalVolumeTeamA_gross", "total_volume_team_a_gross"),
+      pick(b, "totalVolumeTeamB_gross", "total_volume_team_b_gross"),
+      pick(b, "totalFees_1pct", "total_fees_1pct"),
 
-      b.lpFundedTotal ?? null,
-      b.lpFundedCount ?? null,
-      b.lpBalanceBefore ?? null,
-      b.lpBalanceAfter ?? null,
+      // LP
+      pick(b, "lpFundedTotal", "lp_funded_total"),
+      pick(b, "lpFundedCount", "lp_funded_count"),
+      pick(b, "lpBalanceBefore", "lp_balance_before"),
+      pick(b, "lpBalanceAfter", "lp_balance_after"),
 
-      b.withdrawCount ?? null,
-      b.withdrawOriginalStakeTotal ?? null,
-      b.withdrawNetPayoutTotal ?? null,
-      b.withdrawFeesTotal ?? null,
+      // withdraw analytics
+      pick(b, "withdrawCount", "withdraw_count"),
+      pick(b, "withdrawOriginalStakeTotal", "withdraw_original_stake_total"),
+      pick(b, "withdrawNetPayoutTotal", "withdraw_net_payout_total"),
+      pick(b, "withdrawFeesTotal", "withdraw_fees_total"),
 
-      b.virtualLiquidity ?? null,
-      b.maxBetPerTx ?? null,
+      // params / metadata
+      pick(b, "virtualLiquidity", "virtual_liquidity"),
+      pick(b, "maxBetPerTx", "max_bet_per_tx"),
 
-      b.league ?? null,
-      b.teamACode ?? null,
-      b.teamBCode ?? null,
-      b.gameId ?? null,
+      // game metadata
+      pick(b, "league", "league"),
+      pick(b, "teamACode", "team_a_code"),
+      pick(b, "teamBCode", "team_b_code"),
+      pick(b, "gameId", "game_id"),
 
-      b.gasUsed ?? null,
-      b.effectiveGasPrice ?? null,
-      b.gasCostNative ?? null,
+      // gas
+      pick(b, "gasUsed", "gas_used"),
+      pick(b, "effectiveGasPrice", "effective_gas_price"),
+      pick(b, "gasCostNative", "gas_cost_native"),
 
+      // NEW: bettors + prices
+      // Prefer snake_case (matches DB), but accept camelCase too
+      pick(b, "numBettorsTeamA", "bettors_team_a"),
+      pick(b, "numBettorsTeamB", "bettors_team_b"),
+      pick(b, "lockPriceTeamA_bps", "lock_price_team_a_bps"),
+      pick(b, "lockPriceTeamB_bps", "lock_price_team_b_bps"),
+      pick(b, "avgPriceTeamA_bps", "avg_price_team_a_bps"),
+      pick(b, "avgPriceTeamB_bps", "avg_price_team_b_bps"),
+
+      // swept_at
       b.sweptAt ? new Date(b.sweptAt) : new Date(),
     ];
 
