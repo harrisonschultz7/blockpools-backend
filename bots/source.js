@@ -1,53 +1,60 @@
 // bots/source.js
-// Chainlink Functions source for BlockPools settlement
+// Chainlink Functions source for BlockPools settlement (optimized args model)
 // Supports: NFL, NBA, NHL, EPL, UCL via Goalserve
 //
-// ARGS (8):
-//  0: league       (e.g. "NFL", "NBA", "NHL", "EPL", "UCL")
-//  1: dateFrom     (yyyy-MM-dd, ET) - usually lockDate
-//  2: dateTo       (yyyy-MM-dd, ET) - usually lockDate+1 for safety
-//  3: teamACode
-//  4: teamBCode
-//  5: teamAName
-//  6: teamBName
-//  7: lockTime     (epoch seconds)
-//
+// NEW ARGS (1):
+//  0: packed JSON string with fields:
+//     {
+//       league: "NFL" | "NBA" | "NHL" | "EPL" | "UCL",
+//       dateFrom: "yyyy-MM-dd",
+//       dateTo:   "yyyy-MM-dd",
+//       teamACode: "DAL",
+//       teamBCode: "WAS",
+//       teamAName: "Dallas Cowboys",
+//       teamBName: "Washington Commanders",
+//       lockTime: "173..."   // epoch seconds as string (or number)
+//     }
 //
 // RETURNS (string, via Functions.encodeString):
 //  - teamACode        => Team A wins  (e.g. "PHI")
 //  - teamBCode        => Team B wins  (e.g. "KC")
-//  - "TIE" / "Tie"    => Tie
+//  - "TIE"            => Tie
 //
-// The GamePool.fulfillRequest() compares keccak256(response) to
-// keccak256(bytes(teamACode)), keccak256(bytes(teamBCode)), or "TIE"/"Tie".
-//
+// The GamePool.finalizeFromCoordinator(response) should interpret this string.
 
-if (!Array.isArray(args) || args.length < 8) {
-  throw Error("Invalid args: expected 8");
+if (!Array.isArray(args) || args.length < 1) {
+  throw Error("Invalid args: expected 1 packed JSON string");
 }
 
-const [
-  leagueRaw,
-  dateFromISO,
-  dateToISO,
-  teamACodeRaw,
-  teamBCodeRaw,
-  teamANameRaw,
-  teamBNameRaw,
-  lockTimeRaw,
-] = args;
+const packedRaw = String(args[0] || "").trim();
+if (!packedRaw) throw Error("Invalid args: packed JSON empty");
 
-const league = String(leagueRaw || "").trim().toLowerCase();
-const dateFrom = String(dateFromISO || "").trim();
-const dateTo = String(dateToISO || "").trim();
-const teamACode = String(teamACodeRaw || "").trim().toUpperCase();
-const teamBCode = String(teamBCodeRaw || "").trim().toUpperCase();
-const teamAName = String(teamANameRaw || "").trim();
-const teamBName = String(teamBNameRaw || "").trim();
-const lockTime = Number(lockTimeRaw || 0);
+// Parse packed payload
+let payload;
+try {
+  payload = JSON.parse(packedRaw);
+} catch (e) {
+  throw Error("Invalid args: packed JSON parse failed");
+}
+
+function s(v) {
+  return String(v == null ? "" : v).trim();
+}
+
+const league = s(payload.league).toLowerCase();
+const dateFrom = s(payload.dateFrom);
+const dateTo = s(payload.dateTo);
+
+const teamACode = s(payload.teamACode).toUpperCase();
+const teamBCode = s(payload.teamBCode).toUpperCase();
+const teamAName = s(payload.teamAName);
+const teamBName = s(payload.teamBName);
+
+// lockTime may come as number or string
+const lockTime = Number(payload.lockTime || 0);
 
 if (!league || !dateFrom || !dateTo || !teamAName || !teamBName) {
-  throw Error("Missing required args");
+  throw Error("Missing required packed args fields");
 }
 
 const GOALSERVE_API_KEY = secrets.GOALSERVE_API_KEY;
@@ -91,7 +98,6 @@ function goalserveLeaguePaths(leagueLabel) {
     L === "england - premier league" ||
     L === "england premier league"
   ) {
-    // -> /{APIKEY}/commentaries/1204?date=...&json=1
     return { sportPath: "commentaries", leaguePaths: ["1204"] };
   }
 
@@ -101,7 +107,6 @@ function goalserveLeaguePaths(leagueLabel) {
     L === "uefa champions league" ||
     L === "champions league"
   ) {
-    // -> /{APIKEY}/commentaries/1005?date=...&json=1
     return { sportPath: "commentaries", leaguePaths: ["1005"] };
   }
 
@@ -124,26 +129,17 @@ const finalsSet = new Set([
 ]);
 
 function isFinalStatus(raw) {
-  const s = (raw || "").trim().toLowerCase();
-  if (!s) return false;
+  const st = (raw || "").trim().toLowerCase();
+  if (!st) return false;
 
-  if (finalsSet.has(s)) return true;
+  if (finalsSet.has(st)) return true;
 
-  if (
-    s.includes("after over time") ||
-    s.includes("after overtime") ||
-    s.includes("after ot")
-  ) return true;
+  if (st.includes("after over time") || st.includes("after overtime") || st.includes("after ot")) return true;
+  if (st.includes("full time") || st === "full-time") return true;
 
-  if (s.includes("full time") || s === "full-time") return true;
-
-  if (
-    s.includes("final") &&
-    !s.includes("semi") &&
-    !s.includes("quarter") &&
-    !s.includes("half")
-  )
+  if (st.includes("final") && !st.includes("semi") && !st.includes("quarter") && !st.includes("half")) {
     return true;
+  }
 
   return false;
 }
@@ -231,11 +227,9 @@ function parseDateAndTimeAsUTC(dateStr, timeStr) {
 }
 
 function kickoffEpochFromRaw(raw) {
-  // 1) explicit datetime_utc if given
   const t1 = parseDatetimeUTC(raw?.datetime_utc || raw?.["@datetime_utc"]);
   if (t1) return t1;
 
-  // 2) prefer formatted_date/date + time
   const date =
     raw?.formatted_date ||
     raw?.date ||
@@ -252,9 +246,7 @@ function collectCandidateGames(payload) {
   if (!payload) return [];
 
   // NFL
-  if (Array.isArray(payload?.games?.game)) {
-    return payload.games.game;
-  }
+  if (Array.isArray(payload?.games?.game)) return payload.games.game;
 
   // NBA / NHL: scores.category.match[]
   const cat = payload?.scores?.category;
@@ -292,7 +284,6 @@ function collectCandidateGames(payload) {
 }
 
 function normalizeGameRow(r) {
-  // Home/local team
   const homeName =
     r?.hometeam?.name ||
     r?.home_name ||
@@ -301,7 +292,6 @@ function normalizeGameRow(r) {
     (r?.localteam && (r.localteam["@name"] || r.localteam.name)) ||
     "";
 
-  // Away/visitor team
   const awayName =
     r?.awayteam?.name ||
     r?.away_name ||
@@ -310,15 +300,11 @@ function normalizeGameRow(r) {
     (r?.visitorteam && (r.visitorteam["@name"] || r.visitorteam.name)) ||
     "";
 
-  // Scores:
-  // - NFL/NBA/NHL: hometeam/awayteam.totalscore or *_score / *_final
-  // - EPL/UCL: localteam/visitorteam @goals or @ft_score
   const homeScore = Number(
     r?.hometeam?.totalscore ??
       r?.home_score ??
       r?.home_final ??
-      (r?.localteam &&
-        (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
+      (r?.localteam && (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
       0
   );
 
@@ -326,8 +312,7 @@ function normalizeGameRow(r) {
     r?.awayteam?.totalscore ??
       r?.away_score ??
       r?.away_final ??
-      (r?.visitorteam &&
-        (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
+      (r?.visitorteam && (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
       0
   );
 
@@ -342,8 +327,7 @@ function normalizeGameRow(r) {
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
-// Team matching (shared with settlement-bot.ts)
-// Strict to avoid "New York" vs "New Orleans" false positives.
+// Team matching (strict to avoid "New York" vs "New Orleans" false positives).
 function teamMatchesOneSide(apiName, wantName, wantCode) {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -351,39 +335,28 @@ function teamMatchesOneSide(apiName, wantName, wantCode) {
 
   if (!nApi) return false;
 
-  // 1) Strongest: exact normalized name
+  // 1) exact normalized name
   if (nWant && nApi === nWant) return true;
 
-  // 2) Strong: code/acronym match (NYJ, NOS, etc.)
+  // 2) code/acronym match
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
   if (code && apiAcr && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
-  // 3) Safe fallback: mascot (last meaningful token)
-  //    "new york jets" -> "jets", "new orleans saints" -> "saints"
+  // 3) mascot token
   const apiParts = nApi.split(" ").filter(Boolean);
   const wantParts = nWant.split(" ").filter(Boolean);
-
   if (!apiParts.length || !wantParts.length) return false;
 
   const apiMascot = apiParts[apiParts.length - 1];
   const wantMascot = wantParts[wantParts.length - 1];
-
   if (apiMascot && wantMascot && apiMascot === wantMascot) return true;
 
-  // 4) Otherwise: NO fuzzy token-overlap (intentionally removed)
   return false;
 }
 
-function unorderedTeamsMatchByTokens(
-  homeName,
-  awayName,
-  AName,
-  BName,
-  ACode,
-  BCode
-) {
+function unorderedTeamsMatchByTokens(homeName, awayName, AName, BName, ACode, BCode) {
   const hA = teamMatchesOneSide(homeName, AName, ACode);
   const aB = teamMatchesOneSide(awayName, BName, BCode);
   const hB = teamMatchesOneSide(homeName, BName, BCode);
@@ -452,8 +425,9 @@ async function lookupWinnerCode() {
             targetACode,
             targetBCode
           )
-        )
+        ) {
           continue;
+        }
 
         const kickoff = kickoffEpochFromRaw(r);
         candidates.push({
@@ -473,8 +447,8 @@ async function lookupWinnerCode() {
   }
 
   // Prefer:
-  // 1. closest kickoff to lockTime (if present)
-  // 2. final over non-final
+  // 1) closest kickoff to lockTime (if present)
+  // 2) final over non-final
   candidates.sort((a, b) => {
     const t1 =
       typeof a.kickoff === "number"
@@ -499,17 +473,11 @@ async function lookupWinnerCode() {
   }
 
   // Determine winner and return the *team code* your contract expects.
-  let winnerCode = "TIE"; // Default to tie
+  let winnerCode = "TIE";
 
   if (best.homeScore > best.awayScore) {
     const homeIsA = teamMatchesOneSide(best.homeName, targetAName, targetACode);
     const homeIsB = teamMatchesOneSide(best.homeName, targetBName, targetBCode);
-
-    if (homeIsA && homeIsB) {
-      console.log(
-        `AMBIGUOUS_TEAM_MATCH(home): home="${best.homeName}" A="${targetAName}"(${targetACode}) B="${targetBName}"(${targetBCode})`
-      );
-    }
 
     if (homeIsA && !homeIsB) winnerCode = targetACode;
     else if (homeIsB && !homeIsA) winnerCode = targetBCode;
@@ -518,17 +486,10 @@ async function lookupWinnerCode() {
     const awayIsA = teamMatchesOneSide(best.awayName, targetAName, targetACode);
     const awayIsB = teamMatchesOneSide(best.awayName, targetBName, targetBCode);
 
-    if (awayIsA && awayIsB) {
-      console.log(
-        `AMBIGUOUS_TEAM_MATCH(away): away="${best.awayName}" A="${targetAName}"(${targetACode}) B="${targetBName}"(${targetBCode})`
-      );
-    }
-
     if (awayIsA && !awayIsB) winnerCode = targetACode;
     else if (awayIsB && !awayIsA) winnerCode = targetBCode;
     else winnerCode = "TIE";
   } else {
-    // scores equal
     winnerCode = "TIE";
   }
 
@@ -544,6 +505,4 @@ async function lookupWinnerCode() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const winnerCode = await lookupWinnerCode();
-
-// Return a raw string (e.g. "PHI", "KC", "TIE"), which matches GamePool.fulfillRequest()
 return Functions.encodeString(winnerCode);

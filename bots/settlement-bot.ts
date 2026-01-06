@@ -1,12 +1,41 @@
 // bots/settlement-bot.ts
 // @ts-nocheck
+//
+// REVISED: "Watcher → markReady" mode
+// - Off-chain Goalserve check decides when a game is FINAL.
+// - On-chain action is ONLY: SettlementCoordinator.markReady(pool)
+// - Chainlink Automation (on SettlementCoordinator) then sends the Functions request.
+// - This prevents premature + repeated on-chain Functions requests across many games.
+//
+// Required env:
+//   RPC_URL
+//   PRIVATE_KEY
+//   SETTLEMENT_COORDINATOR_ADDRESS
+//   GOALSERVE_API_KEY   (if REQUIRE_FINAL_CHECK=true)
+//
+// Optional env:
+//   DRY_RUN=1
+//   REQUIRE_FINAL_CHECK=1|0 (default true)
+//   POSTGAME_MIN_ELAPSED=600
+//   REQUEST_GAP_SECONDS=120
+//   READ_CONCURRENCY=25
+//   TX_SEND_CONCURRENCY=3
+//   MAX_TX_PER_RUN=20
+//   REQUEST_DELAY_MS=0
+//   GAMES_PATH=... (optional override)
+//   CONTRACTS="0x...,0x..." (fallback if no games.json)
+//
+// Notes:
+// - We DO NOT call GamePool.sendRequest anymore.
+// - We DO NOT need SUBSCRIPTION_ID / secrets pointer / Functions source in this bot.
+// - We still require that the bot wallet is the GamePool owner (same as your prior safety gate).
+//
 
 try { require("dotenv").config(); } catch {}
 
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { execFileSync } from "child_process";
 import { ethers } from "ethers";
 import { gamePoolAbi as IMPORTED_GAMEPOOL_ABI } from "./gamepool.abi";
 
@@ -28,30 +57,24 @@ const __dirname =
 ──────────────────────────────────────────────────────────────────────────── */
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
-const SUBSCRIPTION_ID = BigInt(process.env.SUBSCRIPTION_ID!);                  // uint64
-const FUNCTIONS_GAS_LIMIT = Number(process.env.FUNCTIONS_GAS_LIMIT || 300000); // uint32
-const DON_SECRETS_SLOT = Number(process.env.DON_SECRETS_SLOT || 0);            // uint8
+const SETTLEMENT_COORDINATOR_ADDRESS = (process.env.SETTLEMENT_COORDINATOR_ADDRESS || "").trim();
 
 const DRY_RUN = /^(1|true)$/i.test(String(process.env.DRY_RUN || ""));
-const REQUIRE_FINAL_CHECK = true;
+const REQUIRE_FINAL_CHECK =
+  process.env.REQUIRE_FINAL_CHECK == null ? true : /^(1|true)$/i.test(String(process.env.REQUIRE_FINAL_CHECK || ""));
+
 const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
-const READ_CONCURRENCY    = Number(process.env.READ_CONCURRENCY    || 25);
+const READ_CONCURRENCY = Number(process.env.READ_CONCURRENCY || 25);
 const TX_SEND_CONCURRENCY = Number(process.env.TX_SEND_CONCURRENCY || 3);
-const MAX_TX_PER_RUN   = Number(process.env.MAX_TX_PER_RUN || 8);
+const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 20);
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0);
 
 // Goalserve
-const GOALSERVE_API_KEY  = process.env.GOALSERVE_API_KEY || "";
+const GOALSERVE_API_KEY = process.env.GOALSERVE_API_KEY || "";
 const GOALSERVE_BASE_URL = process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
-const GOALSERVE_DEBUG    = /^(1|true)$/i.test(String(process.env.GOALSERVE_DEBUG || ""));
-
-// Git (for activeSecrets.json fallback)
-const GITHUB_OWNER = process.env.GITHUB_OWNER || "harrisonschultz7";
-const GITHUB_REPO  = process.env.GITHUB_REPO  || "blockpools-backend";
-const GITHUB_REF   = process.env.GITHUB_REF   || "main";
-const GH_PAT       = process.env.GH_PAT;
+const GOALSERVE_DEBUG = /^(1|true)$/i.test(String(process.env.GOALSERVE_DEBUG || ""));
 
 // games.json discovery
 const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
@@ -63,89 +86,63 @@ const GAMES_CANDIDATES = [
   path.resolve(process.cwd(), "games.json"),
 ];
 
-// Functions source discovery
-const SOURCE_CANDIDATES = [
-  path.resolve(__dirname, "source.js"),
-  path.resolve(__dirname, "..", "bots", "source.js"),
-  path.resolve(process.cwd(), "bots", "source.js"),
-];
-
 /* ────────────────────────────────────────────────────────────────────────────
-   ABI loader
+   ABI loader (GamePool view-only)
 ──────────────────────────────────────────────────────────────────────────── */
 const FALLBACK_MIN_ABI = [
-  { inputs: [], name: "league",      outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamAName",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamBName",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamACode",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "teamBCode",   outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "isLocked",    outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "requestSent", outputs: [{ type: "bool"   }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "winningTeam", outputs: [{ type: "uint8"  }], stateMutability: "view", type: "function" },
-  { inputs: [], name: "lockTime",    outputs: [{ type: "uint256"}], stateMutability: "view", type: "function" },
-  { inputs: [], name: "owner",       outputs: [{ type: "address"}], stateMutability: "view", type: "function" },
-  {
-    inputs: [
-      { type: "string",   name: "source" },
-      { type: "string[]", name: "args" },
-      { type: "uint64",   name: "subscriptionId" },
-      { type: "uint32",   name: "gasLimit" },
-      { type: "uint8",    name: "donHostedSecretsSlotID" },
-      { type: "uint64",   name: "donHostedSecretsVersion" },
-      { type: "bytes32",  name: "donID" },
-    ],
-    name: "sendRequest",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
+  { inputs: [], name: "league", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamAName", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamBName", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamACode", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "teamBCode", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "isLocked", outputs: [{ type: "bool" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "winningTeam", outputs: [{ type: "uint8" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "lockTime", outputs: [{ type: "uint256" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "owner", outputs: [{ type: "address" }], stateMutability: "view", type: "function" },
 ] as const;
 
 function loadGamePoolAbi(): { abi: any; source: "artifact" | "imported" | "minimal" } {
-  const ARTIFACT_PATH_ENV = process.env.ARTIFACT_PATH?.trim();
-  const candidates = [
-    ARTIFACT_PATH_ENV && (path.isAbsolute(ARTIFACT_PATH_ENV) ? ARTIFACT_PATH_ENV : path.resolve(process.cwd(), ARTIFACT_PATH_ENV)),
-    path.resolve(__dirname, "..", "..", "build", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
-    path.resolve(__dirname, "..", "build", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
-    path.resolve(process.cwd(), "build", "artifacts", "contracts", "GamePool.sol", "GamePool.json"),
-  ].filter(Boolean) as string[];
-
-  for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) {
-        const parsed = JSON.parse(fs.readFileSync(p, "utf8"));
-        console.log(`✅ Using ABI from ${p}`);
-        return { abi: parsed.abi, source: "artifact" };
-      }
-    } catch {}
-  }
-
+  // In this watcher mode we only need reads; prefer imported ABI if provided.
   if (IMPORTED_GAMEPOOL_ABI && Array.isArray(IMPORTED_GAMEPOOL_ABI) && IMPORTED_GAMEPOOL_ABI.length) {
     console.warn("⚠️  Using ABI from local import (gamepool.abi).");
     return { abi: IMPORTED_GAMEPOOL_ABI, source: "imported" };
   }
-
-  console.warn("⚠️  Could not locate GamePool.json or imported ABI. Using minimal ABI.");
+  console.warn("⚠️  Using minimal fallback ABI (read-only).");
   return { abi: FALLBACK_MIN_ABI, source: "minimal" };
 }
 
 const { abi: poolAbi } = loadGamePoolAbi();
-const iface = new ethers.Interface(poolAbi);
+
+/* ────────────────────────────────────────────────────────────────────────────
+   SettlementCoordinator ABI (minimal)
+──────────────────────────────────────────────────────────────────────────── */
+const SETTLEMENT_COORDINATOR_ABI = [
+  "function markReady(address pool) external",
+  "function ready(address pool) view returns (bool)",
+  "function pending(address pool) view returns (bool)",
+  "function isKnownPool(address pool) view returns (bool)",
+];
 
 /* ────────────────────────────────────────────────────────────────────────────
    Small utils
 ──────────────────────────────────────────────────────────────────────────── */
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function limiter(concurrency: number) {
   let active = 0;
   const queue: Array<() => void> = [];
-  const next = () => { active--; if (queue.length) queue.shift()!(); };
+  const next = () => {
+    active--;
+    if (queue.length) queue.shift()!();
+  };
   return async function run<T>(fn: () => Promise<T>): Promise<T> {
-    if (active >= concurrency) await new Promise<void>(res => queue.push(res));
+    if (active >= concurrency) await new Promise<void>((res) => queue.push(res));
     active++;
-    try { return await fn(); }
-    finally { next(); }
+    try {
+      return await fn();
+    } finally {
+      next();
+    }
   };
 }
 
@@ -175,7 +172,10 @@ function addDaysISO(iso: string, days: number) {
 type GameMeta = {
   contractAddress: string;
   tsdbEventId?: number | string;
-  date?: string; time?: string; teamA?: string; teamB?: string;
+  date?: string;
+  time?: string;
+  teamA?: string;
+  teamB?: string;
 };
 
 function normalizeGameList(raw: any): GameMeta[] {
@@ -234,138 +234,21 @@ function loadGamesMeta(): GameMeta[] {
   const envList = (process.env.CONTRACTS || "").trim();
   if (envList) {
     const arr = envList.split(/[,\s]+/).filter(Boolean);
-    const filtered = arr.filter(a => {
-      try { return ethers.isAddress(a); } catch { return false; }
+    const filtered = arr.filter((a) => {
+      try {
+        return ethers.isAddress(a);
+      } catch {
+        return false;
+      }
     });
     if (filtered.length) {
       console.log(`Using CONTRACTS from env (${filtered.length})`);
-      return Array.from(new Set(filtered)).map(addr => ({ contractAddress: addr }));
+      return Array.from(new Set(filtered)).map((addr) => ({ contractAddress: addr }));
     }
   }
 
   console.warn("No contracts found in games.json or CONTRACTS env. Nothing to do.");
   return [];
-}
-
-function loadSourceCode(): string {
-  for (const p of SOURCE_CANDIDATES) {
-    try {
-      if (fs.existsSync(p)) {
-        const src = fs.readFileSync(p, "utf8");
-        if (src && src.trim().length > 0) {
-          console.log(`🧠 Loaded Functions source from: ${p}`);
-          return src;
-        }
-      }
-    } catch {}
-  }
-  throw new Error(`Could not find source.js. Tried:\n- ${SOURCE_CANDIDATES.join("\n- ")}`);
-}
-
-/* ────────────────────────────────────────────────────────────────────────────
-   DON pointer helpers (activeSecrets.json)
-──────────────────────────────────────────────────────────────────────────── */
-type Pointer = { donId: string; secretsVersion: number; uploadedAt?: string; expiresAt?: string };
-
-function readPointer(file = path.resolve(__dirname, "../activeSecrets.json")): Pointer | null {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
-}
-
-function pointerExpiringSoon(p?: Pointer, bufferMs = 60_000): boolean {
-  if (!p?.expiresAt) return false;
-  const t = Date.parse(p.expiresAt);
-  return Number.isFinite(t) && Date.now() >= (t - bufferMs);
-}
-
-async function loadActiveSecretsFromGithub(): Promise<{ secretsVersion: number; donId: string }> {
-  const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/activeSecrets.json?ref=${GITHUB_REF}`;
-  const headers: any = {
-    ...(GH_PAT ? { Authorization: `Bearer ${GH_PAT}` } : {}),
-    "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "blockpools-settlement-bot/1.0",
-    Accept: "application/vnd.github+json",
-  };
-  const res = await fetch(url, { headers } as any);
-  if (!res.ok) throw new Error(`activeSecrets.json HTTP ${res.status}`);
-  const data = await res.json();
-  const json = JSON.parse(Buffer.from(data.content, "base64").toString("utf8"));
-  return {
-    secretsVersion: Number(json.secretsVersion ?? json.version),
-    // 🔁 DEFAULT DON ID NOW ARBITRUM MAINNET
-    donId: json.donId || "fun-arbitrum-mainnet-1",
-  };
-}
-
-/**
- * Ensure we have a pointer. Default strategy is **reuse**:
- *  - local activeSecrets.json (preferred; written by upload-and-settle.sh step 1)
- *  - else GitHub activeSecrets.json
- *  - else env DON_SECRETS_VERSION + DON_ID
- * If strategy=upload, try uploader and gracefully fall back to reuse on native errors.
- */
-function ensureFreshPointer(): Pointer {
-  const strategy = (process.env.SECRETS_STRATEGY || "reuse").toLowerCase(); // default: reuse
-  const pointerPath = path.resolve(__dirname, "../activeSecrets.json");
-
-  const reuse = (): Pointer => {
-    const local = readPointer(pointerPath);
-    if (local?.donId && local?.secretsVersion) {
-      console.log("🔐 Loaded DON pointer from local");
-      console.log(`   secretsVersion = ${local.secretsVersion}`);
-      console.log(`   donId          = ${local.donId}`);
-      return local;
-    }
-    const envVersion = process.env.DON_SECRETS_VERSION ?? process.env.SECRETS_VERSION;
-    const envDonId = process.env.DON_ID;
-    if (envVersion && envDonId) {
-      const p = { secretsVersion: Number(envVersion), donId: String(envDonId) };
-      console.log("🔐 Loaded DON pointer from env");
-      console.log(`   secretsVersion = ${p.secretsVersion}`);
-      console.log(`   donId          = ${p.donId}`);
-      return p as any;
-    }
-    throw new Error("No activeSecrets.json locally and no env DON_SECRETS_VERSION/DON_ID set.");
-  };
-
-  if (strategy !== "upload") return reuse();
-
-  // upload path (try/catch → fallback to reuse on native addon errors)
-  const upload = (): Pointer => {
-    console.log("[SECRETS] Uploading DON-hosted secrets...");
-    let out: string;
-    try {
-      out = execFileSync("node", ["--enable-source-maps", "upload-secrets.js"], {
-        cwd: path.resolve(__dirname, ".."),
-        stdio: ["ignore", "pipe", "inherit"],
-        encoding: "utf8",
-      }).trim();
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      if (/bcrypto|native|loady/i.test(msg)) {
-        console.warn("[SECRETS] Native uploader path failed; reusing existing pointer instead.");
-        return reuse();
-      }
-      throw e;
-    }
-
-    let p: Pointer;
-    try { p = JSON.parse(out); }
-    catch { throw new Error(`[SECRETS] Uploader did not return valid JSON. Got: ${out.slice(0, 200)}...`); }
-
-    if (!p?.donId || !p?.secretsVersion) {
-      throw new Error("[SECRETS] Uploader JSON missing donId or secretsVersion.");
-    }
-
-    const tmp = `${pointerPath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(p, null, 2));
-    fs.renameSync(tmp, pointerPath);
-
-    console.log(`[SECRETS] Pointer refreshed donId=${p.donId} secretsVersion=${p.secretsVersion}`);
-    if (p.expiresAt) console.log(`[SECRETS] ExpiresAt=${p.expiresAt}`);
-    return p;
-  };
-
-  return upload();
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -411,7 +294,7 @@ const trimU = (s?: string) => String(s || "").trim().toUpperCase();
 
 function acronym(s: string): string {
   const parts = (s || "").split(/[^a-zA-Z0-9]+/).filter(Boolean);
-  return parts.map(p => (p[0] || "").toUpperCase()).join("");
+  return parts.map((p) => (p[0] || "").toUpperCase()).join("");
 }
 
 async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
@@ -434,9 +317,9 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
  */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leaguePaths: string[] } {
   const L = String(leagueLabel || "").trim().toLowerCase();
-  if (L === "nfl")  return { sportPath: "football",     leaguePaths: ["nfl-scores"] };
-  if (L === "nba")  return { sportPath: "bsktbl",       leaguePaths: ["nba-scores"] };
-  if (L === "nhl")  return { sportPath: "hockey",       leaguePaths: ["nhl-scores"] };
+  if (L === "nfl") return { sportPath: "football", leaguePaths: ["nfl-scores"] };
+  if (L === "nba") return { sportPath: "bsktbl", leaguePaths: ["nba-scores"] };
+  if (L === "nhl") return { sportPath: "hockey", leaguePaths: ["nhl-scores"] };
   if (L === "epl" || L === "premier league" || L === "england - premier league" || L === "england premier league")
     return { sportPath: "commentaries", leaguePaths: ["1204"] };
   if (L === "ucl" || L === "uefa champions league" || L === "champions league")
@@ -458,19 +341,24 @@ function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | und
   const md = String(dateStr).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
   if (!md) return;
   const [, dd, MM, yyyy] = md;
-  let h = 0, mi = 0;
+  let h = 0,
+    mi = 0;
 
   if (timeStr) {
     const ampm = String(timeStr).trim().toUpperCase();
     let mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
     if (mh) {
-      h = +mh[1]; mi = +mh[2];
+      h = +mh[1];
+      mi = +mh[2];
       const mer = mh[3];
       if (mer === "PM" && h < 12) h += 12;
       if (mer === "AM" && h === 12) h = 0;
     } else {
       mh = ampm.match(/^(\d{1,2}):(\d{2})$/);
-      if (mh) { h = +mh[1]; mi = +mh[2]; }
+      if (mh) {
+        h = +mh[1];
+        mi = +mh[2];
+      }
     }
   }
 
@@ -482,16 +370,8 @@ function kickoffEpochFromRaw(raw: any): number | undefined {
   const t1 = parseDatetimeUTC(raw?.datetime_utc || raw?.["@datetime_utc"]);
   if (t1) return t1;
 
-  const date =
-    raw?.formatted_date ||
-    raw?.date ||
-    raw?.["@formatted_date"] ||
-    raw?.["@date"];
-  const time =
-    raw?.time ||
-    raw?.start_time ||
-    raw?.start ||
-    raw?.["@time"];
+  const date = raw?.formatted_date || raw?.date || raw?.["@formatted_date"] || raw?.["@date"];
+  const time = raw?.time || raw?.start_time || raw?.start || raw?.["@time"];
 
   return parseDateAndTimeAsUTC(date, time);
 }
@@ -522,7 +402,7 @@ function collectCandidateGames(payload: any): any[] {
   if (Array.isArray(payload?.game)) return payload.game;
   if (Array.isArray(payload)) return payload;
   if (typeof payload === "object") {
-    const arrs = Object.values(payload).filter(v => Array.isArray(v)) as any[];
+    const arrs = Object.values(payload).filter((v) => Array.isArray(v)) as any[];
     if (arrs.length) return arrs.flat();
   }
   return [];
@@ -547,33 +427,26 @@ function normalizeGameRow(r: any) {
 
   const homeScore = Number(
     r?.hometeam?.totalscore ??
-    r?.home_score ??
-    r?.home_final ??
-    (r?.localteam && (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
-    0
+      r?.home_score ??
+      r?.home_final ??
+      (r?.localteam && (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
+      0
   );
 
   const awayScore = Number(
     r?.awayteam?.totalscore ??
-    r?.away_score ??
-    r?.away_final ??
-    (r?.visitorteam && (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
-    0
+      r?.away_score ??
+      r?.away_final ??
+      (r?.visitorteam && (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
+      0
   );
 
-  const status = String(
-    r?.status ||
-    r?.game_status ||
-    r?.state ||
-    r?.["@status"] ||
-    ""
-  ).trim();
+  const status = String(r?.status || r?.game_status || r?.state || r?.["@status"] || "").trim();
 
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
-// Strict to avoid "New York" vs "New Orleans" false positives.
-// Strict to avoid "New York" vs "New Orleans" false positives.
+// Strict matching to avoid false positives
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -581,28 +454,24 @@ function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string)
 
   if (!nApi) return false;
 
-  // 1) Strongest: exact normalized name
+  // 1) Exact normalized name
   if (nWant && nApi === nWant) return true;
 
-  // 2) Strong: code/acronym match (NYJ, NOS, etc.)
+  // 2) Code/acronym match (NYJ, etc.)
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
   if (code && apiAcr && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
-  // 3) Safe fallback: mascot (last meaningful token)
-  //    "new york jets" -> "jets", "new orleans saints" -> "saints"
+  // 3) Mascot match (last token)
   const apiParts = nApi.split(" ").filter(Boolean);
   const wantParts = nWant.split(" ").filter(Boolean);
-
   if (!apiParts.length || !wantParts.length) return false;
 
   const apiMascot = apiParts[apiParts.length - 1];
   const wantMascot = wantParts[wantParts.length - 1];
-
   if (apiMascot && wantMascot && apiMascot === wantMascot) return true;
 
-  // 4) Otherwise: NO fuzzy token-overlap (intentionally removed)
   return false;
 }
 
@@ -625,41 +494,41 @@ async function tryFetchGoalserve(league: string, lockTime: number) {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
   if (!sportPath || !leaguePaths.length) return { ok: false, reason: "unsupported league" };
 
-const d0 = epochToEtISO(lockTime);
-const d1 = addDaysISO(d0, 1);
-const dateIsos = [d0, d1];
+  const d0 = epochToEtISO(lockTime);
+  const d1 = addDaysISO(d0, 1);
+  const dateIsos = [d0, d1];
 
-const tried: string[] = [];
+  const tried: string[] = [];
 
-for (const iso of dateIsos) {
-  const [Y, M, D] = iso.split("-");
-  const ddmmyyyy = `${D}.${M}.${Y}`;
+  for (const iso of dateIsos) {
+    const [Y, M, D] = iso.split("-");
+    const ddmmyyyy = `${D}.${M}.${Y}`;
 
-  for (const lp of leaguePaths) {
-    const url =
-      `${GOALSERVE_BASE_URL.replace(/\/+$/, "")}/${encodeURIComponent(GOALSERVE_API_KEY)}` +
-      `/${sportPath}/${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
-    tried.push(url);
+    for (const lp of leaguePaths) {
+      const url =
+        `${GOALSERVE_BASE_URL.replace(/\/+$/, "")}/${encodeURIComponent(GOALSERVE_API_KEY)}` +
+        `/${sportPath}/${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
 
-try {
-  const payload = await fetchJsonWithRetry(url, 3, 500);
-  const rawGames = collectCandidateGames(payload);
-  if (!rawGames.length) continue;
+      tried.push(url);
 
-  const games = rawGames.map((r: any) => {
-    const g = normalizeGameRow(r);
-    return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
-  });
+      try {
+        const payload = await fetchJsonWithRetry(url, 3, 500);
+        const rawGames = collectCandidateGames(payload);
+        if (!rawGames.length) continue;
 
-  return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
-} catch (e: any) {
-  if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
-}
+        const games = rawGames.map((r: any) => {
+          const g = normalizeGameRow(r);
+          return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
+        });
 
+        return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
+      } catch (e: any) {
+        if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
+      }
+    }
   }
-}
 
-return { ok: false, reason: "no games", tried };
+  return { ok: false, reason: "no games", tried };
 }
 
 async function confirmFinalGoalserve(params: {
@@ -680,9 +549,7 @@ async function confirmFinalGoalserve(params: {
   const aCode = params.teamACode ?? "";
   const bCode = params.teamBCode ?? "";
 
-  const candidates = resp.games.filter((g: any) =>
-    unorderedTeamsMatchByTokens(g.homeName, g.awayName, aName, bName, aCode, bCode)
-  );
+  const candidates = resp.games.filter((g: any) => unorderedTeamsMatchByTokens(g.homeName, g.awayName, aName, bName, aCode, bCode));
 
   if (!candidates.length) {
     return { ok: false, reason: "no team match", debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried } : undefined };
@@ -702,12 +569,11 @@ async function confirmFinalGoalserve(params: {
 
   const match = candidates[0];
 
-  // 🔍 LOG: show how Goalserve mapped teams & scores for this pool
   console.log(
     `[GOALSERVE] ${params.league} | Team A: ${params.teamAName} (${params.teamACode || "-"}) ` +
-    `vs Team B: ${params.teamBName} (${params.teamBCode || "-"}) | ` +
-    `API Home: ${match.homeName} ${match.homeScore} | API Away: ${match.awayName} ${match.awayScore} | ` +
-    `status=${match.status || ""}`
+      `vs Team B: ${params.teamBName} (${params.teamBCode || "-"}) | ` +
+      `API Home: ${match.homeName} ${match.homeScore} | API Away: ${match.awayName} ${match.awayScore} | ` +
+      `status=${match.status || ""}`
   );
 
   const isFinal = isFinalStatus(match.status || "");
@@ -724,8 +590,6 @@ async function confirmFinalGoalserve(params: {
   const awayIsA = teamMatchesOneSide(match.awayName, aName, aCode);
   const awayIsB = teamMatchesOneSide(match.awayName, bName, bCode);
 
-  // Require a clean, unambiguous mapping:
-  // Either (home=A AND away=B) OR (home=B AND away=A). Anything else => skip as unsafe.
   const mapsHomeA_AwayB = homeIsA && awayIsB && !homeIsB && !awayIsA;
   const mapsHomeB_AwayA = homeIsB && awayIsA && !homeIsA && !awayIsB;
 
@@ -756,10 +620,8 @@ async function confirmFinalGoalserve(params: {
   if (match.homeScore === match.awayScore) {
     winner = "TIE";
   } else if (match.homeScore > match.awayScore) {
-    // Home team won
     winner = mapsHomeA_AwayB ? "A" : "B";
   } else {
-    // Away team won
     winner = mapsHomeA_AwayB ? "B" : "A";
   }
 
@@ -771,73 +633,44 @@ async function confirmFinalGoalserve(params: {
     ok: true,
     winner,
     winnerCode,
-    debug: GOALSERVE_DEBUG ? {
-      url: resp.url,
-      date: resp.dateTried,
-      picked: {
-        home: match.homeName,
-        away: match.awayName,
-        status: match.status,
-        homeScore: match.homeScore,
-        awayScore: match.awayScore,
-        kickoff: match.__kickoff,
-      },
-    } : undefined,
+    debug: GOALSERVE_DEBUG
+      ? {
+          url: resp.url,
+          date: resp.dateTried,
+          picked: {
+            home: match.homeName,
+            away: match.awayName,
+            status: match.status,
+            homeScore: match.homeScore,
+            awayScore: match.awayScore,
+            kickoff: match.__kickoff,
+          },
+        }
+      : undefined,
   };
-}
-
-/* ────────────────────────────────────────────────────────────────────────────
-   Error decoding helpers
-──────────────────────────────────────────────────────────────────────────── */
-const FUNCTIONS_ROUTER_ERRORS = [
-  "error EmptyArgs()",
-  "error EmptySource()",
-  "error InsufficientBalance()",
-  "error InvalidConsumer(address consumer)",
-  "error InvalidSubscription()",
-  "error SubscriptionIsPaused()",
-  "error OnlyRouterCanFulfill()",
-  "error RequestIsAlreadyPending()",
-  "error UnsupportedDON()",
-];
-const routerIface = new ethers.Interface(FUNCTIONS_ROUTER_ERRORS);
-
-function decodeRevert(data?: string) {
-  if (!data || typeof data !== "string" || !data.startsWith("0x") || data.length < 10) return "unknown";
-  try { return iface.parseError(data).name; } catch {}
-  try { return routerIface.parseError(data).name; } catch {}
-  try {
-    if (data.slice(0, 10) === "0x08c379a0") {
-const [msg] = ethers.AbiCoder.defaultAbiCoder().decode(["string"], "0x" + data.slice(10));
-      return `Error("${msg}")`;
-    }
-  } catch {}
-  return "unknown";
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
    MAIN
 ──────────────────────────────────────────────────────────────────────────── */
 async function main() {
-  console.log(`[BOT] settlement-bot starting @ ${new Date().toISOString()}`);
+  console.log(`[BOT] settlement-bot (markReady) starting @ ${new Date().toISOString()}`);
 
   if (!RPC_URL || !PRIVATE_KEY) throw new Error("Missing RPC_URL or PRIVATE_KEY");
-  if (!process.env.SUBSCRIPTION_ID) throw new Error("Missing SUBSCRIPTION_ID");
+  if (!SETTLEMENT_COORDINATOR_ADDRESS || !ethers.isAddress(SETTLEMENT_COORDINATOR_ADDRESS)) {
+    throw new Error("Missing/invalid SETTLEMENT_COORDINATOR_ADDRESS env var (expected 0x...)");
+  }
 
   console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
-  console.log(`[CFG] SUBSCRIPTION_ID=${process.env.SUBSCRIPTION_ID}`);
-  console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s`);
+  console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s REQUEST_GAP_SECONDS=${REQUEST_GAP_SECONDS}s`);
+  console.log(`[CFG] SettlementCoordinator=${SETTLEMENT_COORDINATOR_ADDRESS}`);
   console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL + UCL)`);
 
-const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 
-  // === REUSE FIRST: read pointer written by step [1/3] in your shell script ===
-  const pointer = ensureFreshPointer();
-  const donHostedSecretsVersion = BigInt(pointer.secretsVersion);
-const donBytes = ethers.encodeBytes32String(pointer.donId);
+  const coordinator = new ethers.Contract(SETTLEMENT_COORDINATOR_ADDRESS, SETTLEMENT_COORDINATOR_ABI, wallet);
 
-  const SOURCE = loadSourceCode();
   const gamesMeta = loadGamesMeta();
   if (!gamesMeta.length) {
     console.log("No games to process.");
@@ -849,11 +682,16 @@ const donBytes = ethers.encodeBytes32String(pointer.donId);
   const botAddr = (await wallet.getAddress()).toLowerCase();
 
   type PoolState = {
-    addr: string; league: string;
-    teamAName: string; teamBName: string;
-    teamACode: string; teamBCode: string;
-    isLocked: boolean; requestSent: boolean; winningTeam: number;
-    lockTime: number; isOwner: boolean;
+    addr: string;
+    league: string;
+    teamAName: string;
+    teamBName: string;
+    teamACode: string;
+    teamBCode: string;
+    isLocked: boolean;
+    winningTeam: number;
+    lockTime: number;
+    isOwner: boolean;
   };
 
   const states: PoolState[] = [];
@@ -861,23 +699,27 @@ const donBytes = ethers.encodeBytes32String(pointer.donId);
   await Promise.all(
     gamesMeta.map(({ contractAddress }) =>
       readLimit(async () => {
-        const addr = contractAddress;
+        const addr = String(contractAddress || "").trim();
+        if (!ethers.isAddress(addr)) return;
+
         const pool = new ethers.Contract(addr, poolAbi, wallet);
 
         let onchainOwner = "(read failed)";
-        try { onchainOwner = await pool.owner(); } catch {}
-        const isOwner = onchainOwner !== "(read failed)" && onchainOwner.toLowerCase() === botAddr;
+        try {
+          onchainOwner = await pool.owner();
+        } catch {}
+
+        const isOwner = onchainOwner !== "(read failed)" && String(onchainOwner).toLowerCase() === botAddr;
         if (!isOwner) return;
 
         try {
-          const [lg, ta, tb, tca, tcb, locked, req, win, lt] = await Promise.all([
+          const [lg, ta, tb, tca, tcb, locked, win, lt] = await Promise.all([
             pool.league(),
             pool.teamAName(),
             pool.teamBName(),
             pool.teamACode(),
             pool.teamBCode(),
             pool.isLocked(),
-            pool.requestSent(),
             pool.winningTeam().then(Number),
             pool.lockTime().then(Number),
           ]);
@@ -890,7 +732,6 @@ const donBytes = ethers.encodeBytes32String(pointer.donId);
             teamACode: String(tca || ""),
             teamBCode: String(tcb || ""),
             isLocked: Boolean(locked),
-            requestSent: Boolean(req),
             winningTeam: Number(win),
             lockTime: Number(lt),
             isOwner,
@@ -904,14 +745,16 @@ const donBytes = ethers.encodeBytes32String(pointer.donId);
 
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const gated = states.filter(
-    s => s.isOwner && s.isLocked && !s.requestSent && s.winningTeam === 0
-  );
+  // Eligible on-chain state (unresolved, locked)
+  const gated = states.filter((s) => s.isOwner && s.isLocked && s.winningTeam === 0);
 
-  const timeGated = gated.filter(s =>
-    (s.lockTime === 0 || nowSec >= s.lockTime + REQUEST_GAP_SECONDS) &&
-    (s.lockTime === 0 || nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED)
-  );
+  // Time gating to avoid early checks
+  const timeGated = gated.filter((s) => {
+    if (!s.lockTime) return true;
+    const afterGap = nowSec >= s.lockTime + REQUEST_GAP_SECONDS;
+    const afterMin = nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED;
+    return afterGap && afterMin;
+  });
 
   if (!timeGated.length) {
     console.log("No eligible pools after time gates. Submitted 0 transaction(s).");
@@ -923,9 +766,16 @@ const donBytes = ethers.encodeBytes32String(pointer.donId);
     return;
   }
 
+  // Off-chain FINAL confirmation
   const finalEligible: PoolState[] = [];
 
   for (const s of timeGated) {
+    if (!REQUIRE_FINAL_CHECK) {
+      // If you disable final check, treat as eligible (not recommended for production)
+      finalEligible.push(s);
+      continue;
+    }
+
     const pre = await confirmFinalGoalserve({
       league: s.league,
       lockTime: s.lockTime,
@@ -936,9 +786,7 @@ const donBytes = ethers.encodeBytes32String(pointer.donId);
     });
 
     if (pre.ok) {
-      console.log(
-        `[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${pre.winner} (${pre.winnerCode})`
-      );
+      console.log(`[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${pre.winner} (${pre.winnerCode})`);
       finalEligible.push(s);
     } else if (pre.reason === "not final") {
       console.log(`[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`);
@@ -952,99 +800,64 @@ const donBytes = ethers.encodeBytes32String(pointer.donId);
     return;
   }
 
-  console.log(`✅ Provider confirmed FINAL for ${finalEligible.length} pool(s). Proceeding.`);
-
-  // Refresh pointer JUST by reuse (local→GitHub), no internal upload
-  let pointer2: Pointer | null = readPointer(path.resolve(__dirname, "../activeSecrets.json"));
-  if (!pointer2) {
-    try {
-      const gh = await loadActiveSecretsFromGithub();
-      pointer2 = { donId: gh.donId, secretsVersion: gh.secretsVersion };
-    } catch {
-      pointer2 = pointer; // fall back to initial pointer
-    }
-  }
-  const donHostedSecretsVersion2 = BigInt(pointer2.secretsVersion);
-const donBytes2 = ethers.encodeBytes32String(pointer2.donId);
-  const buildArgs8 = (s: PoolState): string[] => {
-    const d0 = epochToEtISO(s.lockTime);
-    const d1 = addDaysISO(d0, 1);
-    return [
-      s.league,
-      d0,
-      d1,
-      s.teamACode.toUpperCase(),
-      s.teamBCode.toUpperCase(),
-      s.teamAName,
-      s.teamBName,
-      String(s.lockTime),
-    ];
-  };
+  console.log(`✅ Provider confirmed FINAL for ${finalEligible.length} pool(s). Proceeding to markReady.`);
 
   let submitted = 0;
 
   for (const s of finalEligible) {
     if (submitted >= MAX_TX_PER_RUN) break;
 
-    const pool = new ethers.Contract(s.addr, poolAbi, wallet);
-    const args = buildArgs8(s);
+    // Safety: only markReady for pools the coordinator knows about
+    // (prevents wasting gas if you forgot to register a pool).
+    let known = false;
+    let alreadyReady = false;
+    let alreadyPending = false;
 
-try {
-  await pool.sendRequest.staticCall(
-    SOURCE,
-    args,
-    SUBSCRIPTION_ID,
-    FUNCTIONS_GAS_LIMIT,
-    DON_SECRETS_SLOT,
-    donHostedSecretsVersion2,
-    donBytes2
-  );
-} catch (e: any) {
-  const data =
-    e?.data ??
-    e?.error?.data ??
-    e?.info?.error?.data ??
-    e?.receipt?.revertReason;
-
-  const decoded = decodeRevert(data);
-  const selector = typeof data === "string" ? data.slice(0, 10) : "n/a";
-
-  console.error(
-    `[SIM ERR] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) => ${decoded} selector=${selector}`
-  );
-
-  // optional: log the raw message ethers v6 provides
-  if (e?.shortMessage) console.error(`         shortMessage=${e.shortMessage}`);
-  if (e?.reason) console.error(`         reason=${e.reason}`);
-
-  continue;
-}
-
-if (!DRY_RUN) {
-  await sendLimit(async () => {
     try {
-      if (REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
-      const tx = await pool.sendRequest(
-        SOURCE,
-        args,
-        SUBSCRIPTION_ID,
-        FUNCTIONS_GAS_LIMIT,
-        DON_SECRETS_SLOT,
-        donHostedSecretsVersion2,
-        donBytes2
-      );
-      console.log(`[TX] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) :: ${tx.hash}`);
-      submitted++;
+      [known, alreadyReady, alreadyPending] = await Promise.all([
+        coordinator.isKnownPool(s.addr),
+        coordinator.ready(s.addr),
+        coordinator.pending(s.addr),
+      ]);
     } catch (e: any) {
-      const data = e?.data ?? e?.error?.data;
-      console.error(`[ERR] sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}):`, e?.reason || e?.message || e);
-      if (data?.slice) console.error(` selector = ${data.slice(0, 10)} (${decodeRevert(data)})`);
+      console.log(`[warn] coordinator reads failed for ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}). Skipping.`);
+      continue;
     }
-  });
-}
- else {
-      console.log(`[DRY_RUN] Would sendRequest ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+
+    if (!known) {
+      console.log(`[skip] not registered in SettlementCoordinator: ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+      continue;
     }
+
+    if (alreadyPending) {
+      console.log(`[ok]  already pending: ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+      continue;
+    }
+
+    if (alreadyReady) {
+      console.log(`[ok]  already ready:   ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+      continue;
+    }
+
+    if (DRY_RUN) {
+      console.log(`[DRY_RUN] Would markReady ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+      submitted++;
+      continue;
+    }
+
+    await sendLimit(async () => {
+      try {
+        if (REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
+
+        const tx = await coordinator.markReady(s.addr);
+        console.log(`[TX] markReady ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) :: ${tx.hash}`);
+        const r = await tx.wait(1);
+        if (r.status !== 1) throw new Error("markReady tx failed");
+        submitted++;
+      } catch (e: any) {
+        console.error(`[ERR] markReady ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}):`, e?.reason || e?.message || e);
+      }
+    });
   }
 
   console.log(`Submitted ${submitted} transaction(s).`);

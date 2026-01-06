@@ -5,26 +5,21 @@ const router = Router();
 
 function requireAdminKey(req: Request) {
   const expected = process.env.ADMIN_API_KEY;
-  if (!expected) {
-    throw new Error("ADMIN_API_KEY is not set in environment");
-  }
+  if (!expected) throw new Error("ADMIN_API_KEY is not set in environment");
   const got = req.header("x-admin-key");
   return got && got === expected;
 }
 
-// Prefer camelCase, but allow snake_case fallbacks
+// Prefer camelCase, but allow snake_case fallbacks.
+// Returns null if missing (so DB can store null).
 function pick(b: any, camel: string, snake: string) {
   const v = b?.[camel];
-  if (v !== undefined && v !== null) return v;
+  if (v !== undefined && v !== null && v !== "") return v;
   const s = b?.[snake];
-  if (s !== undefined && s !== null) return s;
+  if (s !== undefined && s !== null && s !== "") return s;
   return null;
 }
 
-/**
- * POST /api/admin/sweeps
- * Body: sweep report payload from the hardhat sweeper script
- */
 router.post("/sweeps", async (req: Request, res: Response) => {
   try {
     if (!requireAdminKey(req)) {
@@ -43,6 +38,20 @@ router.post("/sweeps", async (req: Request, res: Response) => {
         error: "Missing/invalid required fields: chainId, contractAddress, txHash",
       });
     }
+
+    // Helpful one-line debug for the new fields
+    // (shows you immediately if the payload contains them)
+    console.log("[admin/sweeps] incoming", {
+      chainId,
+      contractAddress,
+      txHash: txHash.slice(0, 10) + "...",
+      bettorsA: pick(b, "numBettorsTeamA", "bettors_team_a"),
+      bettorsB: pick(b, "numBettorsTeamB", "bettors_team_b"),
+      lockA: pick(b, "lockPriceTeamA_bps", "lock_price_team_a_bps"),
+      lockB: pick(b, "lockPriceTeamB_bps", "lock_price_team_b_bps"),
+      avgA: pick(b, "avgPriceTeamA_bps", "avg_price_team_a_bps"),
+      avgB: pick(b, "avgPriceTeamB_bps", "avg_price_team_b_bps"),
+    });
 
     const q = `
       insert into public.sweeps (
@@ -76,7 +85,6 @@ router.post("/sweeps", async (req: Request, res: Response) => {
 
         gas_used, effective_gas_price, gas_cost_native,
 
-        -- NEW: bettors + prices at lock / avg prices
         bettors_team_a, bettors_team_b,
         lock_price_team_a_bps, lock_price_team_b_bps,
         avg_price_team_a_bps, avg_price_team_b_bps,
@@ -121,7 +129,65 @@ router.post("/sweeps", async (req: Request, res: Response) => {
         $50
       )
       on conflict (chain_id, contract_address, tx_hash)
-      do nothing
+      do update set
+        locked_at = excluded.locked_at,
+        winning_team = excluded.winning_team,
+
+        contract_usdc_before = excluded.contract_usdc_before,
+        contract_usdc_after = excluded.contract_usdc_after,
+        treasury_usdc_before = excluded.treasury_usdc_before,
+        treasury_usdc_after = excluded.treasury_usdc_after,
+
+        amount_swept = excluded.amount_swept,
+        pool_balance_before = excluded.pool_balance_before,
+        pool_balance_after = excluded.pool_balance_after,
+        liability_before = excluded.liability_before,
+        liability_after = excluded.liability_after,
+        expected_excess_before = excluded.expected_excess_before,
+
+        stake_team_a_before = excluded.stake_team_a_before,
+        stake_team_b_before = excluded.stake_team_b_before,
+        total_shares_team_a_before = excluded.total_shares_team_a_before,
+        total_shares_team_b_before = excluded.total_shares_team_b_before,
+        stake_team_a_after = excluded.stake_team_a_after,
+        stake_team_b_after = excluded.stake_team_b_after,
+        total_shares_team_a_after = excluded.total_shares_team_a_after,
+        total_shares_team_b_after = excluded.total_shares_team_b_after,
+
+        total_volume_team_a_gross = excluded.total_volume_team_a_gross,
+        total_volume_team_b_gross = excluded.total_volume_team_b_gross,
+        total_fees_1pct = excluded.total_fees_1pct,
+
+        lp_funded_total = excluded.lp_funded_total,
+        lp_funded_count = excluded.lp_funded_count,
+        lp_balance_before = excluded.lp_balance_before,
+        lp_balance_after = excluded.lp_balance_after,
+
+        withdraw_count = excluded.withdraw_count,
+        withdraw_original_stake_total = excluded.withdraw_original_stake_total,
+        withdraw_net_payout_total = excluded.withdraw_net_payout_total,
+        withdraw_fees_total = excluded.withdraw_fees_total,
+
+        virtual_liquidity = excluded.virtual_liquidity,
+        max_bet_per_tx = excluded.max_bet_per_tx,
+
+        league = excluded.league,
+        team_a_code = excluded.team_a_code,
+        team_b_code = excluded.team_b_code,
+        game_id = excluded.game_id,
+
+        gas_used = excluded.gas_used,
+        effective_gas_price = excluded.effective_gas_price,
+        gas_cost_native = excluded.gas_cost_native,
+
+        bettors_team_a = excluded.bettors_team_a,
+        bettors_team_b = excluded.bettors_team_b,
+        lock_price_team_a_bps = excluded.lock_price_team_a_bps,
+        lock_price_team_b_bps = excluded.lock_price_team_b_bps,
+        avg_price_team_a_bps = excluded.avg_price_team_a_bps,
+        avg_price_team_b_bps = excluded.avg_price_team_b_bps,
+
+        swept_at = excluded.swept_at
       returning id
     `;
 
@@ -130,17 +196,14 @@ router.post("/sweeps", async (req: Request, res: Response) => {
       contractAddress,
       txHash,
 
-      // locked_at, winning_team
       pick(b, "lockedAt", "locked_at"),
       pick(b, "winningTeam", "winning_team"),
 
-      // balances
       pick(b, "contractUSDCBefore", "contract_usdc_before"),
       pick(b, "contractUSDCAfter", "contract_usdc_after"),
       pick(b, "treasuryUSDCBefore", "treasury_usdc_before"),
       pick(b, "treasuryUSDCAfter", "treasury_usdc_after"),
 
-      // core sweep economics
       pick(b, "amountSwept", "amount_swept"),
       pick(b, "poolBalanceBefore", "pool_balance_before"),
       pick(b, "poolBalanceAfter", "pool_balance_after"),
@@ -148,7 +211,6 @@ router.post("/sweeps", async (req: Request, res: Response) => {
       pick(b, "liabilityAfter", "liability_after"),
       pick(b, "expectedExcessBefore", "expected_excess_before"),
 
-      // side snapshots
       pick(b, "stakeTeamA_before", "stake_team_a_before"),
       pick(b, "stakeTeamB_before", "stake_team_b_before"),
       pick(b, "totalSharesTeamA_before", "total_shares_team_a_before"),
@@ -158,40 +220,33 @@ router.post("/sweeps", async (req: Request, res: Response) => {
       pick(b, "totalSharesTeamA_after", "total_shares_team_a_after"),
       pick(b, "totalSharesTeamB_after", "total_shares_team_b_after"),
 
-      // volumes + fees
       pick(b, "totalVolumeTeamA_gross", "total_volume_team_a_gross"),
       pick(b, "totalVolumeTeamB_gross", "total_volume_team_b_gross"),
       pick(b, "totalFees_1pct", "total_fees_1pct"),
 
-      // LP
       pick(b, "lpFundedTotal", "lp_funded_total"),
       pick(b, "lpFundedCount", "lp_funded_count"),
       pick(b, "lpBalanceBefore", "lp_balance_before"),
       pick(b, "lpBalanceAfter", "lp_balance_after"),
 
-      // withdraw analytics
       pick(b, "withdrawCount", "withdraw_count"),
       pick(b, "withdrawOriginalStakeTotal", "withdraw_original_stake_total"),
       pick(b, "withdrawNetPayoutTotal", "withdraw_net_payout_total"),
       pick(b, "withdrawFeesTotal", "withdraw_fees_total"),
 
-      // params / metadata
       pick(b, "virtualLiquidity", "virtual_liquidity"),
       pick(b, "maxBetPerTx", "max_bet_per_tx"),
 
-      // game metadata
       pick(b, "league", "league"),
       pick(b, "teamACode", "team_a_code"),
       pick(b, "teamBCode", "team_b_code"),
       pick(b, "gameId", "game_id"),
 
-      // gas
       pick(b, "gasUsed", "gas_used"),
       pick(b, "effectiveGasPrice", "effective_gas_price"),
       pick(b, "gasCostNative", "gas_cost_native"),
 
-      // NEW: bettors + prices
-      // Prefer snake_case (matches DB), but accept camelCase too
+      // New metrics
       pick(b, "numBettorsTeamA", "bettors_team_a"),
       pick(b, "numBettorsTeamB", "bettors_team_b"),
       pick(b, "lockPriceTeamA_bps", "lock_price_team_a_bps"),
@@ -199,13 +254,10 @@ router.post("/sweeps", async (req: Request, res: Response) => {
       pick(b, "avgPriceTeamA_bps", "avg_price_team_a_bps"),
       pick(b, "avgPriceTeamB_bps", "avg_price_team_b_bps"),
 
-      // swept_at
       b.sweptAt ? new Date(b.sweptAt) : new Date(),
     ];
 
     const result = await pool.query(q, values);
-
-    // If conflict "do nothing", no row returned. Still treat as OK/idempotent.
     const insertedId = result.rows?.[0]?.id ?? null;
 
     return res.status(200).json({ ok: true, id: insertedId });
