@@ -1,11 +1,16 @@
 // bots/settlement-bot.ts
 // @ts-nocheck
 //
-// REVISED: "Watcher → markReady" mode
+// "Watcher → markReady" mode (hardened):
 // - Off-chain Goalserve check decides when a game is FINAL.
 // - On-chain action is ONLY: SettlementCoordinator.markReady(pool)
 // - Chainlink Automation (on SettlementCoordinator) then sends the Functions request.
-// - This prevents premature + repeated on-chain Functions requests across many games.
+//
+// HARDENING GOALS:
+// - lockTime is treated as the game-start anchor (proxy).
+// - NEVER match a previously played game: do not select a candidate whose kickoff < lockTime.
+// - Prefer returning "not final"/errors over picking the wrong historical game.
+// - Avoid premature markReady if REQUIRE_FINAL_CHECK is disabled accidentally.
 //
 // Required env:
 //   RPC_URL
@@ -16,6 +21,7 @@
 // Optional env:
 //   DRY_RUN=1
 //   REQUIRE_FINAL_CHECK=1|0 (default true)
+//   ALLOW_UNSAFE_NO_FINAL_CHECK=1|0 (default false)  <-- must be true to allow REQUIRE_FINAL_CHECK=false mode
 //   POSTGAME_MIN_ELAPSED=600
 //   REQUEST_GAP_SECONDS=120
 //   READ_CONCURRENCY=25
@@ -24,14 +30,16 @@
 //   REQUEST_DELAY_MS=0
 //   GAMES_PATH=... (optional override)
 //   CONTRACTS="0x...,0x..." (fallback if no games.json)
-//
-// Notes:
-// - We DO NOT call GamePool.sendRequest anymore.
-// - We DO NOT need SUBSCRIPTION_ID / secrets pointer / Functions source in this bot.
-// - We still require that the bot wallet is the GamePool owner (same as your prior safety gate).
+//   KICKOFF_MIN_TOLERANCE_SECONDS=0  (default 0; allows kickoff >= lockTime - tolerance)
+//   KICKOFF_MAX_LOOKAHEAD_SECONDS=172800 (default 48h; ignore kickoff absurdly far after lockTime)
+//   REQUIRE_KICKOFF_FOR_MATCH=true (default true; safest)
+//   FINAL_DEBOUNCE_SECONDS=300 (default 300; require final to be observed for at least this long across runs)
+//   FINAL_CACHE_PATH=/opt/blockpools/.final-cache.json
 //
 
-try { require("dotenv").config(); } catch {}
+try {
+  require("dotenv").config();
+} catch {}
 
 import fs from "fs";
 import path from "path";
@@ -60,8 +68,15 @@ const PRIVATE_KEY = process.env.PRIVATE_KEY!;
 const SETTLEMENT_COORDINATOR_ADDRESS = (process.env.SETTLEMENT_COORDINATOR_ADDRESS || "").trim();
 
 const DRY_RUN = /^(1|true)$/i.test(String(process.env.DRY_RUN || ""));
+
 const REQUIRE_FINAL_CHECK =
-  process.env.REQUIRE_FINAL_CHECK == null ? true : /^(1|true)$/i.test(String(process.env.REQUIRE_FINAL_CHECK || ""));
+  process.env.REQUIRE_FINAL_CHECK == null
+    ? true
+    : /^(1|true)$/i.test(String(process.env.REQUIRE_FINAL_CHECK || ""));
+
+const ALLOW_UNSAFE_NO_FINAL_CHECK = /^(1|true)$/i.test(
+  String(process.env.ALLOW_UNSAFE_NO_FINAL_CHECK || "")
+);
 
 const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
@@ -70,6 +85,18 @@ const READ_CONCURRENCY = Number(process.env.READ_CONCURRENCY || 25);
 const TX_SEND_CONCURRENCY = Number(process.env.TX_SEND_CONCURRENCY || 3);
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 20);
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0);
+
+// Kickoff constraints (NO BACKWARD LOOK)
+const KICKOFF_MIN_TOLERANCE_SECONDS = Number(process.env.KICKOFF_MIN_TOLERANCE_SECONDS || 0);
+const KICKOFF_MAX_LOOKAHEAD_SECONDS = Number(process.env.KICKOFF_MAX_LOOKAHEAD_SECONDS || 48 * 3600);
+const REQUIRE_KICKOFF_FOR_MATCH =
+  process.env.REQUIRE_KICKOFF_FOR_MATCH == null
+    ? true
+    : /^(1|true)$/i.test(String(process.env.REQUIRE_KICKOFF_FOR_MATCH || ""));
+
+// Debounce final across runs
+const FINAL_DEBOUNCE_SECONDS = Number(process.env.FINAL_DEBOUNCE_SECONDS || 300);
+const FINAL_CACHE_PATH = process.env.FINAL_CACHE_PATH || "/opt/blockpools/.final-cache.json";
 
 // Goalserve
 const GOALSERVE_API_KEY = process.env.GOALSERVE_API_KEY || "";
@@ -101,8 +128,7 @@ const FALLBACK_MIN_ABI = [
   { inputs: [], name: "owner", outputs: [{ type: "address" }], stateMutability: "view", type: "function" },
 ] as const;
 
-function loadGamePoolAbi(): { abi: any; source: "artifact" | "imported" | "minimal" } {
-  // In this watcher mode we only need reads; prefer imported ABI if provided.
+function loadGamePoolAbi(): { abi: any; source: "imported" | "minimal" } {
   if (IMPORTED_GAMEPOOL_ABI && Array.isArray(IMPORTED_GAMEPOOL_ABI) && IMPORTED_GAMEPOOL_ABI.length) {
     console.warn("⚠️  Using ABI from local import (gamepool.abi).");
     return { abi: IMPORTED_GAMEPOOL_ABI, source: "imported" };
@@ -164,6 +190,29 @@ function addDaysISO(iso: string, days: number) {
   const dt = new Date(Date.UTC(y, m - 1, d));
   dt.setUTCDate(dt.getUTCDate() + days);
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   FINAL debounce cache
+──────────────────────────────────────────────────────────────────────────── */
+type FinalCache = Record<string, { firstSeen: number; lastSeen: number }>;
+
+function loadFinalCache(): FinalCache {
+  try {
+    return JSON.parse(fs.readFileSync(FINAL_CACHE_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveFinalCache(c: FinalCache) {
+  try {
+    fs.writeFileSync(FINAL_CACHE_PATH, JSON.stringify(c, null, 2));
+  } catch {}
+}
+
+function cacheKeyForPool(addr: string) {
+  return String(addr || "").toLowerCase();
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -379,6 +428,7 @@ function kickoffEpochFromRaw(raw: any): number | undefined {
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
   if (Array.isArray(payload?.games?.game)) return payload.games.game;
+
   const cat = payload?.scores?.category;
   if (cat) {
     const cats = Array.isArray(cat) ? cat : [cat];
@@ -389,6 +439,7 @@ function collectCandidateGames(payload: any): any[] {
     });
     if (matches.length) return matches;
   }
+
   const comm = payload?.commentaries?.tournament;
   if (comm) {
     const ts = Array.isArray(comm) ? comm : [comm];
@@ -399,12 +450,15 @@ function collectCandidateGames(payload: any): any[] {
     });
     if (matches.length) return matches;
   }
+
   if (Array.isArray(payload?.game)) return payload.game;
   if (Array.isArray(payload)) return payload;
+
   if (typeof payload === "object") {
     const arrs = Object.values(payload).filter((v) => Array.isArray(v)) as any[];
     if (arrs.length) return arrs.flat();
   }
+
   return [];
 }
 
@@ -457,7 +511,7 @@ function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string)
   // 1) Exact normalized name
   if (nWant && nApi === nWant) return true;
 
-  // 2) Code/acronym match (NYJ, etc.)
+  // 2) Code/acronym match
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
   if (code && apiAcr && apiAcr === code) return true;
@@ -490,45 +544,43 @@ function unorderedTeamsMatchByTokens(
   return (hA && aB) || (hB && aA);
 }
 
-async function tryFetchGoalserve(league: string, lockTime: number) {
+// Build candidate URL list for lockTime day ET and the next day ET
+function buildGoalserveUrlsForLockTime(league: string, lockTime: number): string[] {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
-  if (!sportPath || !leaguePaths.length) return { ok: false, reason: "unsupported league" };
+  if (!sportPath || !leaguePaths.length) return [];
 
   const d0 = epochToEtISO(lockTime);
   const d1 = addDaysISO(d0, 1);
   const dateIsos = [d0, d1];
 
-  const tried: string[] = [];
-
+  const urls: string[] = [];
   for (const iso of dateIsos) {
     const [Y, M, D] = iso.split("-");
     const ddmmyyyy = `${D}.${M}.${Y}`;
-
     for (const lp of leaguePaths) {
       const url =
         `${GOALSERVE_BASE_URL.replace(/\/+$/, "")}/${encodeURIComponent(GOALSERVE_API_KEY)}` +
         `/${sportPath}/${lp}?date=${encodeURIComponent(ddmmyyyy)}&json=1`;
-
-      tried.push(url);
-
-      try {
-        const payload = await fetchJsonWithRetry(url, 3, 500);
-        const rawGames = collectCandidateGames(payload);
-        if (!rawGames.length) continue;
-
-        const games = rawGames.map((r: any) => {
-          const g = normalizeGameRow(r);
-          return { ...g, __kickoff: kickoffEpochFromRaw(r), __raw: r };
-        });
-
-        return { ok: true, dateTried: ddmmyyyy, path: lp, games, url };
-      } catch (e: any) {
-        if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
-      }
+      urls.push(url);
     }
   }
+  return urls;
+}
 
-  return { ok: false, reason: "no games", tried };
+type FinalCheckResult = {
+  ok: boolean;
+  winner?: "A" | "B" | "TIE";
+  winnerCode?: string;
+  reason?: string;
+  debug?: any;
+};
+
+// CRITICAL: never look backward. Only accept kickoff >= lockTime - tolerance.
+function kickoffIsAcceptable(kickoff: number | undefined, lockTime: number): boolean {
+  if (kickoff == null) return !REQUIRE_KICKOFF_FOR_MATCH;
+  const minOk = lockTime - Math.max(0, KICKOFF_MIN_TOLERANCE_SECONDS);
+  const maxOk = lockTime + Math.max(0, KICKOFF_MAX_LOOKAHEAD_SECONDS);
+  return kickoff >= minOk && kickoff <= maxOk;
 }
 
 async function confirmFinalGoalserve(params: {
@@ -538,57 +590,124 @@ async function confirmFinalGoalserve(params: {
   teamBName: string;
   teamACode?: string;
   teamBCode?: string;
-}): Promise<{ ok: boolean; winner?: "A" | "B" | "TIE"; winnerCode?: string; reason?: string; debug?: any }> {
+}): Promise<FinalCheckResult> {
   if (!GOALSERVE_API_KEY) return { ok: false, reason: "missing GOALSERVE_API_KEY" };
-
-  const resp = await tryFetchGoalserve(params.league, params.lockTime);
-  if (!resp.ok) return { ok: false, reason: resp.reason || "no games" };
 
   const aName = params.teamAName;
   const bName = params.teamBName;
   const aCode = params.teamACode ?? "";
   const bCode = params.teamBCode ?? "";
 
-  const candidates = resp.games.filter((g: any) => unorderedTeamsMatchByTokens(g.homeName, g.awayName, aName, bName, aCode, bCode));
+  const urls = buildGoalserveUrlsForLockTime(params.league, params.lockTime);
+  if (!urls.length) return { ok: false, reason: "unsupported league" };
 
-  if (!candidates.length) {
-    return { ok: false, reason: "no team match", debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried } : undefined };
+  let bestMatch: any = null;
+  let bestUrl: string | null = null;
+
+  // Try all relevant urls; only accept candidates matching teams AND kickoff constraint
+  for (const url of urls) {
+    try {
+      const payload = await fetchJsonWithRetry(url, 3, 500);
+      const rawGames = collectCandidateGames(payload);
+      if (!rawGames.length) continue;
+
+      const rows = rawGames.map((r: any) => {
+        const g = normalizeGameRow(r);
+        const kickoff = kickoffEpochFromRaw(r);
+        return { ...g, __kickoff: kickoff, __raw: r };
+      });
+
+      // Team match
+      const teamMatches = rows.filter((g: any) =>
+        unorderedTeamsMatchByTokens(g.homeName, g.awayName, aName, bName, aCode, bCode)
+      );
+      if (!teamMatches.length) continue;
+
+      // Kickoff constraint (NO BACKWARD LOOK)
+      const kickoffFiltered = teamMatches.filter((g: any) => kickoffIsAcceptable(g.__kickoff, params.lockTime));
+      if (!kickoffFiltered.length) {
+        if (GOALSERVE_DEBUG) {
+          console.log(
+            `[DBG] Found team matches but all failed kickoff window (lockTime=${params.lockTime}) at ${url}`
+          );
+        }
+        continue;
+      }
+
+      // Prefer FINAL first, then closest kickoff to lockTime
+      kickoffFiltered.sort((g1: any, g2: any) => {
+        const f1 = isFinalStatus(g1.status || "") ? 1 : 0;
+        const f2 = isFinalStatus(g2.status || "") ? 1 : 0;
+        if (f1 !== f2) return f2 - f1;
+
+        const t1 = g1.__kickoff ?? Number.MAX_SAFE_INTEGER;
+        const t2 = g2.__kickoff ?? Number.MAX_SAFE_INTEGER;
+        const d1 = Math.abs(t1 - params.lockTime);
+        const d2 = Math.abs(t2 - params.lockTime);
+        return d1 - d2;
+      });
+
+      const candidate = kickoffFiltered[0];
+
+      // Keep the best candidate across urls using the same ordering
+      if (!bestMatch) {
+        bestMatch = candidate;
+        bestUrl = url;
+      } else {
+        const candIsFinal = isFinalStatus(candidate.status || "") ? 1 : 0;
+        const bestIsFinal = isFinalStatus(bestMatch.status || "") ? 1 : 0;
+
+        if (candIsFinal !== bestIsFinal) {
+          if (candIsFinal > bestIsFinal) {
+            bestMatch = candidate;
+            bestUrl = url;
+          }
+        } else {
+          const ct = candidate.__kickoff ?? Number.MAX_SAFE_INTEGER;
+          const bt = bestMatch.__kickoff ?? Number.MAX_SAFE_INTEGER;
+          const cd = Math.abs(ct - params.lockTime);
+          const bd = Math.abs(bt - params.lockTime);
+          if (cd < bd) {
+            bestMatch = candidate;
+            bestUrl = url;
+          }
+        }
+      }
+    } catch (e: any) {
+      if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
+    }
   }
 
-  candidates.sort((g1: any, g2: any) => {
-    const t1 = g1.__kickoff ?? Number.MAX_SAFE_INTEGER;
-    const t2 = g2.__kickoff ?? Number.MAX_SAFE_INTEGER;
-    const d1 = Math.abs(t1 - params.lockTime);
-    const d2 = Math.abs(t2 - params.lockTime);
-    if (d1 !== d2) return d1 - d2;
-
-    const f1 = isFinalStatus(g1.status || "") ? 1 : 0;
-    const f2 = isFinalStatus(g2.status || "") ? 1 : 0;
-    return f2 - f1;
-  });
-
-  const match = candidates[0];
+  if (!bestMatch) {
+    return {
+      ok: false,
+      reason: REQUIRE_KICKOFF_FOR_MATCH ? "no match after lockTime (kickoff constrained)" : "no match",
+      debug: GOALSERVE_DEBUG ? { tried: urls.length } : undefined,
+    };
+  }
 
   console.log(
     `[GOALSERVE] ${params.league} | Team A: ${params.teamAName} (${params.teamACode || "-"}) ` +
       `vs Team B: ${params.teamBName} (${params.teamBCode || "-"}) | ` +
-      `API Home: ${match.homeName} ${match.homeScore} | API Away: ${match.awayName} ${match.awayScore} | ` +
-      `status=${match.status || ""}`
+      `API Home: ${bestMatch.homeName} ${bestMatch.homeScore} | API Away: ${bestMatch.awayName} ${bestMatch.awayScore} | ` +
+      `status=${bestMatch.status || ""} | kickoff=${bestMatch.__kickoff ?? "?"} | url=${GOALSERVE_DEBUG ? bestUrl : "(hidden)"}`
   );
 
-  const isFinal = isFinalStatus(match.status || "");
+  // Final status requirement
+  const isFinal = isFinalStatus(bestMatch.status || "");
   if (!isFinal) {
     return {
       ok: false,
       reason: "not final",
-      debug: GOALSERVE_DEBUG ? { url: resp.url, date: resp.dateTried, status: match.status } : undefined,
+      debug: GOALSERVE_DEBUG ? { url: bestUrl, status: bestMatch.status, kickoff: bestMatch.__kickoff } : undefined,
     };
   }
 
-  const homeIsA = teamMatchesOneSide(match.homeName, aName, aCode);
-  const homeIsB = teamMatchesOneSide(match.homeName, bName, bCode);
-  const awayIsA = teamMatchesOneSide(match.awayName, aName, aCode);
-  const awayIsB = teamMatchesOneSide(match.awayName, bName, bCode);
+  // Winner mapping
+  const homeIsA = teamMatchesOneSide(bestMatch.homeName, aName, aCode);
+  const homeIsB = teamMatchesOneSide(bestMatch.homeName, bName, bCode);
+  const awayIsA = teamMatchesOneSide(bestMatch.awayName, aName, aCode);
+  const awayIsB = teamMatchesOneSide(bestMatch.awayName, bName, bCode);
 
   const mapsHomeA_AwayB = homeIsA && awayIsB && !homeIsB && !awayIsA;
   const mapsHomeB_AwayA = homeIsB && awayIsA && !homeIsA && !awayIsB;
@@ -599,15 +718,14 @@ async function confirmFinalGoalserve(params: {
       reason: "ambiguous team mapping",
       debug: GOALSERVE_DEBUG
         ? {
-            url: resp.url,
-            date: resp.dateTried,
+            url: bestUrl,
             picked: {
-              home: match.homeName,
-              away: match.awayName,
-              homeScore: match.homeScore,
-              awayScore: match.awayScore,
-              status: match.status,
-              kickoff: match.__kickoff,
+              home: bestMatch.homeName,
+              away: bestMatch.awayName,
+              homeScore: bestMatch.homeScore,
+              awayScore: bestMatch.awayScore,
+              status: bestMatch.status,
+              kickoff: bestMatch.__kickoff,
             },
             flags: { homeIsA, homeIsB, awayIsA, awayIsB },
           }
@@ -617,9 +735,9 @@ async function confirmFinalGoalserve(params: {
 
   let winner: "A" | "B" | "TIE" = "TIE";
 
-  if (match.homeScore === match.awayScore) {
+  if (bestMatch.homeScore === bestMatch.awayScore) {
     winner = "TIE";
-  } else if (match.homeScore > match.awayScore) {
+  } else if (bestMatch.homeScore > bestMatch.awayScore) {
     winner = mapsHomeA_AwayB ? "A" : "B";
   } else {
     winner = mapsHomeA_AwayB ? "B" : "A";
@@ -635,15 +753,14 @@ async function confirmFinalGoalserve(params: {
     winnerCode,
     debug: GOALSERVE_DEBUG
       ? {
-          url: resp.url,
-          date: resp.dateTried,
+          url: bestUrl,
           picked: {
-            home: match.homeName,
-            away: match.awayName,
-            status: match.status,
-            homeScore: match.homeScore,
-            awayScore: match.awayScore,
-            kickoff: match.__kickoff,
+            home: bestMatch.homeName,
+            away: bestMatch.awayName,
+            status: bestMatch.status,
+            homeScore: bestMatch.homeScore,
+            awayScore: bestMatch.awayScore,
+            kickoff: bestMatch.__kickoff,
           },
         }
       : undefined,
@@ -662,9 +779,28 @@ async function main() {
   }
 
   console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
-  console.log(`[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s REQUEST_GAP_SECONDS=${REQUEST_GAP_SECONDS}s`);
+  console.log(
+    `[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} ` +
+      `ALLOW_UNSAFE_NO_FINAL_CHECK=${ALLOW_UNSAFE_NO_FINAL_CHECK} ` +
+      `POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s REQUEST_GAP_SECONDS=${REQUEST_GAP_SECONDS}s`
+  );
+  console.log(
+    `[CFG] KICKOFF_MIN_TOLERANCE_SECONDS=${KICKOFF_MIN_TOLERANCE_SECONDS}s ` +
+      `KICKOFF_MAX_LOOKAHEAD_SECONDS=${KICKOFF_MAX_LOOKAHEAD_SECONDS}s ` +
+      `REQUIRE_KICKOFF_FOR_MATCH=${REQUIRE_KICKOFF_FOR_MATCH}`
+  );
+  console.log(
+    `[CFG] FINAL_DEBOUNCE_SECONDS=${FINAL_DEBOUNCE_SECONDS}s FINAL_CACHE_PATH=${FINAL_CACHE_PATH}`
+  );
   console.log(`[CFG] SettlementCoordinator=${SETTLEMENT_COORDINATOR_ADDRESS}`);
   console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL + UCL)`);
+
+  if (!REQUIRE_FINAL_CHECK && !ALLOW_UNSAFE_NO_FINAL_CHECK) {
+    console.log(
+      `⚠️  REQUIRE_FINAL_CHECK=false but ALLOW_UNSAFE_NO_FINAL_CHECK is not set. ` +
+        `This run will NOT markReady without provider final confirmation.`
+    );
+  }
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
@@ -748,9 +884,9 @@ async function main() {
   // Eligible on-chain state (unresolved, locked)
   const gated = states.filter((s) => s.isOwner && s.isLocked && s.winningTeam === 0);
 
-  // Time gating to avoid early checks
+  // Time gating (based on lockTime; treated as game-start proxy)
   const timeGated = gated.filter((s) => {
-    if (!s.lockTime) return true;
+    if (!s.lockTime) return false; // require lockTime for safety
     const afterGap = nowSec >= s.lockTime + REQUEST_GAP_SECONDS;
     const afterMin = nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED;
     return afterGap && afterMin;
@@ -766,12 +902,19 @@ async function main() {
     return;
   }
 
+  const finalCache = loadFinalCache();
+
   // Off-chain FINAL confirmation
   const finalEligible: PoolState[] = [];
 
   for (const s of timeGated) {
+    // If final check is disabled, require explicit override
     if (!REQUIRE_FINAL_CHECK) {
-      // If you disable final check, treat as eligible (not recommended for production)
+      if (!ALLOW_UNSAFE_NO_FINAL_CHECK) {
+        console.log(`[SKIP] Unsafe mode not enabled; skipping without provider final check: ${s.addr}`);
+        continue;
+      }
+      console.log(`[WARN] Unsafe mode enabled; treating eligible without provider final check: ${s.addr}`);
       finalEligible.push(s);
       continue;
     }
@@ -786,17 +929,58 @@ async function main() {
     });
 
     if (pre.ok) {
+      // Debounce: require FINAL to persist across runs for FINAL_DEBOUNCE_SECONDS
+      const key = cacheKeyForPool(s.addr);
+      const entry = finalCache[key];
+
+      if (!entry) {
+        finalCache[key] = { firstSeen: nowSec, lastSeen: nowSec };
+        saveFinalCache(finalCache);
+        console.log(
+          `[FINAL-1] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final observed, waiting ${FINAL_DEBOUNCE_SECONDS}s before markReady`
+        );
+        continue;
+      }
+
+      finalCache[key] = { firstSeen: entry.firstSeen, lastSeen: nowSec };
+      saveFinalCache(finalCache);
+
+      const age = nowSec - entry.firstSeen;
+      if (age < FINAL_DEBOUNCE_SECONDS) {
+        console.log(
+          `[FINAL-WAIT] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final observed for ${age}s (<${FINAL_DEBOUNCE_SECONDS}s). Waiting.`
+        );
+        continue;
+      }
+
       console.log(`[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${pre.winner} (${pre.winnerCode})`);
       finalEligible.push(s);
     } else if (pre.reason === "not final") {
+      // If not final, clear debounce state so it must be re-observed
+      const key = cacheKeyForPool(s.addr);
+      if (finalCache[key]) {
+        delete finalCache[key];
+        saveFinalCache(finalCache);
+      }
       console.log(`[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`);
-    } else if (GOALSERVE_DEBUG) {
-      console.log(`[SKIP][DBG] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
+    } else {
+      // Any other error: clear debounce state and skip
+      const key = cacheKeyForPool(s.addr);
+      if (finalCache[key]) {
+        delete finalCache[key];
+        saveFinalCache(finalCache);
+      }
+      if (GOALSERVE_DEBUG) {
+        console.log(`[SKIP][DBG] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
+        if (pre.debug) console.log(pre.debug);
+      } else {
+        console.log(`[SKIP] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
+      }
     }
   }
 
   if (!finalEligible.length) {
-    console.log("No games confirmed FINAL. Submitted 0 transaction(s).");
+    console.log("No games confirmed FINAL (and debounced). Submitted 0 transaction(s).");
     return;
   }
 
@@ -808,7 +992,6 @@ async function main() {
     if (submitted >= MAX_TX_PER_RUN) break;
 
     // Safety: only markReady for pools the coordinator knows about
-    // (prevents wasting gas if you forgot to register a pool).
     let known = false;
     let alreadyReady = false;
     let alreadyPending = false;
