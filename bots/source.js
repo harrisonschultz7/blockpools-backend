@@ -113,7 +113,7 @@ function goalserveLeaguePaths(leagueLabel) {
   return { sportPath: "", leaguePaths: [] };
 }
 
-// Known final-ish labels (incl OT / soccer variants)
+// Known final-ish labels (incl OT / soccer variants + NHL shootout variants)
 const finalsSet = new Set([
   "final",
   "finished",
@@ -126,6 +126,11 @@ const finalsSet = new Set([
   "final ot",
   "final aot",
   "final after ot",
+
+  // ✅ NHL shootout / penalty-shots finals (Goalserve variants)
+  "after penalties",
+  "after penalty shots",
+  "after shootout",
 ]);
 
 function isFinalStatus(raw) {
@@ -134,10 +139,28 @@ function isFinalStatus(raw) {
 
   if (finalsSet.has(st)) return true;
 
-  if (st.includes("after over time") || st.includes("after overtime") || st.includes("after ot")) return true;
+  // OT variants
+  if (
+    st.includes("after over time") ||
+    st.includes("after overtime") ||
+    st.includes("after ot")
+  )
+    return true;
+
+  // Soccer variants
   if (st.includes("full time") || st === "full-time") return true;
 
-  if (st.includes("final") && !st.includes("semi") && !st.includes("quarter") && !st.includes("half")) {
+  // ✅ NHL shootout variants (Goalserve commonly uses "After Penalties")
+  if (st.includes("after penalties")) return true;
+  if (st.includes("after penalty")) return true; // covers "after penalty shots"
+  if (st.includes("shootout")) return true;
+
+  if (
+    st.includes("final") &&
+    !st.includes("semi") &&
+    !st.includes("quarter") &&
+    !st.includes("half")
+  ) {
     return true;
   }
 
@@ -186,7 +209,9 @@ async function fetchJsonWithRetry(url, tries = 3) {
 // Parse "dd.MM.yyyy HH:mm" as UTC
 function parseDatetimeUTC(s) {
   if (!s) return;
-  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+  const m = String(s).match(
+    /^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/
+  );
   if (!m) return;
   const [, dd, MM, yyyy, HH, mm] = m;
   const t = Date.UTC(+yyyy, +MM - 1, +dd, +HH, +mm, 0, 0);
@@ -312,16 +337,13 @@ function normalizeGameRow(r) {
     r?.awayteam?.totalscore ??
       r?.away_score ??
       r?.away_final ??
-      (r?.visitorteam && (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
+      (r?.visitorteam &&
+        (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
       0
   );
 
   const status = String(
-    r?.status ||
-      r?.game_status ||
-      r?.state ||
-      r?.["@status"] ||
-      ""
+    r?.status || r?.game_status || r?.state || r?.["@status"] || ""
   ).trim();
 
   return { homeName, awayName, homeScore, awayScore, status };
@@ -356,7 +378,14 @@ function teamMatchesOneSide(apiName, wantName, wantCode) {
   return false;
 }
 
-function unorderedTeamsMatchByTokens(homeName, awayName, AName, BName, ACode, BCode) {
+function unorderedTeamsMatchByTokens(
+  homeName,
+  awayName,
+  AName,
+  BName,
+  ACode,
+  BCode
+) {
   const hA = teamMatchesOneSide(homeName, AName, ACode);
   const aB = teamMatchesOneSide(awayName, BName, BCode);
   const hB = teamMatchesOneSide(homeName, BName, BCode);
