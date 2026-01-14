@@ -304,7 +304,7 @@ function loadGamesMeta(): GameMeta[] {
    Goalserve helpers
 ──────────────────────────────────────────────────────────────────────────── */
 
-// final-ish labels
+// final-ish labels (incl OT / soccer variants + NHL shootout variants)
 const finalsSet = new Set([
   "final",
   "finished",
@@ -317,15 +317,32 @@ const finalsSet = new Set([
   "final ot",
   "final aot",
   "final after ot",
+
+  // ✅ NHL shootout / penalty-shots finals (Goalserve variants)
+  "after penalties",
+  "after penalty shots",
+  "after shootout",
 ]);
 
 function isFinalStatus(raw: string): boolean {
   const s = (raw || "").trim().toLowerCase();
   if (!s) return false;
+
   if (finalsSet.has(s)) return true;
+
+  // OT variants
   if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot")) return true;
+
+  // Soccer variants
   if (s.includes("full time") || s === "full-time") return true;
+
+  // ✅ NHL shootout variants (Goalserve commonly uses "After Penalties")
+  if (s.includes("after penalties")) return true;
+  if (s.includes("after penalty")) return true; // covers "after penalty shots"
+  if (s.includes("shootout")) return true;
+
   if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half")) return true;
+
   return false;
 }
 
