@@ -43,6 +43,9 @@
 //   TX_PACE_MS=750
 //   LOOP_LOG_EVERY=1
 //
+// NEW (rate-limit + log controls):
+//   FEED_CACHE_TTL_MS=120000   (cache Goalserve feed responses per URL for this long within a single run)
+//   LOG_LEVEL=info|quiet       (quiet hides noisy lines while keeping FINAL/TX/SUMMARY)
 
 try {
   require("dotenv").config();
@@ -130,6 +133,13 @@ const GOALSERVE_API_KEY = process.env.GOALSERVE_API_KEY || "";
 const GOALSERVE_BASE_URL = process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
 const GOALSERVE_DEBUG = /^(1|true)$/i.test(String(process.env.GOALSERVE_DEBUG || ""));
 
+// NEW: per-run feed cache (cuts Goalserve hits drastically)
+const FEED_CACHE_TTL_MS = Number(process.env.FEED_CACHE_TTL_MS || 120000);
+
+// NEW: logging level
+const LOG_LEVEL = String(process.env.LOG_LEVEL || "info").trim().toLowerCase();
+const QUIET = LOG_LEVEL === "quiet";
+
 // games.json discovery
 const GAMES_PATH_OVERRIDE = process.env.GAMES_PATH || "";
 const GAMES_CANDIDATES = [
@@ -183,7 +193,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function sleepLogged(ms: number, label: string) {
   if (ms <= 0) return;
-  console.log(`[WAIT] ${label} sleeping ${Math.ceil(ms / 1000)}s...`);
+  if (!QUIET) console.log(`[WAIT] ${label} sleeping ${Math.ceil(ms / 1000)}s...`);
   await sleep(ms);
 }
 
@@ -430,6 +440,19 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
   throw lastErr;
 }
 
+// NEW: per-run cached fetch to reduce Goalserve pressure.
+// Cache is in-memory for the duration of the run (not persisted).
+const _feedCache: Record<string, { ts: number; data: any }> = {};
+async function fetchJsonCached(url: string) {
+  const now = Date.now();
+  const hit = _feedCache[url];
+  if (hit && now - hit.ts < FEED_CACHE_TTL_MS) return hit.data;
+
+  const data = await fetchJsonWithRetry(url, 3, 500);
+  _feedCache[url] = { ts: now, data };
+  return data;
+}
+
 /**
  * Map on-chain league label -> Goalserve sportPath + leaguePaths.
  */
@@ -672,7 +695,9 @@ async function confirmFinalGoalserve(params: {
 
   for (const url of urls) {
     try {
-      const payload = await fetchJsonWithRetry(url, 3, 500);
+      // NEW: cached fetch (cuts repeat calls massively)
+      const payload = await fetchJsonCached(url);
+
       const rawGames = collectCandidateGames(payload);
       if (!rawGames.length) continue;
 
@@ -689,7 +714,7 @@ async function confirmFinalGoalserve(params: {
 
       const kickoffFiltered = teamMatches.filter((g: any) => kickoffIsAcceptable(g.__kickoff, params.lockTime));
       if (!kickoffFiltered.length) {
-        if (GOALSERVE_DEBUG) {
+        if (GOALSERVE_DEBUG && !QUIET) {
           console.log(`[DBG] Found team matches but all failed kickoff window (lockTime=${params.lockTime}) at ${url}`);
         }
         continue;
@@ -733,7 +758,11 @@ async function confirmFinalGoalserve(params: {
         }
       }
     } catch (e: any) {
-      if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${e?.message || e}`);
+      // Keep this visible even in quiet mode (operator needs to know provider is failing),
+      // but avoid printing full URLs unless debug is enabled.
+      const msg = e?.message || e;
+      if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${msg}`);
+      else console.log(`[GOALSERVE_ERR] ${msg}`);
     }
   }
 
@@ -745,12 +774,14 @@ async function confirmFinalGoalserve(params: {
     };
   }
 
-  console.log(
-    `[GOALSERVE] ${params.league} | Team A: ${params.teamAName} (${params.teamACode || "-"}) ` +
-      `vs Team B: ${params.teamBName} (${params.teamBCode || "-"}) | ` +
-      `API Home: ${bestMatch.homeName} ${bestMatch.homeScore} | API Away: ${bestMatch.awayName} ${bestMatch.awayScore} | ` +
-      `status=${bestMatch.status || ""} | kickoff=${bestMatch.__kickoff ?? "?"} | url=${GOALSERVE_DEBUG ? bestUrl : "(hidden)"}`
-  );
+  if (!QUIET) {
+    console.log(
+      `[GOALSERVE] ${params.league} | Team A: ${params.teamAName} (${params.teamACode || "-"}) ` +
+        `vs Team B: ${params.teamBName} (${params.teamBCode || "-"}) | ` +
+        `API Home: ${bestMatch.homeName} ${bestMatch.homeScore} | API Away: ${bestMatch.awayName} ${bestMatch.awayScore} | ` +
+        `status=${bestMatch.status || ""} | kickoff=${bestMatch.__kickoff ?? "?"} | url=${GOALSERVE_DEBUG ? bestUrl : "(hidden)"}`
+    );
+  }
 
   const isFinal = isFinalStatus(bestMatch.status || "");
   if (!isFinal) {
@@ -836,6 +867,7 @@ async function main() {
       `REQUIRE_KICKOFF_FOR_MATCH=${REQUIRE_KICKOFF_FOR_MATCH}`
   );
   console.log(`[CFG] FINAL_DEBOUNCE_SECONDS=${FINAL_DEBOUNCE_SECONDS}s FINAL_CACHE_PATH=${FINAL_CACHE_PATH}`);
+  console.log(`[CFG] FEED_CACHE_TTL_MS=${FEED_CACHE_TTL_MS} LOG_LEVEL=${LOG_LEVEL}`);
   console.log(`[CFG] SettlementCoordinator=${SETTLEMENT_COORDINATOR_ADDRESS}`);
   console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL + UCL)`);
 
@@ -877,7 +909,7 @@ async function main() {
 
   // Read on-chain states in parallel (bounded)
   await Promise.all(
-    gamesMeta.map(({ contractAddress }, idx) =>
+    gamesMeta.map(({ contractAddress }) =>
       readLimit(async () => {
         const addr = String(contractAddress || "").trim();
         if (!ethers.isAddress(addr)) return;
@@ -917,7 +949,7 @@ async function main() {
             isOwner,
           });
         } catch (e: any) {
-          if (GOALSERVE_DEBUG) console.warn(`[READ FAIL] ${addr}:`, e?.message || e);
+          if (GOALSERVE_DEBUG && !QUIET) console.warn(`[READ FAIL] ${addr}:`, e?.message || e);
         }
       })
     )
@@ -958,14 +990,13 @@ async function main() {
   let checked = 0;
   let pending = 0;
   let skipped = 0;
-  let finals = 0;
   let errors = 0;
 
   for (let i = 0; i < timeGated.length; i++) {
     const s = timeGated[i];
     checked++;
 
-    if (LOOP_LOG_EVERY > 0 && i % LOOP_LOG_EVERY === 0) {
+    if (LOOP_LOG_EVERY > 0 && i % LOOP_LOG_EVERY === 0 && !QUIET) {
       console.log(`[GAME] check ${i + 1}/${timeGated.length} addr=${s.addr} ${s.league} ${s.teamAName} vs ${s.teamBName}`);
     }
 
@@ -979,7 +1010,6 @@ async function main() {
           continue;
         }
         console.log(`[WARN] unsafe mode enabled; treating eligible without provider final check: ${s.addr}`);
-        finals++;
         finalEligible.push(s);
         continue;
       }
@@ -1000,9 +1030,11 @@ async function main() {
         if (!entry) {
           finalCache[key] = { firstSeen: nowSec, lastSeen: nowSec };
           saveFinalCache(finalCache);
-          console.log(
-            `[FINAL-1] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final observed, waiting ${FINAL_DEBOUNCE_SECONDS}s`
-          );
+          if (!QUIET) {
+            console.log(
+              `[FINAL-1] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final observed, waiting ${FINAL_DEBOUNCE_SECONDS}s`
+            );
+          }
           continue;
         }
 
@@ -1011,14 +1043,15 @@ async function main() {
 
         const age = nowSec - entry.firstSeen;
         if (age < FINAL_DEBOUNCE_SECONDS) {
-          console.log(
-            `[FINAL-WAIT] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final age=${age}s (<${FINAL_DEBOUNCE_SECONDS}s)`
-          );
+          if (!QUIET) {
+            console.log(
+              `[FINAL-WAIT] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final age=${age}s (<${FINAL_DEBOUNCE_SECONDS}s)`
+            );
+          }
           continue;
         }
 
         console.log(`[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${pre.winner} (${pre.winnerCode})`);
-        finals++;
         finalEligible.push(s);
       } else if (pre.reason === "not final") {
         const key = cacheKeyForPool(s.addr);
@@ -1026,7 +1059,7 @@ async function main() {
           delete finalCache[key];
           saveFinalCache(finalCache);
         }
-        console.log(`[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`);
+        if (!QUIET) console.log(`[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`);
         pending++;
       } else {
         const key = cacheKeyForPool(s.addr);
@@ -1034,10 +1067,10 @@ async function main() {
           delete finalCache[key];
           saveFinalCache(finalCache);
         }
-        if (GOALSERVE_DEBUG && pre.debug) {
+        if (GOALSERVE_DEBUG && pre.debug && !QUIET) {
           console.log(`[SKIP][DBG] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
           console.log(pre.debug);
-        } else {
+        } else if (!QUIET) {
           console.log(`[SKIP] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
         }
         skipped++;
@@ -1084,12 +1117,12 @@ async function main() {
     }
 
     if (alreadyPending) {
-      console.log(`[ok]  already pending: ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+      if (!QUIET) console.log(`[ok]  already pending: ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
       continue;
     }
 
     if (alreadyReady) {
-      console.log(`[ok]  already ready:   ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+      if (!QUIET) console.log(`[ok]  already ready:   ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
       continue;
     }
 
