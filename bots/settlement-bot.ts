@@ -23,7 +23,7 @@
 //   REQUIRE_FINAL_CHECK=1|0 (default true)
 //   ALLOW_UNSAFE_NO_FINAL_CHECK=1|0 (default false)  <-- must be true to allow REQUIRE_FINAL_CHECK=false mode
 //   POSTGAME_MIN_ELAPSED=600
-//   REQUEST_GAP_SECONDS=120
+//   REQUEST_GAP_SECONDS=120                <-- legacy; DO NOT use as eligibility gate
 //   READ_CONCURRENCY=25
 //   TX_SEND_CONCURRENCY=3
 //   MAX_TX_PER_RUN=20
@@ -36,6 +36,13 @@
 //   FINAL_DEBOUNCE_SECONDS=300 (default 300; require final to be observed for at least this long across runs)
 //   FINAL_CACHE_PATH=/opt/blockpools/.final-cache.json
 //
+// Hardening env (recommended for 50-100 contracts):
+//   GOALSERVE_TIMEOUT_MS=15000
+//   TX_WAIT_TIMEOUT_MS=120000
+//   API_PACE_MS=250
+//   TX_PACE_MS=750
+//   LOOP_LOG_EVERY=1
+//
 
 try {
   require("dotenv").config();
@@ -46,6 +53,16 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { ethers } from "ethers";
 import { gamePoolAbi as IMPORTED_GAMEPOOL_ABI } from "./gamepool.abi";
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Global crash visibility
+──────────────────────────────────────────────────────────────────────────── */
+process.on("unhandledRejection", (err: any) => {
+  console.error("[UNHANDLED_REJECTION]", err?.stack || err);
+});
+process.on("uncaughtException", (err: any) => {
+  console.error("[UNCAUGHT_EXCEPTION]", err?.stack || err);
+});
 
 /* ────────────────────────────────────────────────────────────────────────────
    ESM-safe __dirname / __filename
@@ -79,12 +96,22 @@ const ALLOW_UNSAFE_NO_FINAL_CHECK = /^(1|true)$/i.test(
 );
 
 const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);
+
+// Legacy naming: REQUEST_GAP_SECONDS historically existed. We keep it for backward compatibility,
+// but we DO NOT use it as an eligibility gate. Use API_PACE_MS / TX_PACE_MS to pace safely.
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
 const READ_CONCURRENCY = Number(process.env.READ_CONCURRENCY || 25);
 const TX_SEND_CONCURRENCY = Number(process.env.TX_SEND_CONCURRENCY || 3);
 const MAX_TX_PER_RUN = Number(process.env.MAX_TX_PER_RUN || 20);
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 0);
+
+// Hardening knobs
+const GOALSERVE_TIMEOUT_MS = Number(process.env.GOALSERVE_TIMEOUT_MS || 15000);
+const TX_WAIT_TIMEOUT_MS = Number(process.env.TX_WAIT_TIMEOUT_MS || 120000);
+const LOOP_LOG_EVERY = Number(process.env.LOOP_LOG_EVERY || 1);
+const API_PACE_MS = Number(process.env.API_PACE_MS || 250);
+const TX_PACE_MS = Number(process.env.TX_PACE_MS || 750);
 
 // Kickoff constraints (NO BACKWARD LOOK)
 const KICKOFF_MIN_TOLERANCE_SECONDS = Number(process.env.KICKOFF_MIN_TOLERANCE_SECONDS || 0);
@@ -153,6 +180,24 @@ const SETTLEMENT_COORDINATOR_ABI = [
    Small utils
 ──────────────────────────────────────────────────────────────────────────── */
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function sleepLogged(ms: number, label: string) {
+  if (ms <= 0) return;
+  console.log(`[WAIT] ${label} sleeping ${Math.ceil(ms / 1000)}s...`);
+  await sleep(ms);
+}
+
+async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let t: any;
+  const timeout = new Promise<never>((_, reject) => {
+    t = setTimeout(() => reject(new Error(`Timeout: ${label} after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    clearTimeout(t);
+  }
+}
 
 function limiter(concurrency: number) {
   let active = 0;
@@ -318,7 +363,7 @@ const finalsSet = new Set([
   "final aot",
   "final after ot",
 
-  // ✅ NHL shootout / penalty-shots finals (Goalserve variants)
+  // NHL shootout / penalty-shots finals (Goalserve variants)
   "after penalties",
   "after penalty shots",
   "after shootout",
@@ -336,9 +381,9 @@ function isFinalStatus(raw: string): boolean {
   // Soccer variants
   if (s.includes("full time") || s === "full-time") return true;
 
-  // ✅ NHL shootout variants (Goalserve commonly uses "After Penalties")
+  // NHL shootout variants
   if (s.includes("after penalties")) return true;
-  if (s.includes("after penalty")) return true; // covers "after penalty shots"
+  if (s.includes("after penalty")) return true;
   if (s.includes("shootout")) return true;
 
   if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half")) return true;
@@ -365,16 +410,23 @@ function acronym(s: string): string {
 
 async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
   let lastErr: any;
+
   for (let i = 0; i < tries; i++) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), GOALSERVE_TIMEOUT_MS);
+
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: ctrl.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (e) {
       lastErr = e;
       if (i < tries - 1) await sleep(backoffMs * (i + 1));
+    } finally {
+      clearTimeout(t);
     }
   }
+
   throw lastErr;
 }
 
@@ -525,16 +577,13 @@ function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string)
 
   if (!nApi) return false;
 
-  // 1) Exact normalized name
   if (nWant && nApi === nWant) return true;
 
-  // 2) Code/acronym match
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);
   if (code && apiAcr && apiAcr === code) return true;
   if (wantAcr && apiAcr && apiAcr === wantAcr) return true;
 
-  // 3) Mascot match (last token)
   const apiParts = nApi.split(" ").filter(Boolean);
   const wantParts = nWant.split(" ").filter(Boolean);
   if (!apiParts.length || !wantParts.length) return false;
@@ -621,7 +670,6 @@ async function confirmFinalGoalserve(params: {
   let bestMatch: any = null;
   let bestUrl: string | null = null;
 
-  // Try all relevant urls; only accept candidates matching teams AND kickoff constraint
   for (const url of urls) {
     try {
       const payload = await fetchJsonWithRetry(url, 3, 500);
@@ -634,24 +682,19 @@ async function confirmFinalGoalserve(params: {
         return { ...g, __kickoff: kickoff, __raw: r };
       });
 
-      // Team match
       const teamMatches = rows.filter((g: any) =>
         unorderedTeamsMatchByTokens(g.homeName, g.awayName, aName, bName, aCode, bCode)
       );
       if (!teamMatches.length) continue;
 
-      // Kickoff constraint (NO BACKWARD LOOK)
       const kickoffFiltered = teamMatches.filter((g: any) => kickoffIsAcceptable(g.__kickoff, params.lockTime));
       if (!kickoffFiltered.length) {
         if (GOALSERVE_DEBUG) {
-          console.log(
-            `[DBG] Found team matches but all failed kickoff window (lockTime=${params.lockTime}) at ${url}`
-          );
+          console.log(`[DBG] Found team matches but all failed kickoff window (lockTime=${params.lockTime}) at ${url}`);
         }
         continue;
       }
 
-      // Prefer FINAL first, then closest kickoff to lockTime
       kickoffFiltered.sort((g1: any, g2: any) => {
         const f1 = isFinalStatus(g1.status || "") ? 1 : 0;
         const f2 = isFinalStatus(g2.status || "") ? 1 : 0;
@@ -666,7 +709,6 @@ async function confirmFinalGoalserve(params: {
 
       const candidate = kickoffFiltered[0];
 
-      // Keep the best candidate across urls using the same ordering
       if (!bestMatch) {
         bestMatch = candidate;
         bestUrl = url;
@@ -710,7 +752,6 @@ async function confirmFinalGoalserve(params: {
       `status=${bestMatch.status || ""} | kickoff=${bestMatch.__kickoff ?? "?"} | url=${GOALSERVE_DEBUG ? bestUrl : "(hidden)"}`
   );
 
-  // Final status requirement
   const isFinal = isFinalStatus(bestMatch.status || "");
   if (!isFinal) {
     return {
@@ -720,7 +761,6 @@ async function confirmFinalGoalserve(params: {
     };
   }
 
-  // Winner mapping
   const homeIsA = teamMatchesOneSide(bestMatch.homeName, aName, aCode);
   const homeIsB = teamMatchesOneSide(bestMatch.homeName, bName, bCode);
   const awayIsA = teamMatchesOneSide(bestMatch.awayName, aName, aCode);
@@ -764,24 +804,7 @@ async function confirmFinalGoalserve(params: {
   if (winner === "A") winnerCode = params.teamACode || params.teamAName;
   else if (winner === "B") winnerCode = params.teamBCode || params.teamBName;
 
-  return {
-    ok: true,
-    winner,
-    winnerCode,
-    debug: GOALSERVE_DEBUG
-      ? {
-          url: bestUrl,
-          picked: {
-            home: bestMatch.homeName,
-            away: bestMatch.awayName,
-            status: bestMatch.status,
-            homeScore: bestMatch.homeScore,
-            awayScore: bestMatch.awayScore,
-            kickoff: bestMatch.__kickoff,
-          },
-        }
-      : undefined,
-  };
+  return { ok: true, winner, winnerCode };
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -799,16 +822,20 @@ async function main() {
   console.log(
     `[CFG] REQUIRE_FINAL_CHECK=${REQUIRE_FINAL_CHECK} ` +
       `ALLOW_UNSAFE_NO_FINAL_CHECK=${ALLOW_UNSAFE_NO_FINAL_CHECK} ` +
-      `POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s REQUEST_GAP_SECONDS=${REQUEST_GAP_SECONDS}s`
+      `POSTGAME_MIN_ELAPSED=${POSTGAME_MIN_ELAPSED}s REQUEST_GAP_SECONDS(legacy)=${REQUEST_GAP_SECONDS}s`
+  );
+  console.log(
+    `[CFG] READ_CONCURRENCY=${READ_CONCURRENCY} TX_SEND_CONCURRENCY=${TX_SEND_CONCURRENCY} MAX_TX_PER_RUN=${MAX_TX_PER_RUN}`
+  );
+  console.log(
+    `[CFG] API_PACE_MS=${API_PACE_MS} TX_PACE_MS=${TX_PACE_MS} GOALSERVE_TIMEOUT_MS=${GOALSERVE_TIMEOUT_MS} TX_WAIT_TIMEOUT_MS=${TX_WAIT_TIMEOUT_MS}`
   );
   console.log(
     `[CFG] KICKOFF_MIN_TOLERANCE_SECONDS=${KICKOFF_MIN_TOLERANCE_SECONDS}s ` +
       `KICKOFF_MAX_LOOKAHEAD_SECONDS=${KICKOFF_MAX_LOOKAHEAD_SECONDS}s ` +
       `REQUIRE_KICKOFF_FOR_MATCH=${REQUIRE_KICKOFF_FOR_MATCH}`
   );
-  console.log(
-    `[CFG] FINAL_DEBOUNCE_SECONDS=${FINAL_DEBOUNCE_SECONDS}s FINAL_CACHE_PATH=${FINAL_CACHE_PATH}`
-  );
+  console.log(`[CFG] FINAL_DEBOUNCE_SECONDS=${FINAL_DEBOUNCE_SECONDS}s FINAL_CACHE_PATH=${FINAL_CACHE_PATH}`);
   console.log(`[CFG] SettlementCoordinator=${SETTLEMENT_COORDINATOR_ADDRESS}`);
   console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL + UCL)`);
 
@@ -821,7 +848,6 @@ async function main() {
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-
   const coordinator = new ethers.Contract(SETTLEMENT_COORDINATOR_ADDRESS, SETTLEMENT_COORDINATOR_ABI, wallet);
 
   const gamesMeta = loadGamesMeta();
@@ -849,8 +875,9 @@ async function main() {
 
   const states: PoolState[] = [];
 
+  // Read on-chain states in parallel (bounded)
   await Promise.all(
-    gamesMeta.map(({ contractAddress }) =>
+    gamesMeta.map(({ contractAddress }, idx) =>
       readLimit(async () => {
         const addr = String(contractAddress || "").trim();
         if (!ethers.isAddress(addr)) return;
@@ -901,103 +928,131 @@ async function main() {
   // Eligible on-chain state (unresolved, locked)
   const gated = states.filter((s) => s.isOwner && s.isLocked && s.winningTeam === 0);
 
-  // Time gating (based on lockTime; treated as game-start proxy)
+  // Time gating: only POSTGAME_MIN_ELAPSED matters for eligibility.
+  // DO NOT use REQUEST_GAP_SECONDS here (legacy naming).
   const timeGated = gated.filter((s) => {
-    if (!s.lockTime) return false; // require lockTime for safety
-    const afterGap = nowSec >= s.lockTime + REQUEST_GAP_SECONDS;
-    const afterMin = nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED;
-    return afterGap && afterMin;
+    if (!s.lockTime) return false;
+    return nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED;
   });
 
   if (!timeGated.length) {
     console.log("No eligible pools after time gates. Submitted 0 transaction(s).");
+    console.log(
+      `[SUMMARY] totalGames=${gamesMeta.length} ownedLockedUnresolved=${gated.length} timeGated=${timeGated.length} txSubmitted=0`
+    );
     return;
   }
 
   if (REQUIRE_FINAL_CHECK && !GOALSERVE_API_KEY) {
     console.log("GOALSERVE_API_KEY not set; cannot confirm final state. Submitted 0 transaction(s).");
+    console.log(
+      `[SUMMARY] totalGames=${gamesMeta.length} ownedLockedUnresolved=${gated.length} timeGated=${timeGated.length} txSubmitted=0`
+    );
     return;
   }
 
   const finalCache = loadFinalCache();
-
-  // Off-chain FINAL confirmation
   const finalEligible: PoolState[] = [];
 
-  for (const s of timeGated) {
-    // If final check is disabled, require explicit override
-    if (!REQUIRE_FINAL_CHECK) {
-      if (!ALLOW_UNSAFE_NO_FINAL_CHECK) {
-        console.log(`[SKIP] Unsafe mode not enabled; skipping without provider final check: ${s.addr}`);
-        continue;
-      }
-      console.log(`[WARN] Unsafe mode enabled; treating eligible without provider final check: ${s.addr}`);
-      finalEligible.push(s);
-      continue;
+  // Progress counters
+  let checked = 0;
+  let pending = 0;
+  let skipped = 0;
+  let finals = 0;
+  let errors = 0;
+
+  for (let i = 0; i < timeGated.length; i++) {
+    const s = timeGated[i];
+    checked++;
+
+    if (LOOP_LOG_EVERY > 0 && i % LOOP_LOG_EVERY === 0) {
+      console.log(`[GAME] check ${i + 1}/${timeGated.length} addr=${s.addr} ${s.league} ${s.teamAName} vs ${s.teamBName}`);
     }
 
-    const pre = await confirmFinalGoalserve({
-      league: s.league,
-      lockTime: s.lockTime,
-      teamAName: s.teamAName,
-      teamBName: s.teamBName,
-      teamACode: s.teamACode,
-      teamBCode: s.teamBCode,
-    });
+    try {
+      if (API_PACE_MS) await sleepLogged(API_PACE_MS, "api-pace");
 
-    if (pre.ok) {
-      // Debounce: require FINAL to persist across runs for FINAL_DEBOUNCE_SECONDS
-      const key = cacheKeyForPool(s.addr);
-      const entry = finalCache[key];
-
-      if (!entry) {
-        finalCache[key] = { firstSeen: nowSec, lastSeen: nowSec };
-        saveFinalCache(finalCache);
-        console.log(
-          `[FINAL-1] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final observed, waiting ${FINAL_DEBOUNCE_SECONDS}s before markReady`
-        );
+      if (!REQUIRE_FINAL_CHECK) {
+        if (!ALLOW_UNSAFE_NO_FINAL_CHECK) {
+          console.log(`[SKIP] unsafe mode not enabled; skipping without provider final check: ${s.addr}`);
+          skipped++;
+          continue;
+        }
+        console.log(`[WARN] unsafe mode enabled; treating eligible without provider final check: ${s.addr}`);
+        finals++;
+        finalEligible.push(s);
         continue;
       }
 
-      finalCache[key] = { firstSeen: entry.firstSeen, lastSeen: nowSec };
-      saveFinalCache(finalCache);
+      const pre = await confirmFinalGoalserve({
+        league: s.league,
+        lockTime: s.lockTime,
+        teamAName: s.teamAName,
+        teamBName: s.teamBName,
+        teamACode: s.teamACode,
+        teamBCode: s.teamBCode,
+      });
 
-      const age = nowSec - entry.firstSeen;
-      if (age < FINAL_DEBOUNCE_SECONDS) {
-        console.log(
-          `[FINAL-WAIT] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final observed for ${age}s (<${FINAL_DEBOUNCE_SECONDS}s). Waiting.`
-        );
-        continue;
-      }
+      if (pre.ok) {
+        const key = cacheKeyForPool(s.addr);
+        const entry = finalCache[key];
 
-      console.log(`[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${pre.winner} (${pre.winnerCode})`);
-      finalEligible.push(s);
-    } else if (pre.reason === "not final") {
-      // If not final, clear debounce state so it must be re-observed
-      const key = cacheKeyForPool(s.addr);
-      if (finalCache[key]) {
-        delete finalCache[key];
+        if (!entry) {
+          finalCache[key] = { firstSeen: nowSec, lastSeen: nowSec };
+          saveFinalCache(finalCache);
+          console.log(
+            `[FINAL-1] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final observed, waiting ${FINAL_DEBOUNCE_SECONDS}s`
+          );
+          continue;
+        }
+
+        finalCache[key] = { firstSeen: entry.firstSeen, lastSeen: nowSec };
         saveFinalCache(finalCache);
-      }
-      console.log(`[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`);
-    } else {
-      // Any other error: clear debounce state and skip
-      const key = cacheKeyForPool(s.addr);
-      if (finalCache[key]) {
-        delete finalCache[key];
-        saveFinalCache(finalCache);
-      }
-      if (GOALSERVE_DEBUG) {
-        console.log(`[SKIP][DBG] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
-        if (pre.debug) console.log(pre.debug);
+
+        const age = nowSec - entry.firstSeen;
+        if (age < FINAL_DEBOUNCE_SECONDS) {
+          console.log(
+            `[FINAL-WAIT] ${s.league} ${s.teamAName} vs ${s.teamBName} :: final age=${age}s (<${FINAL_DEBOUNCE_SECONDS}s)`
+          );
+          continue;
+        }
+
+        console.log(`[FINAL] ${s.league} ${s.teamAName} vs ${s.teamBName} :: winner=${pre.winner} (${pre.winnerCode})`);
+        finals++;
+        finalEligible.push(s);
+      } else if (pre.reason === "not final") {
+        const key = cacheKeyForPool(s.addr);
+        if (finalCache[key]) {
+          delete finalCache[key];
+          saveFinalCache(finalCache);
+        }
+        console.log(`[PENDING] ${s.league} ${s.teamAName} vs ${s.teamBName} :: not final yet`);
+        pending++;
       } else {
-        console.log(`[SKIP] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
+        const key = cacheKeyForPool(s.addr);
+        if (finalCache[key]) {
+          delete finalCache[key];
+          saveFinalCache(finalCache);
+        }
+        if (GOALSERVE_DEBUG && pre.debug) {
+          console.log(`[SKIP][DBG] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
+          console.log(pre.debug);
+        } else {
+          console.log(`[SKIP] ${s.league} ${s.teamAName} vs ${s.teamBName} :: ${pre.reason || "no match"}`);
+        }
+        skipped++;
       }
+    } catch (e: any) {
+      errors++;
+      console.error(`[CHECK-ERR] addr=${s.addr} ${s.league} ${s.teamAName} vs ${s.teamBName}:`, e?.stack || e);
     }
   }
 
   if (!finalEligible.length) {
     console.log("No games confirmed FINAL (and debounced). Submitted 0 transaction(s).");
+    console.log(
+      `[SUMMARY] totalGames=${gamesMeta.length} ownedLockedUnresolved=${gated.length} timeGated=${timeGated.length} checked=${checked} finalsReady=0 pending=${pending} skipped=${skipped} errors=${errors} txSubmitted=0`
+    );
     return;
   }
 
@@ -1008,7 +1063,6 @@ async function main() {
   for (const s of finalEligible) {
     if (submitted >= MAX_TX_PER_RUN) break;
 
-    // Safety: only markReady for pools the coordinator knows about
     let known = false;
     let alreadyReady = false;
     let alreadyPending = false;
@@ -1047,23 +1101,34 @@ async function main() {
 
     await sendLimit(async () => {
       try {
-        if (REQUEST_DELAY_MS) await sleep(REQUEST_DELAY_MS);
+        if (REQUEST_DELAY_MS) await sleepLogged(REQUEST_DELAY_MS, "request-delay");
+        if (TX_PACE_MS) await sleepLogged(TX_PACE_MS, "tx-pace");
 
-        const tx = await coordinator.markReady(s.addr);
-        console.log(`[TX] markReady ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) :: ${tx.hash}`);
-        const r = await tx.wait(1);
+        console.log(`[TX-SEND] markReady addr=${s.addr} ${s.league} ${s.teamAName} vs ${s.teamBName}`);
+        const tx = await withTimeout(coordinator.markReady(s.addr), 60_000, "markReady send");
+        console.log(`[TX-HASH] ${tx.hash} addr=${s.addr}`);
+
+        const r = await withTimeout(tx.wait(1), TX_WAIT_TIMEOUT_MS, "tx.wait(1)");
         if (r.status !== 1) throw new Error("markReady tx failed");
         submitted++;
+
+        console.log(`[TX-OK] ${tx.hash} addr=${s.addr} submitted=${submitted}`);
       } catch (e: any) {
-        console.error(`[ERR] markReady ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}):`, e?.reason || e?.message || e);
+        console.error(
+          `[TX-ERR] markReady addr=${s.addr} ${s.league} ${s.teamAName} vs ${s.teamBName}:`,
+          e?.reason || e?.message || e
+        );
       }
     });
   }
 
   console.log(`Submitted ${submitted} transaction(s).`);
+  console.log(
+    `[SUMMARY] totalGames=${gamesMeta.length} ownedLockedUnresolved=${gated.length} timeGated=${timeGated.length} checked=${checked} finalsReady=${finalEligible.length} pending=${pending} skipped=${skipped} errors=${errors} txSubmitted=${submitted}`
+  );
 }
 
 main().catch((e) => {
-  console.error(e);
+  console.error(e?.stack || e);
   process.exit(1);
 });
