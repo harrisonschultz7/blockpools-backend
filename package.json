@@ -1,0 +1,30 @@
+{
+  "name": "blockpools-backend",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@chainlink/functions-toolkit": "0.3.2",
+    "@privy-io/server-auth": "^1.32.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^2.0.2",
+    "pg": "^8.16.3",
+    "resend": "^6.6.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^20.16.10",
+    "@types/pg": "^8.15.6",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.6.3"
+  }
+}
