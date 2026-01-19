@@ -132,3 +132,5 @@ updatedAllowlist.csv
 # ===============================
 .chainlink_functions
 secrets/secrets.json
+dist/
+src/dist/
