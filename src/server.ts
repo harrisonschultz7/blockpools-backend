@@ -15,6 +15,9 @@ import invitesRouter from "./routes/invites";
 import emailTestRouter from "./routes/emailTest";
 import adminSweepsRouter from "./routes/adminSweeps";
 
+// ✅ New leaderboard routes (backend-cached metrics views)
+import leaderboardRouter from "./routes/leaderboard";
+
 const PORT = Number(process.env.PORT || 3001);
 
 // Behind Nginx/Cloudflare, this ensures req.protocol/host are derived from forwarded headers.
@@ -75,12 +78,21 @@ export function makeServer() {
   app.use("/api", emailTestRouter);
   app.use("/api/admin", adminSweepsRouter);
 
+  // ✅ Leaderboard API (backend-computed + cached metrics)
+  // Endpoints:
+  //   GET /api/leaderboard/users
+  //   GET /api/leaderboard/users/:address/recent
+  app.use("/api", leaderboardRouter);
+
   // Basic error handler (useful for CORS / route errors)
   app.use((err: any, _req: any, res: any, _next: any) => {
     console.error("[server] error", err);
     res
       .status(500)
-      .json({ error: "Internal server error", detail: String(err?.message || err) });
+      .json({
+        error: "Internal server error",
+        detail: String(err?.message || err),
+      });
   });
 
   return app;
