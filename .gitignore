@@ -134,3 +134,5 @@ updatedAllowlist.csv
 secrets/secrets.json
 dist/
 src/dist/
+!src/cache/
+!src/cache/cacheKeys.ts
