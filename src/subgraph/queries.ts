@@ -8,7 +8,9 @@
 // - claims(where: { user: "..."} orderBy: timestamp)
 // - userGameStats(where: { user: "..."} orderBy: game__lockTime)
 //
-// No custom fields like `leaderboardRows`, `userBetsPage`, or `user.stats` exist in your schema.
+// Notes:
+// - TheGraph enforces `first` between 0 and 1000 (inclusive). Ensure your server never sends > 1000.
+// - "range" is not a schema-level filter; apply range post-fetch in your server code.
 
 export const Q_META_ONLY = `
 query MetaOnly {
@@ -20,10 +22,8 @@ query MetaOnly {
 // Leaderboard
 // -----------------------------
 //
-// We provide two variants because GraphQL variables cannot be used to choose orderBy field.
-// Your server can pick which query string to use based on req.query.sort.
-//
-// NOTE: "range" is not a schema filter; apply range in your server after fetch using lastUpdatedAt.
+// We provide variants because GraphQL variables cannot be used to choose the orderBy field.
+// Your server can select which query string to use based on req.query.sort.
 //
 // Default sort = ROI (desc)
 export const Q_LEADERBOARD_BY_ROI = `
@@ -52,7 +52,7 @@ query LeaderboardByRoi($leagues: [String!], $skip: Int!, $first: Int!) {
 }
 `;
 
-// Alternative sort = TOTAL_STAKED (desc) - useful for "volume" style leaderboards
+// Alternative sort = TOTAL_STAKED (desc)
 export const Q_LEADERBOARD_BY_TOTAL_STAKED = `
 query LeaderboardByTotalStaked($leagues: [String!], $skip: Int!, $first: Int!) {
   _meta { block { number } }
@@ -138,8 +138,8 @@ query LeaderboardByLastUpdated($leagues: [String!], $skip: Int!, $first: Int!) {
 // -----------------------------
 //
 // Pulls latest bets + latest claims + per-game net stats.
-// - Bet/Claim ordering uses `timestamp` (schema) not createdAt.
-// - userGameStats ordering uses `game__lockTime` (schema).
+// - Bet/Claim ordering uses `timestamp`
+// - userGameStats ordering uses `game__lockTime`
 export const Q_USER_SUMMARY = `
 query UserSummary($user: String!, $betsFirst: Int!, $claimsFirst: Int!, $statsFirst: Int!) {
   _meta { block { number } }
@@ -294,8 +294,10 @@ query UserClaimsAndStats($user: String!, $claimsFirst: Int!, $statsFirst: Int!) 
 `;
 
 // -----------------------------
-// Bulk net (multiple users)
+// Bulk net (multiple users) - v1
 // -----------------------------
+// This is your original bulk query signature: one `$first` applies to all 3 entity pulls.
+// IMPORTANT: Your server MUST pass first <= 1000 or TheGraph will error.
 export const Q_USERS_NET_BULK = `
 query UsersNetBulk($users: [String!]!, $first: Int!) {
   _meta { block { number } }
@@ -309,7 +311,18 @@ query UsersNetBulk($users: [String!]!, $first: Int!) {
     user { id }
     stakedDec
     withdrawnDec
-    game { id league lockTime isFinal }
+    game {
+      id
+      league
+      lockTime
+      isFinal
+      winnerSide
+      winnerTeamCode
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+    }
   }
 
   claims(
@@ -321,7 +334,17 @@ query UsersNetBulk($users: [String!]!, $first: Int!) {
     user { id }
     amountDec
     timestamp
-    game { id league lockTime isFinal }
+    game {
+      id
+      league
+      lockTime
+      isFinal
+      winnerSide
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+    }
   }
 
   bets(
@@ -336,7 +359,98 @@ query UsersNetBulk($users: [String!]!, $first: Int!) {
     fee
     timestamp
     side
-    game { id league lockTime isFinal winnerSide }
+    game {
+      id
+      league
+      lockTime
+      isFinal
+      winnerSide
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+    }
+  }
+}
+`;
+
+// -----------------------------
+// Bulk net (multiple users) - v2 (recommended)
+// -----------------------------
+// Safer signature: independent caps for each entity pull.
+// Use this to prevent accidentally passing a single large $first everywhere.
+export const Q_USERS_NET_BULK_V2 = `
+query UsersNetBulkV2($users: [String!]!, $statsFirst: Int!, $claimsFirst: Int!, $betsFirst: Int!) {
+  _meta { block { number } }
+
+  userGameStats(
+    first: $statsFirst
+    where: { user_in: $users }
+    orderBy: game__lockTime
+    orderDirection: desc
+  ) {
+    user { id }
+    stakedDec
+    withdrawnDec
+    game {
+      id
+      league
+      lockTime
+      isFinal
+      winnerSide
+      winnerTeamCode
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+    }
+  }
+
+  claims(
+    first: $claimsFirst
+    where: { user_in: $users }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    user { id }
+    amountDec
+    timestamp
+    game {
+      id
+      league
+      lockTime
+      isFinal
+      winnerSide
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+    }
+  }
+
+  bets(
+    first: $betsFirst
+    where: { user_in: $users }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    user { id }
+    amountDec
+    grossAmount
+    fee
+    timestamp
+    side
+    game {
+      id
+      league
+      lockTime
+      isFinal
+      winnerSide
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+    }
   }
 }
 `;
