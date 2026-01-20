@@ -551,8 +551,8 @@ export async function getUserRecent(params: {
   }
 
   // ---- Trade-by-trade rows from bets ----
-  const rows: RecentBetRowApi[] = (bulk.bets || [])
-    .map((b) => {
+  const rows = (bulk.bets || [])
+    .map((b): RecentBetRowApi | null => {
       const g = b.game || ({} as any);
 
       const gLeague = safeLeague(g.league);
@@ -563,7 +563,7 @@ export async function getUserRecent(params: {
       const sideRaw = String(b.side || "").toUpperCase();
       const side: "A" | "B" = sideRaw === "B" ? "B" : "A";
 
-      const amountDec = toNum(b.amountDec); // net basis for ROI math
+      const amountDec = toNum(b.amountDec);
       const grossAmountDec = b.grossAmount != null ? toNum(b.grossAmount) : amountDec;
 
       const winnerRaw = String(g.winnerSide || "").toUpperCase();
@@ -572,12 +572,11 @@ export async function getUserRecent(params: {
 
       const betId =
         String((b as any).id || "") ||
-        // stable fallback id
         `${user}:${String(g.id || "").toLowerCase()}:${toNum(b.timestamp)}:${side}`;
 
       return {
         id: betId,
-        timestamp: toNum(b.timestamp), // seconds
+        timestamp: toNum(b.timestamp),
         side,
         amountDec,
         grossAmountDec,
@@ -592,11 +591,10 @@ export async function getUserRecent(params: {
           teamAName: (g as any).teamAName ?? null,
           teamBName: (g as any).teamBName ?? null,
         },
-      } as RecentBetRowApi;
+      };
     })
-    .filter(Boolean)
-    // newest first by bet timestamp
-    .sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0))
+    .filter((x): x is RecentBetRowApi => x !== null)
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
     .slice(0, limit);
 
   const out = {
