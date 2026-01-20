@@ -51,6 +51,29 @@ query ActiveUsersFromTradesWindow(
 }
 `;
 
+export const Q_ACTIVE_USERS_FROM_BETS_WINDOW = `
+query ActiveUsersFromBetsWindow(
+  $leagues: [String!]!
+  $start: BigInt!
+  $end: BigInt!
+  $first: Int!
+  $skip: Int!
+) {
+  bets(
+    first: $first
+    skip: $skip
+    where: {
+      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
+    }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    user { id }
+  }
+}
+`;
+
+
 // Optional: if you want to ensure users who only CLAIM (but have no trades in window)
 // are included, you can union in candidates from claims.
 // Many products skip this because "trader leaderboard" should reflect trading activity,
