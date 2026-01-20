@@ -208,7 +208,7 @@ export async function getLeaderboardUsers(params: {
   // NOTE: TheGraph will cap results; if you exceed, we’ll add pagination later.
   const bulk = await subgraphQuery<G_NetBulkResp>(Q_USERS_NET_BULK, {
     users,
-    first: 5000,
+    first: 500,
   });
 
   // Step 3: Build per-user per-game aggregates in window (final-only for ROI)
@@ -469,7 +469,7 @@ export async function getUserRecent(params: {
   // Reuse Q_USERS_NET_BULK with a single user (simple and consistent with leaderboard math).
   const bulk = await subgraphQuery<G_NetBulkResp>(Q_USERS_NET_BULK, {
     users: [user],
-    first: 5000,
+    first: 500,
   });
 
   const inWindow = (lockTime: number) => lockTime >= start && lockTime <= end;
