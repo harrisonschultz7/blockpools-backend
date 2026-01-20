@@ -1,6 +1,11 @@
 // src/services/metrics/masterMetrics.ts
 import { subgraphQuery } from "../../subgraph/client";
-import { pickLeaderboardQuery, type LeaderboardSort } from "../../subgraph/queries";
+import {
+  pickLeaderboardQuery,
+  type LeaderboardSort,
+  // ✅ these were added in your revised queries.ts
+  Q_ACTIVE_USERS_FROM_TRADES_WINDOW,
+} from "../../subgraph/queries";
 
 type RangeKey = "ALL" | "D30" | "D90";
 type LeagueKey = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL";
@@ -17,10 +22,6 @@ function asLower(a: string) {
 function toNum(v: any): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
-}
-
-function clamp0(n: number) {
-  return n < 0 ? 0 : n;
 }
 
 function computeWindow(range: RangeKey, anchorTs: number) {
@@ -65,8 +66,10 @@ function cacheSet<T>(key: string, val: T, ttlMs: number) {
 }
 
 // ---------------------------
-// Queries
+// Queries (local to this file)
 // ---------------------------
+
+// Windowed bulk pull (paged) for a user set
 const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
   query UsersTradesClaimsStatsBulkPage(
     $users: [String!]!
@@ -77,7 +80,6 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
     $skipTrades: Int!
     $skipClaims: Int!
   ) {
-    # userGameStats is typically small; keep it fixed and not paginated.
     userGameStats(
       first: 1000
       where: {
@@ -106,7 +108,10 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
     claims(
       first: $first
       skip: $skipClaims
-      where: { user_in: $users, game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end } }
+      where: {
+        user_in: $users
+        game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
+      }
       orderBy: timestamp
       orderDirection: desc
     ) {
@@ -130,7 +135,10 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
     trades(
       first: $first
       skip: $skipTrades
-      where: { user_in: $users, game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end } }
+      where: {
+        user_in: $users
+        game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
+      }
       orderBy: timestamp
       orderDirection: desc
     ) {
@@ -169,6 +177,7 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
   }
 `;
 
+// Recent trades page for a single user (timestamp window)
 const Q_USER_RECENT_TRADES_PAGE = /* GraphQL */ `
   query UserRecentTradesPage(
     $user: String!
@@ -217,7 +226,12 @@ const Q_USER_RECENT_TRADES_PAGE = /* GraphQL */ `
     trades(
       first: $first
       skip: $skipTrades
-      where: { user: $user, timestamp_gte: $start, timestamp_lte: $end, game_: { league_in: $leagues } }
+      where: {
+        user: $user
+        timestamp_gte: $start
+        timestamp_lte: $end
+        game_: { league_in: $leagues }
+      }
       orderBy: timestamp
       orderDirection: desc
     ) {
@@ -257,7 +271,7 @@ const Q_USER_RECENT_TRADES_PAGE = /* GraphQL */ `
 `;
 
 // ---------------------------
-// Subgraph types
+// Subgraph types (minimal)
 // ---------------------------
 type G_UserLeagueStats = {
   user: { id: string };
@@ -291,7 +305,6 @@ type G_Trade = {
     lockTime: string;
     isFinal: boolean;
     winnerSide?: string | null;
-    winnerTeamCode?: string | null;
     teamACode?: string | null;
     teamBCode?: string | null;
     teamAName?: string | null;
@@ -327,7 +340,6 @@ type G_UserGameStat = {
     lockTime: string;
     isFinal: boolean;
     winnerSide?: string | null;
-    winnerTeamCode?: string | null;
     teamACode?: string | null;
     teamBCode?: string | null;
     teamAName?: string | null;
@@ -341,6 +353,11 @@ type G_BulkPageResp = {
   userGameStats: G_UserGameStat[];
   claims: G_Claim[];
   trades: G_Trade[];
+};
+
+// used by Q_ACTIVE_USERS_FROM_TRADES_WINDOW
+type G_ActiveUsersFromTradesResp = {
+  trades: Array<{ user: { id: string } }>;
 };
 
 // ---------------------------
@@ -361,6 +378,7 @@ type LeaderboardRowApi = {
   sellsPnl?: number;
   sellsRoi?: number | null;
 
+  // back-compat
   user?: string;
   wonFinal?: number;
 };
@@ -390,14 +408,60 @@ export type RecentTradeRowApi = {
 };
 
 // ---------------------------
-// Internal bulk fetchers (paginate within Graph limits)
+// Candidate shortlist (range-correct)
+// ---------------------------
+async function collectActiveUsersFromTradesWindow(params: {
+  leagues: string[];
+  start: number;
+  end: number;
+  targetUsers: number;
+  maxPages?: number;
+}): Promise<string[]> {
+  const target = Math.max(1, Math.min(params.targetUsers, 2000));
+  const first = GQL_MAX_FIRST;
+  const maxPages = Math.max(1, Math.min(params.maxPages ?? 10, 25));
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  let skip = 0;
+  for (let pageNo = 0; pageNo < maxPages; pageNo++) {
+    const resp = await subgraphQuery<G_ActiveUsersFromTradesResp>(
+      Q_ACTIVE_USERS_FROM_TRADES_WINDOW,
+      {
+        leagues: params.leagues,
+        start: String(params.start),
+        end: String(params.end),
+        first,
+        skip,
+      }
+    );
+
+    const rows = resp.trades || [];
+    for (const r of rows) {
+      const u = asLower(r?.user?.id);
+      if (!u) continue;
+      if (seen.has(u)) continue;
+      seen.add(u);
+      out.push(u);
+      if (out.length >= target) return out;
+    }
+
+    if (rows.length < first) break;
+    skip += first;
+  }
+
+  return out;
+}
+
+// ---------------------------
+// Internal bulk fetchers (paged)
 // ---------------------------
 async function fetchBulkWindowed(params: {
   users: string[];
   leagues: string[];
   start: number;
   end: number;
-  // hard cap on total rows pulled per collection to protect backend
   maxTrades?: number;
   maxClaims?: number;
 }): Promise<{ userGameStats: G_UserGameStat[]; trades: G_Trade[]; claims: G_Claim[] }> {
@@ -406,7 +470,7 @@ async function fetchBulkWindowed(params: {
   const maxTrades = Math.max(0, Math.min(params.maxTrades ?? 3000, 10000));
   const maxClaims = Math.max(0, Math.min(params.maxClaims ?? 3000, 10000));
 
-  // Pull first page to also get userGameStats (we only need it once)
+  // First page includes stats; we only need stats once.
   const base = await subgraphQuery<G_BulkPageResp>(Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE, {
     users: params.users,
     leagues: params.leagues,
@@ -418,7 +482,6 @@ async function fetchBulkWindowed(params: {
   });
 
   const outStats = base.userGameStats || [];
-
   const outTrades: G_Trade[] = [];
   const outClaims: G_Claim[] = [];
 
@@ -426,24 +489,24 @@ async function fetchBulkWindowed(params: {
   {
     let skip = 0;
     while (outTrades.length < maxTrades) {
-      const page = skip === 0 ? base.trades || [] : (
-        await subgraphQuery<G_BulkPageResp>(Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE, {
-          users: params.users,
-          leagues: params.leagues,
-          start: String(params.start),
-          end: String(params.end),
-          first,
-          skipTrades: skip,
-          skipClaims: 0, // unused on this pass
-        })
-      ).trades || [];
+      const page =
+        skip === 0
+          ? base.trades || []
+          : (
+              await subgraphQuery<G_BulkPageResp>(Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE, {
+                users: params.users,
+                leagues: params.leagues,
+                start: String(params.start),
+                end: String(params.end),
+                first,
+                skipTrades: skip,
+                skipClaims: 0,
+              })
+            ).trades || [];
 
       outTrades.push(...page);
-
       if (page.length < first) break;
       skip += first;
-
-      // safety: avoid pathological scans
       if (skip > 20000) break;
     }
   }
@@ -452,28 +515,33 @@ async function fetchBulkWindowed(params: {
   {
     let skip = 0;
     while (outClaims.length < maxClaims) {
-      const page = skip === 0 ? base.claims || [] : (
-        await subgraphQuery<G_BulkPageResp>(Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE, {
-          users: params.users,
-          leagues: params.leagues,
-          start: String(params.start),
-          end: String(params.end),
-          first,
-          skipTrades: 0, // unused on this pass
-          skipClaims: skip,
-        })
-      ).claims || [];
+      const page =
+        skip === 0
+          ? base.claims || []
+          : (
+              await subgraphQuery<G_BulkPageResp>(Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE, {
+                users: params.users,
+                leagues: params.leagues,
+                start: String(params.start),
+                end: String(params.end),
+                first,
+                skipTrades: 0,
+                skipClaims: skip,
+              })
+            ).claims || [];
 
       outClaims.push(...page);
-
       if (page.length < first) break;
       skip += first;
-
       if (skip > 20000) break;
     }
   }
 
-  return { userGameStats: outStats, trades: outTrades.slice(0, maxTrades), claims: outClaims.slice(0, maxClaims) };
+  return {
+    userGameStats: outStats,
+    trades: outTrades.slice(0, maxTrades),
+    claims: outClaims.slice(0, maxClaims),
+  };
 }
 
 async function fetchUserRecentTrades(params: {
@@ -483,9 +551,10 @@ async function fetchUserRecentTrades(params: {
   end: number;
   limit: number;
 }): Promise<G_BulkPageResp> {
-  // pull enough trades pages so we can return `limit` after filtering/sorting
   const first = GQL_MAX_FIRST;
-  const need = Math.max(params.limit * 5, 200); // heuristic buffer
+
+  // pull more than limit so filtering/sorting stays stable
+  const need = Math.max(params.limit * 6, 200);
   const maxPull = Math.min(Math.max(need, 200), 3000);
 
   let allTrades: G_Trade[] = [];
@@ -531,12 +600,12 @@ export async function getLeaderboardUsers(params: {
 }): Promise<{ asOf: string; rows: LeaderboardRowApi[] }> {
   const anchorTs = params.anchorTs ?? Math.floor(Date.now() / 1000);
   const { start, end } = computeWindow(params.range, anchorTs);
-
   const leagues = leagueList(params.league);
+
   const limit = Math.max(1, Math.min(params.limit || 250, 500));
 
   const key = cacheKey({
-    v: "lb_users_v4_trades_paged",
+    v: "lb_users_v5_range_correct",
     league: params.league,
     range: params.range,
     sort: params.sort,
@@ -547,64 +616,84 @@ export async function getLeaderboardUsers(params: {
   const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
   if (cached) return cached;
 
-  // Step 1: shortlist candidate users (fast)
-  const q = pickLeaderboardQuery(params.sort);
-  const lb = await subgraphQuery<G_LeaderboardResp>(q, {
-    leagues,
-    skip: 0,
-    first: limit,
-  });
+  // ---------------------------
+  // Step 1: candidate users
+  // ---------------------------
+  //
+  // For D30/D90: shortlist from trades in the lockTime window (range-correct).
+  // For ALL: keep your old fast method via userLeagueStats, but clamp first <= 500.
+  //
+  // IMPORTANT: This prevents “D30 empty / wrong users” caused by userLeagueStats being ALL-time.
+  let users: string[] = [];
 
-  const users = Array.from(new Set(lb.userLeagueStats.map((x) => asLower(x.user.id)).filter(Boolean)));
+  if (params.range !== "ALL") {
+    users = await collectActiveUsersFromTradesWindow({
+      leagues,
+      start,
+      end,
+      targetUsers: limit,
+      maxPages: 10,
+    });
+  } else {
+    const q = pickLeaderboardQuery(params.sort);
+    const lb = await subgraphQuery<G_LeaderboardResp>(q, {
+      leagues,
+      skip: 0,
+      first: Math.min(limit, 500),
+    });
+
+    users = Array.from(
+      new Set(lb.userLeagueStats.map((x) => asLower(x.user.id)).filter(Boolean))
+    );
+  }
+
   if (!users.length) {
     const out = { asOf: new Date().toISOString(), rows: [] as LeaderboardRowApi[] };
     cacheSet(key, out, 60_000);
     return out;
   }
 
-  // Step 2: fetch windowed activity with pagination (within Graph constraints)
+  // ---------------------------
+  // Step 2: bulk fetch within window
+  // ---------------------------
   const bulk = await fetchBulkWindowed({
     users,
     leagues,
     start,
     end,
-    maxTrades: 4000,
-    maxClaims: 4000,
+    maxTrades: 5000,
+    maxClaims: 5000,
   });
 
   const inLockWindow = (lockTime: number) => lockTime >= start && lockTime <= end;
 
-  // Step 3: per-user per-game aggregates
-  const byUserGame = new Map<
-    string,
-    {
-      league: string;
-      lockTime: number;
-      isFinal: boolean;
-      winnerSide?: string | null;
+  // ---------------------------
+  // Step 3: aggregate per user-game
+  // ---------------------------
+  type UserGameAgg = {
+    league: string;
+    lockTime: number;
+    isFinal: boolean;
 
-      staked: number;
-      withdrawn: number;
+    buyGross: number; // sum BUY grossInDec
+    buyCount: number;
 
-      buyGross: number;
-      buyCount: number;
+    sellGross: number; // sum SELL grossOutDec
+    sellNet: number; // sum SELL netOutDec
+    sellCostClosed: number; // sum SELL costBasisClosedDec
+    sellPnl: number; // sum SELL realizedPnlDec
+    sellCount: number;
 
-      sellGross: number;
-      sellNet: number;
-      sellCostClosed: number;
-      sellPnl: number;
-      sellCount: number;
+    claimTotal: number;
+  };
 
-      claimTotal: number;
-    }
-  >();
+  const byUserGame = new Map<string, UserGameAgg>();
 
-  // stats snapshot
+  // Seed from stats (ensures we know isFinal & league even if trades sparse)
   for (const s of bulk.userGameStats || []) {
     const u = asLower(s.user.id);
     const lockTime = toNum(s.game.lockTime);
     const gLeague = safeLeague(s.game.league);
-
     if (!inLockWindow(lockTime)) continue;
     if (!leagues.includes(gLeague)) continue;
 
@@ -612,14 +701,11 @@ export async function getLeaderboardUsers(params: {
     const k = `${u}|${gid}`;
 
     const cur =
-      byUserGame.get(k) || {
+      byUserGame.get(k) ||
+      ({
         league: gLeague,
         lockTime,
         isFinal: !!s.game.isFinal,
-        winnerSide: (s.game as any).winnerSide ?? null,
-
-        staked: 0,
-        withdrawn: 0,
 
         buyGross: 0,
         buyCount: 0,
@@ -631,21 +717,17 @@ export async function getLeaderboardUsers(params: {
         sellCount: 0,
 
         claimTotal: 0,
-      };
+      } as UserGameAgg);
 
-    cur.staked = Math.max(cur.staked, toNum(s.stakedDec));
-    cur.withdrawn = Math.max(cur.withdrawn, toNum(s.withdrawnDec));
     cur.isFinal = !!s.game.isFinal;
-
     byUserGame.set(k, cur);
   }
 
-  // trades
+  // Trades
   for (const t of bulk.trades || []) {
     const u = asLower(t.user.id);
     const lockTime = toNum(t.game.lockTime);
     const gLeague = safeLeague(t.game.league);
-
     if (!inLockWindow(lockTime)) continue;
     if (!leagues.includes(gLeague)) continue;
 
@@ -653,14 +735,11 @@ export async function getLeaderboardUsers(params: {
     const k = `${u}|${gid}`;
 
     const cur =
-      byUserGame.get(k) || {
+      byUserGame.get(k) ||
+      ({
         league: gLeague,
         lockTime,
         isFinal: !!t.game.isFinal,
-        winnerSide: t.game.winnerSide ?? null,
-
-        staked: 0,
-        withdrawn: 0,
 
         buyGross: 0,
         buyCount: 0,
@@ -672,12 +751,12 @@ export async function getLeaderboardUsers(params: {
         sellCount: 0,
 
         claimTotal: 0,
-      };
+      } as UserGameAgg);
 
     if (t.type === "BUY") {
       cur.buyGross += toNum(t.grossInDec);
       cur.buyCount += 1;
-    } else if (t.type === "SELL") {
+    } else {
       cur.sellGross += toNum(t.grossOutDec);
       cur.sellNet += toNum(t.netOutDec);
       cur.sellCostClosed += toNum(t.costBasisClosedDec);
@@ -689,12 +768,11 @@ export async function getLeaderboardUsers(params: {
     byUserGame.set(k, cur);
   }
 
-  // claims
+  // Claims
   for (const c of bulk.claims || []) {
     const u = asLower(c.user.id);
     const lockTime = toNum(c.game.lockTime);
     const gLeague = safeLeague(c.game.league);
-
     if (!inLockWindow(lockTime)) continue;
     if (!leagues.includes(gLeague)) continue;
 
@@ -702,14 +780,11 @@ export async function getLeaderboardUsers(params: {
     const k = `${u}|${gid}`;
 
     const cur =
-      byUserGame.get(k) || {
+      byUserGame.get(k) ||
+      ({
         league: gLeague,
         lockTime,
         isFinal: !!c.game.isFinal,
-        winnerSide: (c.game as any).winnerSide ?? null,
-
-        staked: 0,
-        withdrawn: 0,
 
         buyGross: 0,
         buyCount: 0,
@@ -721,97 +796,109 @@ export async function getLeaderboardUsers(params: {
         sellCount: 0,
 
         claimTotal: 0,
-      };
+      } as UserGameAgg);
 
     cur.claimTotal += toNum(c.amountDec);
     cur.isFinal = !!c.game.isFinal;
     byUserGame.set(k, cur);
   }
 
-  // Step 4: per-user metrics (FINAL-only)
-  const perUser = new Map<
-    string,
-    {
-      buyGrossFinal: number;
-      sellNetFinal: number;
-      sellPnlFinal: number;
-      sellCostFinal: number;
+  // ---------------------------
+  // Step 4: roll up per-user leaderboard metrics (FINAL only)
+  // ---------------------------
+  type UserAgg = {
+    buyGrossFinal: number; // denominator for roiNet
+    sellNetFinal: number; // contributes to return
+    claimFinal: number; // contributes to return
 
-      claimFinal: number;
-      tradedFinal: number;
+    sellPnlFinal: number;
+    sellCostFinal: number;
 
-      gamesFinalWithAny: number;
-      buyCountFinal: number;
+    tradedFinal: number; // buyGross + sellGross
+    gamesFinal: number; // count of final games with activity
+    tradesCountFinal: number; // buyCount + sellCount
+    poolsJoinedFinal: number; // same as gamesFinal (kept for UI compat)
 
-      poolsJoinedFinal: number;
-      favoriteLeague: Record<string, number>;
-    }
-  >();
+    favLeagueVolume: Record<string, number>;
+  };
+
+  const perUser = new Map<string, UserAgg>();
 
   for (const [keyUG, g] of byUserGame.entries()) {
     const [u] = keyUG.split("|");
     if (!g.isFinal) continue;
 
+    const hasAny = g.buyGross > 0 || g.sellGross > 0 || g.claimTotal > 0;
+    if (!hasAny) continue;
+
     const traded = g.buyGross + g.sellGross;
-    const hasBuy = g.buyGross > 0;
 
     const agg =
-      perUser.get(u) || {
+      perUser.get(u) ||
+      ({
         buyGrossFinal: 0,
         sellNetFinal: 0,
+        claimFinal: 0,
+
         sellPnlFinal: 0,
         sellCostFinal: 0,
 
-        claimFinal: 0,
         tradedFinal: 0,
-
-        gamesFinalWithAny: 0,
-        buyCountFinal: 0,
-
+        gamesFinal: 0,
+        tradesCountFinal: 0,
         poolsJoinedFinal: 0,
-        favoriteLeague: {},
-      };
+
+        favLeagueVolume: {},
+      } as UserAgg);
 
     agg.tradedFinal += traded;
 
-    if (hasBuy) {
-      agg.buyGrossFinal += g.buyGross;
-      agg.sellNetFinal += g.sellNet;
-      agg.sellPnlFinal += g.sellPnl;
-      agg.sellCostFinal += g.sellCostClosed;
+    // ROI cashflows:
+    //   denom = total BUY gross in (capital in)
+    //   return = total CLAIMS + total SELL net out (cash received)
+    agg.buyGrossFinal += g.buyGross;
+    agg.sellNetFinal += g.sellNet;
+    agg.claimFinal += g.claimTotal;
 
-      agg.claimFinal += g.claimTotal;
+    // sell analytics
+    agg.sellPnlFinal += g.sellPnl;
+    agg.sellCostFinal += g.sellCostClosed;
 
-      agg.buyCountFinal += g.buyCount;
-      agg.gamesFinalWithAny += 1;
-      agg.poolsJoinedFinal += 1;
+    // counts
+    agg.tradesCountFinal += g.buyCount + g.sellCount;
+    agg.gamesFinal += 1;
+    agg.poolsJoinedFinal += 1;
 
-      agg.favoriteLeague[g.league] = (agg.favoriteLeague[g.league] || 0) + traded;
-    }
+    agg.favLeagueVolume[g.league] = (agg.favLeagueVolume[g.league] || 0) + traded;
 
     perUser.set(u, agg);
   }
 
   const rows: LeaderboardRowApi[] = users.map((u) => {
     const agg =
-      perUser.get(u) || {
+      perUser.get(u) ||
+      ({
         buyGrossFinal: 0,
         sellNetFinal: 0,
+        claimFinal: 0,
         sellPnlFinal: 0,
         sellCostFinal: 0,
-        claimFinal: 0,
         tradedFinal: 0,
-        gamesFinalWithAny: 0,
-        buyCountFinal: 0,
+        gamesFinal: 0,
+        tradesCountFinal: 0,
         poolsJoinedFinal: 0,
-        favoriteLeague: {},
-      };
+        favLeagueVolume: {},
+      } as UserAgg);
 
     const denom = agg.buyGrossFinal;
     const totalReturn = agg.claimFinal + agg.sellNetFinal;
+
+    // If a user has only sells (no buys) denom=0. We return null instead of infinity.
     const roiNet = denom > 0 ? totalReturn / denom - 1 : null;
 
-    const fav = Object.entries(agg.favoriteLeague).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    const fav =
+      Object.entries(agg.favLeagueVolume).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
     const sellsRoi = agg.sellCostFinal > 0 ? agg.sellPnlFinal / agg.sellCostFinal : null;
 
     return {
@@ -819,25 +906,32 @@ export async function getLeaderboardUsers(params: {
       tradedGross: agg.tradedFinal,
       claimsFinal: agg.claimFinal,
       roiNet,
-      tradesNet: agg.gamesFinalWithAny,
-      betsCount: agg.buyCountFinal,
+
+      tradesNet: agg.gamesFinal,
+      betsCount: agg.tradesCountFinal, // now means "total trades" (BUY+SELL) in final window
       poolsJoined: agg.poolsJoinedFinal,
       favoriteLeague: fav,
+
       sellsNet: agg.sellNetFinal,
       sellsPnl: agg.sellPnlFinal,
       sellsRoi,
+
       user: u,
       wonFinal: agg.claimFinal,
     };
   });
 
+  // Sort
   const sort = String(params.sort || "ROI").toUpperCase() as LeaderboardSort;
   rows.sort((a, b) => {
     switch (sort) {
       case "GROSS_VOLUME":
+        return (b.tradedGross ?? 0) - (a.tradedGross ?? 0);
       case "TOTAL_STAKED":
+        // legacy label; for your trading model, tradedGross is closer to "activity"
         return (b.tradedGross ?? 0) - (a.tradedGross ?? 0);
       case "LAST_UPDATED":
+        // not available in this computation; fallback to ROI
         return (b.roiNet ?? -1e18) - (a.roiNet ?? -1e18);
       case "ROI":
       default:
@@ -846,7 +940,7 @@ export async function getLeaderboardUsers(params: {
   });
 
   const out = { asOf: new Date().toISOString(), rows };
-  cacheSet(key, out, 120_000);
+  cacheSet(key, out, 90_000);
   return out;
 }
 
@@ -871,7 +965,7 @@ export async function getUserRecent(params: {
   const leagues = leagueList(params.league);
 
   const key = cacheKey({
-    v: "lb_recent_trades_v4_paged",
+    v: "lb_recent_trades_v5",
     user,
     league: params.league,
     range,
@@ -895,16 +989,18 @@ export async function getUserRecent(params: {
     limit,
   });
 
+  // net position snapshot by game = staked - withdrawn (for UI context)
   const netPositionByGame: Record<string, number> = {};
   for (const s of bundle.userGameStats || []) {
     const gLeague = safeLeague(s.game?.league);
     if (!leagues.includes(gLeague)) continue;
     const gid = String(s.game?.id || "").toLowerCase();
     if (!gid) continue;
-    const netPos = clamp0(toNum(s.stakedDec) - toNum(s.withdrawnDec));
+    const netPos = Math.max(0, toNum(s.stakedDec) - toNum(s.withdrawnDec));
     netPositionByGame[gid] = Math.max(netPositionByGame[gid] || 0, netPos);
   }
 
+  // claims by game (for "claimed" chips)
   const claimByGame: Record<string, number> = {};
   for (const c of bundle.claims || []) {
     const gLeague = safeLeague(c.game?.league);
@@ -931,6 +1027,9 @@ export async function getUserRecent(params: {
       const winnerSide: "A" | "B" | null =
         winnerRaw === "A" || winnerRaw === "B" ? (winnerRaw as any) : null;
 
+      // Normalize columns for UI:
+      // BUY: amount=netStake, gross=grossIn
+      // SELL: amount=netOut,  gross=grossOut
       const amountDec = type === "BUY" ? toNum(t.netStakeDec) : toNum(t.netOutDec);
       const grossAmountDec = type === "BUY" ? toNum(t.grossInDec) : toNum(t.grossOutDec);
 
@@ -963,6 +1062,6 @@ export async function getUserRecent(params: {
     .slice(0, limit);
 
   const out = { asOf: new Date().toISOString(), user, rows, claimByGame };
-  cacheSet(key, out, 60_000);
+  cacheSet(key, out, 45_000);
   return out;
 }

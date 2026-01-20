@@ -1,16 +1,16 @@
 // src/subgraph/queries.ts
 //
-// Queries aligned to your schema.graphql:
+// Queries aligned to your schema.graphql.
 //
-// Entities available:
-// - userLeagueStats(where: { league_in: [...] }, orderBy: roiDec|totalStakedDec|grossVolumeDec|lastUpdatedAt|...)
-// - bets(where: { user: "..."} orderBy: timestamp)
-// - claims(where: { user: "..."} orderBy: timestamp)
-// - userGameStats(where: { user: "..."} orderBy: game__lockTime)
+// Entities you actively use for leaderboard accuracy (range-aware):
+// - trades (BUY/SELL)
+// - claims
+// - userGameStats
 //
 // Notes:
-// - TheGraph enforces `first` between 0 and 1000 (inclusive). Ensure your server never sends > 1000.
-// - "range" is not a schema-level filter; apply range post-fetch in your server code.
+// - TheGraph enforces `first` <= 1000.
+// - For D30/D90 correctness, shortlist users from *activity* (trades) within the window.
+// - userLeagueStats is useful for ALL-time / coarse ranking, but it is NOT range-aware.
 
 export const Q_META_ONLY = `
 query MetaOnly {
@@ -19,13 +19,72 @@ query MetaOnly {
 `;
 
 // -----------------------------
-// Leaderboard
+// Activity-based shortlist (recommended)
 // -----------------------------
 //
-// We provide variants because GraphQL variables cannot be used to choose the orderBy field.
-// Your server can select which query string to use based on req.query.sort.
+// These queries are used to obtain a candidate set of users who were active within a window.
+// They are range-aware via game.lockTime filters (anchor window applied server-side).
 //
-// Default sort = ROI (desc)
+// Typical server strategy:
+// - Pull pages until you collect ~limit unique users (or a cap).
+// - Then compute per-user metrics from bulk trades/claims/stats.
+
+export const Q_ACTIVE_USERS_FROM_TRADES_WINDOW = `
+query ActiveUsersFromTradesWindow(
+  $leagues: [String!]!
+  $start: BigInt!
+  $end: BigInt!
+  $first: Int!
+  $skip: Int!
+) {
+  trades(
+    first: $first
+    skip: $skip
+    where: {
+      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
+    }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    user { id }
+  }
+}
+`;
+
+// Optional: if you want to ensure users who only CLAIM (but have no trades in window)
+// are included, you can union in candidates from claims.
+// Many products skip this because "trader leaderboard" should reflect trading activity,
+// but this is here if you want completeness.
+
+export const Q_ACTIVE_USERS_FROM_CLAIMS_WINDOW = `
+query ActiveUsersFromClaimsWindow(
+  $leagues: [String!]!
+  $start: BigInt!
+  $end: BigInt!
+  $first: Int!
+  $skip: Int!
+) {
+  claims(
+    first: $first
+    skip: $skip
+    where: {
+      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
+    }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    user { id }
+  }
+}
+`;
+
+// -----------------------------
+// Leaderboard (UserLeagueStat) - range-agnostic
+// -----------------------------
+//
+// We keep these because they can still be useful for ALL-time or as a fallback.
+// Your server can select which query string to use based on req.query.sort.
+
 export const Q_LEADERBOARD_BY_ROI = `
 query LeaderboardByRoi($leagues: [String!], $skip: Int!, $first: Int!) {
   _meta { block { number } }
@@ -52,7 +111,6 @@ query LeaderboardByRoi($leagues: [String!], $skip: Int!, $first: Int!) {
 }
 `;
 
-// Alternative sort = TOTAL_STAKED (desc)
 export const Q_LEADERBOARD_BY_TOTAL_STAKED = `
 query LeaderboardByTotalStaked($leagues: [String!], $skip: Int!, $first: Int!) {
   _meta { block { number } }
@@ -79,7 +137,6 @@ query LeaderboardByTotalStaked($leagues: [String!], $skip: Int!, $first: Int!) {
 }
 `;
 
-// Alternative sort = GROSS_VOLUME (desc)
 export const Q_LEADERBOARD_BY_GROSS_VOLUME = `
 query LeaderboardByGrossVolume($leagues: [String!], $skip: Int!, $first: Int!) {
   _meta { block { number } }
@@ -106,7 +163,6 @@ query LeaderboardByGrossVolume($leagues: [String!], $skip: Int!, $first: Int!) {
 }
 `;
 
-// Alternative sort = LAST_UPDATED (desc)
 export const Q_LEADERBOARD_BY_LAST_UPDATED = `
 query LeaderboardByLastUpdated($leagues: [String!], $skip: Int!, $first: Int!) {
   _meta { block { number } }
@@ -134,12 +190,12 @@ query LeaderboardByLastUpdated($leagues: [String!], $skip: Int!, $first: Int!) {
 `;
 
 // -----------------------------
-// User summary (dropdown / profile top)
+// User summary (legacy: bets + claims + stats)
 // -----------------------------
 //
-// Pulls latest bets + latest claims + per-game net stats.
-// - Bet/Claim ordering uses `timestamp`
-// - userGameStats ordering uses `game__lockTime`
+// Keep this for any pages still using bets-based history.
+// Your new leaderboard dropdown should use the trades-based recent endpoint instead.
+
 export const Q_USER_SUMMARY = `
 query UserSummary($user: String!, $betsFirst: Int!, $claimsFirst: Int!, $statsFirst: Int!) {
   _meta { block { number } }
@@ -212,7 +268,67 @@ query UserSummary($user: String!, $betsFirst: Int!, $claimsFirst: Int!, $statsFi
 `;
 
 // -----------------------------
-// User bets (paged)
+// User trades (paged) - new
+// -----------------------------
+//
+// If you want a generic trades page query (outside of masterMetrics.ts),
+// this is a clean canonical version.
+
+export const Q_USER_TRADES_PAGE = `
+query UserTradesPage(
+  $user: String!
+  $leagues: [String!]!
+  $start: BigInt!
+  $end: BigInt!
+  $first: Int!
+  $skip: Int!
+) {
+  _meta { block { number } }
+
+  trades(
+    first: $first
+    skip: $skip
+    where: {
+      user: $user
+      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
+    }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    id
+    user { id }
+    league
+    type
+    side
+    timestamp
+    txHash
+    spotPriceBps
+    avgPriceBps
+    grossInDec
+    grossOutDec
+    feeDec
+    netStakeDec
+    netOutDec
+    costBasisClosedDec
+    realizedPnlDec
+    game {
+      id
+      league
+      lockTime
+      isFinal
+      winnerSide
+      winnerTeamCode
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+    }
+  }
+}
+`;
+
+// -----------------------------
+// User bets (paged) - legacy
 // -----------------------------
 export const Q_USER_BETS_PAGE = `
 query UserBetsPage($user: String!, $first: Int!, $skip: Int!) {
@@ -250,7 +366,7 @@ query UserBetsPage($user: String!, $first: Int!, $skip: Int!) {
 `;
 
 // -----------------------------
-// User claims + stats (not paged)
+// User claims + stats (legacy)
 // -----------------------------
 export const Q_USER_CLAIMS_AND_STATS = `
 query UserClaimsAndStats($user: String!, $claimsFirst: Int!, $statsFirst: Int!) {
@@ -294,10 +410,8 @@ query UserClaimsAndStats($user: String!, $claimsFirst: Int!, $statsFirst: Int!) 
 `;
 
 // -----------------------------
-// Bulk net (multiple users) - v1
+// Bulk net (multiple users) - legacy bets-based v1/v2
 // -----------------------------
-// This is your original bulk query signature: one `$first` applies to all 3 entity pulls.
-// IMPORTANT: Your server MUST pass first <= 1000 or TheGraph will error.
 export const Q_USERS_NET_BULK = `
 query UsersNetBulk($users: [String!]!, $first: Int!) {
   _meta { block { number } }
@@ -374,11 +488,6 @@ query UsersNetBulk($users: [String!]!, $first: Int!) {
 }
 `;
 
-// -----------------------------
-// Bulk net (multiple users) - v2 (recommended)
-// -----------------------------
-// Safer signature: independent caps for each entity pull.
-// Use this to prevent accidentally passing a single large $first everywhere.
 export const Q_USERS_NET_BULK_V2 = `
 query UsersNetBulkV2($users: [String!]!, $statsFirst: Int!, $claimsFirst: Int!, $betsFirst: Int!) {
   _meta { block { number } }
