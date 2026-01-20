@@ -350,6 +350,52 @@ query UserTradesPage(
 }
 `;
 
+export const Q_USER_BETS_WINDOW_PAGE = `
+query UserBetsWindowPage(
+  $user: String!
+  $leagues: [String!]!
+  $start: BigInt!
+  $end: BigInt!
+  $first: Int!
+  $skip: Int!
+) {
+  _meta { block { number } }
+
+  bets(
+    first: $first
+    skip: $skip
+    where: {
+      user: $user
+      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
+    }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    id
+    amountDec
+    grossAmount
+    fee
+    timestamp
+    side
+    priceBps
+    sharesOut
+    sharesOutDec
+    game {
+      id
+      league
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+      lockTime
+      winnerSide
+      isFinal
+    }
+  }
+}
+`;
+
+
 // -----------------------------
 // User bets (paged) - legacy
 // -----------------------------
@@ -586,6 +632,8 @@ query UsersNetBulkV2($users: [String!]!, $statsFirst: Int!, $claimsFirst: Int!, 
   }
 }
 `;
+
+
 
 // -----------------------------
 // Helper: pick leaderboard query by sort

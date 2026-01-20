@@ -5,6 +5,9 @@ import {
   type LeaderboardSort,
   Q_ACTIVE_USERS_FROM_TRADES_WINDOW,
   Q_ACTIVE_USERS_FROM_BETS_WINDOW,
+
+  // ✅ add this (must exist in src/subgraph/queries.ts)
+  Q_USER_BETS_WINDOW_PAGE,
 } from "../../subgraph/queries";
 
 type RangeKey = "ALL" | "D30" | "D90";
@@ -410,6 +413,12 @@ type G_ActiveUsersFromTradesResp = {
   trades: Array<{ user: { id: string } }>;
 };
 
+type G_UserRecentBetsResp = {
+  _meta?: any;
+  bets: G_Bet[];
+};
+
+
 // ---------------------------
 // API shapes
 // ---------------------------
@@ -719,6 +728,27 @@ async function fetchUserRecentTrades(params: {
   }
 
   return { userGameStats: stats, claims, trades: allTrades.slice(0, maxPull) } as any;
+}
+
+// ✅ NEW: legacy recent bets (range+league aware via game.lockTime window)
+async function fetchUserRecentBets(params: {
+  user: string;
+  leagues: string[];
+  start: number;
+  end: number;
+  limit: number;
+}): Promise<G_Bet[]> {
+  const first = Math.max(1, Math.min(params.limit, 50));
+  const resp = await subgraphQuery<G_UserRecentBetsResp>(Q_USER_BETS_WINDOW_PAGE, {
+    user: params.user,
+    leagues: params.leagues,
+    start: String(params.start),
+    end: String(params.end),
+    first,
+    skip: 0,
+  });
+
+  return (resp?.bets || []).slice(0, first);
 }
 
 // ---------------------------
@@ -1134,6 +1164,9 @@ export async function getUserRecent(params: {
   limit: number;
   anchorTs?: number;
   range?: RangeKey;
+
+  // ✅ NEW: allow API to force legacy inclusion
+  includeLegacy?: boolean;
 }): Promise<{
   asOf: string;
   user: string;
@@ -1149,12 +1182,13 @@ export async function getUserRecent(params: {
   const leagues = leagueList(params.league);
 
   const key = cacheKey({
-    v: "lb_recent_trades_v5",
+    v: "lb_recent_trades_v6_legacy_fallback",
     user,
     league: params.league,
     range,
     limit,
     anchorTs,
+    includeLegacy: params.includeLegacy ? 1 : 0,
   });
 
   const cached = cacheGet<{
@@ -1194,7 +1228,7 @@ export async function getUserRecent(params: {
     claimByGame[gid] = (claimByGame[gid] || 0) + toNum(c.amountDec);
   }
 
-  const rows = (bundle.trades || [])
+  const tradeRows: RecentTradeRowApi[] = (bundle.trades || [])
     .map((t): RecentTradeRowApi | null => {
       const g = t.game || ({} as any);
       const gLeague = safeLeague(g.league);
@@ -1241,7 +1275,59 @@ export async function getUserRecent(params: {
         },
       };
     })
-    .filter((x): x is RecentTradeRowApi => x !== null)
+    .filter((x): x is RecentTradeRowApi => x !== null);
+
+  // ✅ legacy fallback: if explicitly requested OR user has no trades (legacy user)
+  let legacyRows: RecentTradeRowApi[] = [];
+  if (params.includeLegacy || tradeRows.length === 0) {
+    const bets = await fetchUserRecentBets({ user, leagues, start, end, limit });
+
+    legacyRows = (bets || [])
+      .map((b): RecentTradeRowApi | null => {
+        const g = b.game || ({} as any);
+        const gLeague = safeLeague(g.league);
+        if (!leagues.includes(gLeague)) return null;
+
+        const gid = String(g.id || "").toLowerCase();
+        const ts = toNum(b.timestamp);
+
+        const sideRaw = String(b.side || "").toUpperCase();
+        const side: "A" | "B" = sideRaw === "B" ? "B" : "A";
+
+        const winnerRaw = String(g.winnerSide || "").toUpperCase();
+        const winnerSide: "A" | "B" | null =
+          winnerRaw === "A" || winnerRaw === "B" ? (winnerRaw as any) : null;
+
+        // Legacy bets are effectively BUY rows for the dropdown UX
+        return {
+          id: b.id,
+          timestamp: ts,
+          type: "BUY",
+          side,
+          amountDec: toNum(b.amountDec),
+          grossAmountDec: toNum(b.grossAmount),
+          feeDec: toNum(b.fee) || 0,
+          realizedPnlDec: 0,
+          costBasisClosedDec: 0,
+          netPositionDec: netPositionByGame[gid] || 0,
+          game: {
+            id: gid,
+            league: gLeague || "—",
+            lockTime: toNum(g.lockTime),
+            isFinal: !!g.isFinal,
+            winnerSide,
+            teamACode: (g as any).teamACode ?? null,
+            teamBCode: (g as any).teamBCode ?? null,
+            teamAName: (g as any).teamAName ?? null,
+            teamBName: (g as any).teamBName ?? null,
+          },
+        };
+      })
+      .filter((x): x is RecentTradeRowApi => x !== null);
+  }
+
+  // ✅ merge, sort newest-first, clamp to limit
+  const rows = [...tradeRows, ...legacyRows]
     .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
     .slice(0, limit);
 

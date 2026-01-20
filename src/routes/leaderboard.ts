@@ -41,7 +41,7 @@ r.get("/leaderboard/users", async (req, res, next) => {
   }
 });
 
-// GET /api/leaderboard/users/:address/recent?league=ALL&limit=5&range=ALL&anchorTs=...
+// GET /api/leaderboard/users/:address/recent?league=ALL&limit=5&range=ALL&anchorTs=...&includeLegacy=1
 r.get("/leaderboard/users/:address/recent", async (req, res, next) => {
   try {
     const user = String(req.params.address || "").toLowerCase();
@@ -52,8 +52,14 @@ r.get("/leaderboard/users/:address/recent", async (req, res, next) => {
     const anchorTs =
       req.query.anchorTs != null ? Math.floor(Number(req.query.anchorTs)) : undefined;
 
-    const out = await getUserRecent({ user, league, limit, range, anchorTs });
-    res.json({ league, range, limit, anchorTs: anchorTs ?? null, ...out });
+    // ✅ NEW: allow frontend to force legacy inclusion (and backend will also fallback automatically)
+    const includeLegacy =
+      req.query.includeLegacy != null
+        ? Number(req.query.includeLegacy) === 1
+        : false;
+
+    const out = await getUserRecent({ user, league, limit, range, anchorTs, includeLegacy });
+    res.json({ league, range, limit, anchorTs: anchorTs ?? null, includeLegacy, ...out });
   } catch (e) {
     next(e);
   }
