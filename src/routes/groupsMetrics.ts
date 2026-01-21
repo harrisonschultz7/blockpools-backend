@@ -5,6 +5,7 @@
 // Endpoints:
 //   GET /api/groups/_ping
 //   GET /api/groups/leaderboard?league=ALL&range=D30&limit=200&anchorTs=...
+//   GET /api/groups/:slug/members?league=ALL&range=D30&anchorTs=...
 //
 // Notes:
 // - Rankings are based on ROI within the requested window (default D30).
@@ -57,6 +58,13 @@ type GroupsLeaderboardArgs = {
   anchorTs?: number;
 };
 
+type GroupMembersArgs = {
+  slug: string;
+  league: LeagueKey;
+  range: RangeKey;
+  anchorTs?: number;
+};
+
 // Resolve service function regardless of the exact export name you used.
 function resolveGroupsLeaderboardFn(): ((args: GroupsLeaderboardArgs) => Promise<any>) | null {
   const svc: any = groupMetricsService as any;
@@ -67,6 +75,15 @@ function resolveGroupsLeaderboardFn(): ((args: GroupsLeaderboardArgs) => Promise
     svc.getGroupsLeaderboardRows ||
     svc.buildGroupsLeaderboard ||
     null;
+
+  return typeof fn === "function" ? fn : null;
+}
+
+// Resolve group-members function regardless of exact export name.
+function resolveGroupMembersFn(): ((args: GroupMembersArgs) => Promise<any>) | null {
+  const svc: any = groupMetricsService as any;
+
+  const fn = svc.getGroupMembersBySlug || svc.getGroupMembers || svc.getGroupMemberRows || null;
 
   return typeof fn === "function" ? fn : null;
 }
@@ -95,6 +112,40 @@ r.get("/groups/leaderboard", async (req: Request, res: Response, next: NextFunct
       league,
       range,
       limit,
+      anchorTs: anchorTs ?? null,
+      ...out,
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /api/groups/:slug/members?league=ALL&range=D30&anchorTs=...
+r.get("/groups/:slug/members", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const slug = String(req.params.slug || "").trim();
+    if (!slug) return res.status(400).json({ error: "Missing group slug" });
+
+    const league = parseLeague(req.query.league);
+    const range = parseRange(req.query.range);
+    const anchorTs = parseAnchorTs(req.query.anchorTs);
+
+    const fn = resolveGroupMembersFn();
+    if (!fn) {
+      return res.status(500).json({
+        error: "Group members service function not found",
+        detail:
+          "Expected one of: getGroupMembersBySlug | getGroupMembers | getGroupMemberRows in src/services/metrics/groupMetrics.ts",
+        exports: Object.keys(groupMetricsService || {}),
+      });
+    }
+
+    const out = await fn({ slug, league, range, anchorTs });
+
+    res.json({
+      slug,
+      league,
+      range,
       anchorTs: anchorTs ?? null,
       ...out,
     });
