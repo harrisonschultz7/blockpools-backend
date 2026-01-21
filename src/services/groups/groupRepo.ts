@@ -16,9 +16,24 @@ export type GroupMemberIntervalRow = {
   left_at: string | null;
 };
 
-function lower(a: any) {
+function lower(a: unknown) {
   return String(a || "").toLowerCase();
 }
+
+type RawGroupRow = {
+  id: string;
+  slug: string;
+  name: string;
+  bio?: string | null;
+  created_at?: string | null;
+};
+
+type RawMemberRow = {
+  group_id: string;
+  user_address: string;
+  joined_at: string;
+  left_at?: string | null;
+};
 
 export async function getGroupBySlug(slug: string): Promise<GroupRow | null> {
   const { data, error } = await supabaseAdmin()
@@ -26,7 +41,7 @@ export async function getGroupBySlug(slug: string): Promise<GroupRow | null> {
     .select("id, slug, name, bio, created_at")
     .eq("slug", slug)
     .limit(1)
-    .maybeSingle();
+    .maybeSingle<RawGroupRow>();
 
   if (error) throw error;
   if (!data) return null;
@@ -49,7 +64,9 @@ export async function listGroups(limit = 200): Promise<GroupRow[]> {
 
   if (error) throw error;
 
-  return (data ?? []).map((g: any) => ({
+  const rows = (data ?? []) as RawGroupRow[];
+
+  return rows.map((g) => ({
     id: String(g.id),
     slug: String(g.slug),
     name: String(g.name),
@@ -58,8 +75,8 @@ export async function listGroups(limit = 200): Promise<GroupRow[]> {
   }));
 }
 
-// Active intervals logic requires joined_at and left_at columns.
-// We return ALL intervals (not just currently active) because “active intervals” means within [joined_at, left_at].
+// Returns ALL membership intervals for the group.
+// (Filtering to active-only happens in the metrics layer using joined_at/left_at.)
 export async function getGroupMemberIntervals(groupId: string): Promise<GroupMemberIntervalRow[]> {
   const { data, error } = await supabaseAdmin()
     .from("group_members")
@@ -68,17 +85,20 @@ export async function getGroupMemberIntervals(groupId: string): Promise<GroupMem
 
   if (error) throw error;
 
-  return (data ?? [])
-    .map((m: any) => ({
+  const rows = (data ?? []) as RawMemberRow[];
+
+  return rows
+    .map((m) => ({
       group_id: String(m.group_id),
       user_address: lower(m.user_address),
       joined_at: String(m.joined_at),
       left_at: m.left_at ? String(m.left_at) : null,
     }))
-    .filter((x) => x.user_address && x.joined_at);
+    .filter((x: GroupMemberIntervalRow) => Boolean(x.user_address) && Boolean(x.joined_at));
 }
 
-// Bulk member counts for leaderboard
+// Bulk member counts for leaderboard (counts all rows; if you only want active members,
+// you can change this query to .is("left_at", null) later.)
 export async function getMemberCountsByGroupIds(groupIds: string[]): Promise<Record<string, number>> {
   if (!groupIds.length) return {};
 
@@ -90,10 +110,11 @@ export async function getMemberCountsByGroupIds(groupIds: string[]): Promise<Rec
   if (error) throw error;
 
   const counts: Record<string, number> = {};
-  for (const r of data ?? []) {
-    const gid = String((r as any)?.group_id || "");
+  for (const r of (data ?? []) as Array<{ group_id?: string | null }>) {
+    const gid = String(r?.group_id || "");
     if (!gid) continue;
     counts[gid] = (counts[gid] || 0) + 1;
   }
+
   return counts;
 }
