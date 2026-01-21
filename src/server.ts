@@ -15,8 +15,11 @@ import invitesRouter from "./routes/invites";
 import emailTestRouter from "./routes/emailTest";
 import adminSweepsRouter from "./routes/adminSweeps";
 
-// ✅ New leaderboard routes (backend-cached metrics views)
+// ✅ Leaderboard routes (backend-computed + cached metrics views)
 import leaderboardRouter from "./routes/leaderboard";
+
+// ✅ Groups leaderboard routes (backend-computed group metrics)
+import groupsMetricsRouter from "./routes/groupsMetrics";
 
 const PORT = Number(process.env.PORT || 3001);
 
@@ -62,13 +65,15 @@ export function makeServer() {
     res.json({ ok: true });
   });
 
-  // New health endpoint with DB ping (used for cache readiness checks)
+  // Health endpoint with DB ping (used for cache readiness checks)
   app.get("/healthz", async (_req, res) => {
     const dbOk = await pingDb().catch(() => false);
     res.json({ ok: true, dbOk, ts: new Date().toISOString() });
   });
 
   // ✅ Cache API (Subgraph -> Postgres snapshots)
+  //   GET /cache/meta
+  //   GET /cache/leaderboard?...
   app.use("/cache", cacheRoutes);
 
   // Existing backend routes (unchanged)
@@ -78,21 +83,29 @@ export function makeServer() {
   app.use("/api", emailTestRouter);
   app.use("/api/admin", adminSweepsRouter);
 
-  // ✅ Leaderboard API (backend-computed + cached metrics)
+  // ✅ User leaderboard API (backend-computed + cached metrics)
   // Endpoints:
   //   GET /api/leaderboard/users
   //   GET /api/leaderboard/users/:address/recent
   app.use("/api", leaderboardRouter);
 
+  // ✅ Groups leaderboard API (backend-computed group metrics)
+  // Endpoints:
+  //   GET /api/groups/leaderboard?range=D30&league=ALL
+  app.use("/api", groupsMetricsRouter);
+
+  // 404 (optional but helpful for debugging)
+  app.use((_req, res) => {
+    res.status(404).json({ error: "Not found" });
+  });
+
   // Basic error handler (useful for CORS / route errors)
   app.use((err: any, _req: any, res: any, _next: any) => {
     console.error("[server] error", err);
-    res
-      .status(500)
-      .json({
-        error: "Internal server error",
-        detail: String(err?.message || err),
-      });
+    res.status(500).json({
+      error: "Internal server error",
+      detail: String(err?.message || err),
+    });
   });
 
   return app;
