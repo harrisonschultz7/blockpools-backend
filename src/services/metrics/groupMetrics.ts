@@ -2,7 +2,7 @@
 import type { GroupLeaderboardRowApi, GroupMemberRowApi, LeagueKey, RangeKey } from "./types";
 import { cacheGet, cacheKey, cacheSet } from "./cache";
 import { aggregateUsersFromBulk, computeWindow, fetchBulkWindowed, leagueList } from "./metricsCore";
-import { getGroupBySlug, getGroupMemberIntervals, getMemberCountsByGroupIds, listGroups } from "../groups/groupRepo";
+import { getGroupBySlug, getGroupMemberIntervals, listGroups } from "../groups/groupRepo";
 
 function tsToSec(ts: string | null | undefined): number {
   if (!ts) return 0;
@@ -20,11 +20,39 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-// Membership interval check (active intervals only)
-function withinInterval(lockTime: number, joinedAtSec: number, leftAtSec: number | null) {
-  if (lockTime < joinedAtSec) return false;
-  if (leftAtSec !== null && lockTime > leftAtSec) return false;
+/**
+ * Interval convention:
+ * - Membership active on [joined_at, left_at)
+ *   - joined_at is inclusive
+ *   - left_at is exclusive (the moment membership ends)
+ *
+ * This avoids ambiguity and matches typical "ended at timestamp T" semantics.
+ */
+
+// Membership interval check for attributing a game at lockTime
+function withinInterval(lockTimeSec: number, joinedAtSec: number, leftAtSec: number | null) {
+  if (lockTimeSec < joinedAtSec) return false;
+  if (leftAtSec !== null && lockTimeSec >= leftAtSec) return false; // left_at is exclusive
   return true;
+}
+
+// "Active member" as-of anchorTs (same interval convention: [join, left))
+function activeAt(asOfSec: number, joinedAtSec: number, leftAtSec: number | null) {
+  if (joinedAtSec <= 0) return false;
+  if (joinedAtSec > asOfSec) return false;
+  if (leftAtSec !== null && asOfSec >= leftAtSec) return false;
+  return true;
+}
+
+function countActiveMembers(
+  intervals: Array<{ user: string; joinedAtSec: number; leftAtSec: number | null }>,
+  asOfSec: number
+) {
+  const active = new Set<string>();
+  for (const it of intervals) {
+    if (activeAt(asOfSec, it.joinedAtSec, it.leftAtSec)) active.add(it.user);
+  }
+  return active.size;
 }
 
 // Build the includeUserGame filter for a given group membership map
@@ -41,12 +69,12 @@ function buildGroupIncludeFilter(intervals: Array<{ user: string; joinedAtSec: n
     byUser.set(u, list);
   }
 
-  return (u: string, _gameId: string, lockTime: number) => {
+  return (u: string, _gameId: string, lockTimeSec: number) => {
     const list = byUser.get(u);
     if (!list || !list.length) return false;
     // include if lockTime is in ANY active interval
     for (const it of list) {
-      if (withinInterval(lockTime, it.joinedAtSec, it.leftAtSec)) return true;
+      if (withinInterval(lockTimeSec, it.joinedAtSec, it.leftAtSec)) return true;
     }
     return false;
   };
@@ -54,7 +82,7 @@ function buildGroupIncludeFilter(intervals: Array<{ user: string; joinedAtSec: n
 
 export async function getGroupsLeaderboard(params: {
   league: LeagueKey;
-  range: RangeKey; // you’ll call with D30 for ranking
+  range: RangeKey; // D30 for ranking, but supports ALL/D90 too
   limit?: number;
   anchorTs?: number;
 }): Promise<{ asOf: string; rows: GroupLeaderboardRowApi[] }> {
@@ -62,7 +90,7 @@ export async function getGroupsLeaderboard(params: {
   const limit = clamp(params.limit ?? 200, 1, 500);
 
   const key = cacheKey({
-    v: "groups_lb_v1_master_semantics",
+    v: "groups_lb_v2_active_members_semantics",
     league: params.league,
     range: params.range,
     limit,
@@ -72,7 +100,7 @@ export async function getGroupsLeaderboard(params: {
   const cached = cacheGet<{ asOf: string; rows: GroupLeaderboardRowApi[] }>(key);
   if (cached) return cached;
 
-  // Load groups + member counts
+  // Load groups
   const groups = await listGroups(limit);
   if (!groups.length) {
     const out = { asOf: new Date().toISOString(), rows: [] as GroupLeaderboardRowApi[] };
@@ -80,20 +108,15 @@ export async function getGroupsLeaderboard(params: {
     return out;
   }
 
-  const counts = await getMemberCountsByGroupIds(groups.map((g) => g.id));
-
   const leagues = leagueList(params.league);
   const { start, end } = computeWindow(params.range, anchorTs);
 
-  // For v1, compute each group independently. (We can optimize to bulk later.)
+  // v1 compute each group independently
   const rows: GroupLeaderboardRowApi[] = [];
 
   for (const g of groups) {
     const intervalsRaw = await getGroupMemberIntervals(g.id);
 
-    // If you want “only currently active members”, filter left_at is null here.
-    // However your requirement is “active intervals only” which means include only time within [join, left].
-    // So we keep intervals, but ensure each interval has a joined_at.
     const intervals = intervalsRaw
       .map((m) => ({
         user: String(m.user_address || "").toLowerCase(),
@@ -102,6 +125,11 @@ export async function getGroupsLeaderboard(params: {
       }))
       .filter((x) => x.user && x.joinedAtSec > 0);
 
+    // Active members as-of anchorTs (THIS is what UI should display)
+    const activeMembersCount = countActiveMembers(intervals, anchorTs);
+
+    // Members to consider for metrics: all users with any interval row,
+    // because includeUserGame will enforce interval windows per game.
     const members = Array.from(new Set(intervals.map((x) => x.user)));
 
     if (!members.length) {
@@ -110,7 +138,7 @@ export async function getGroupsLeaderboard(params: {
         slug: g.slug,
         name: g.name,
         bio: g.bio ?? null,
-        membersCount: counts[g.id] || 0,
+        membersCount: 0, // no members at all
         tradedGross: 0,
         claimsFinal: 0,
         roiNet: null,
@@ -122,18 +150,14 @@ export async function getGroupsLeaderboard(params: {
       continue;
     }
 
-    // Query window by game.lockTime (same as master)
-    // Chunk users to avoid GraphQL limits
     const memberChunks = chunk(members, 120);
-
     const includeUserGame = buildGroupIncludeFilter(intervals);
 
     let sumTraded = 0;
     let sumPnL = 0;
     let sumBets = 0;
-    let sumGamesTouched = 0;
+    let sumTradesNet = 0;
 
-    // Favorite league is tricky across members; v1: omit or compute by highest traded league if needed later.
     for (const batch of memberChunks) {
       const bulk = await fetchBulkWindowed({
         users: batch,
@@ -150,7 +174,7 @@ export async function getGroupsLeaderboard(params: {
         start,
         end,
         bulk,
-        includeUserGame: (u, gameId, lockTime, league) => includeUserGame(u, gameId, lockTime),
+        includeUserGame: (u, gameId, lockTime, _league) => includeUserGame(u, gameId, lockTime),
       });
 
       for (const u of batch) {
@@ -159,7 +183,7 @@ export async function getGroupsLeaderboard(params: {
         sumTraded += m.tradedGross || 0;
         sumPnL += m.claimsFinal || 0;
         sumBets += m.betsCount || 0;
-        sumGamesTouched += m.tradesNet || 0;
+        sumTradesNet += m.tradesNet || 0;
       }
     }
 
@@ -170,12 +194,12 @@ export async function getGroupsLeaderboard(params: {
       slug: g.slug,
       name: g.name,
       bio: g.bio ?? null,
-      membersCount: counts[g.id] || 0,
+      membersCount: activeMembersCount, // ACTIVE AS-OF anchorTs
       tradedGross: sumTraded,
       claimsFinal: sumPnL,
       roiNet,
       betsCount: sumBets,
-      tradesNet: sumGamesTouched,
+      tradesNet: sumTradesNet,
       favoriteLeague: null,
       updatedAt: new Date().toISOString(),
     });
@@ -204,7 +228,7 @@ export async function getGroupSummaryBySlug(params: {
   const anchorTs = params.anchorTs ?? Math.floor(Date.now() / 1000);
 
   const key = cacheKey({
-    v: "group_summary_v1_master_semantics",
+    v: "group_summary_v2_active_members_semantics",
     slug: params.slug,
     league: params.league,
     range: params.range,
@@ -266,7 +290,7 @@ export async function getGroupSummaryBySlug(params: {
       start,
       end,
       bulk,
-      includeUserGame: (u, gameId, lockTime, league) => includeUserGame(u, gameId, lockTime),
+      includeUserGame: (u, gameId, lockTime, _league) => includeUserGame(u, gameId, lockTime),
     });
 
     for (const u of batch) {
@@ -300,7 +324,7 @@ export async function getGroupMembersBySlug(params: {
   const anchorTs = params.anchorTs ?? Math.floor(Date.now() / 1000);
 
   const key = cacheKey({
-    v: "group_members_v1_master_semantics",
+    v: "group_members_v2_active_members_semantics",
     slug: params.slug,
     league: params.league,
     range: params.range,
@@ -337,7 +361,10 @@ export async function getGroupMembersBySlug(params: {
   const includeUserGame = buildGroupIncludeFilter(intervals);
 
   // compute per user metrics (membership scoped)
-  const totals = new Map<string, { tradedGross: number; claimsFinal: number; roiNet: number | null; betsCount: number; tradesNet: number }>();
+  const totals = new Map<
+    string,
+    { tradedGross: number; claimsFinal: number; roiNet: number | null; betsCount: number; tradesNet: number }
+  >();
 
   for (const batch of chunk(members, 120)) {
     const bulk = await fetchBulkWindowed({
@@ -355,7 +382,7 @@ export async function getGroupMembersBySlug(params: {
       start,
       end,
       bulk,
-      includeUserGame: (u, gameId, lockTime, league) => includeUserGame(u, gameId, lockTime),
+      includeUserGame: (u, gameId, lockTime, _league) => includeUserGame(u, gameId, lockTime),
     });
 
     for (const u of batch) {
@@ -371,8 +398,7 @@ export async function getGroupMembersBySlug(params: {
     }
   }
 
-  // Pick the *latest active interval* for display per user (join/left info shown in table).
-  // If you want multi-interval display later, you can expand the UI.
+  // Pick the latest interval for display per user (join/left info shown in table).
   const latestIntervalByUser = new Map<string, { joined_at: string; left_at: string | null }>();
   for (const it of intervals) {
     const cur = latestIntervalByUser.get(it.user);
@@ -402,7 +428,7 @@ export async function getGroupMembersBySlug(params: {
     };
   });
 
-  // Rank by ROI desc, null last (same vibe as group page)
+  // Rank by ROI desc, null last
   rows.sort((a, b) => (b.roiNet ?? -1e18) - (a.roiNet ?? -1e18));
 
   const out = { asOf: new Date().toISOString(), rows };
