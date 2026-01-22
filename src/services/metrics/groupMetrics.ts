@@ -80,6 +80,15 @@ function buildGroupIncludeFilter(intervals: Array<{ user: string; joinedAtSec: n
   };
 }
 
+/**
+ * Realized-only semantics:
+ * - ROI denominator and "Traded" should reflect buys for FINAL games only.
+ * - This prevents open bets from dragging ROI down and correctly attributes bets
+ *   to the month they finalize (still windowed by game.lockTime, but realized gating
+ *   is done by game.isFinal).
+ */
+const REALIZED_ONLY = true;
+
 export async function getGroupsLeaderboard(params: {
   league: LeagueKey;
   range: RangeKey; // D30 for ranking, but supports ALL/D90 too
@@ -90,7 +99,7 @@ export async function getGroupsLeaderboard(params: {
   const limit = clamp(params.limit ?? 200, 1, 500);
 
   const key = cacheKey({
-    v: "groups_lb_v2_active_members_semantics",
+    v: REALIZED_ONLY ? "groups_lb_v3_realized_only" : "groups_lb_v2_active_members_semantics",
     league: params.league,
     range: params.range,
     limit,
@@ -111,7 +120,6 @@ export async function getGroupsLeaderboard(params: {
   const leagues = leagueList(params.league);
   const { start, end } = computeWindow(params.range, anchorTs);
 
-  // v1 compute each group independently
   const rows: GroupLeaderboardRowApi[] = [];
 
   for (const g of groups) {
@@ -138,7 +146,7 @@ export async function getGroupsLeaderboard(params: {
         slug: g.slug,
         name: g.name,
         bio: g.bio ?? null,
-        membersCount: 0, // no members at all
+        membersCount: 0,
         tradedGross: 0,
         claimsFinal: 0,
         roiNet: null,
@@ -174,13 +182,18 @@ export async function getGroupsLeaderboard(params: {
         start,
         end,
         bulk,
+        realizedOnly: REALIZED_ONLY,
         includeUserGame: (u, gameId, lockTime, _league) => includeUserGame(u, gameId, lockTime),
       });
 
       for (const u of batch) {
         const m = perUser.get(u);
         if (!m) continue;
-        sumTraded += m.tradedGross || 0;
+
+        // realized-only "Traded" is tradedRealized; fallback defensively
+        const traded = REALIZED_ONLY ? (m.tradedRealized ?? 0) : (m.tradedGross ?? 0);
+
+        sumTraded += traded;
         sumPnL += m.claimsFinal || 0;
         sumBets += m.betsCount || 0;
         sumTradesNet += m.tradesNet || 0;
@@ -195,7 +208,7 @@ export async function getGroupsLeaderboard(params: {
       name: g.name,
       bio: g.bio ?? null,
       membersCount: activeMembersCount, // ACTIVE AS-OF anchorTs
-      tradedGross: sumTraded,
+      tradedGross: sumTraded, // now represents realized traded when REALIZED_ONLY=true
       claimsFinal: sumPnL,
       roiNet,
       betsCount: sumBets,
@@ -221,14 +234,14 @@ export async function getGroupSummaryBySlug(params: {
 }): Promise<{
   asOf: string;
   group: { id: string; slug: string; name: string; bio: string | null };
-  tradedGross: number;
+  tradedGross: number; // now realized traded when REALIZED_ONLY=true
   claimsFinal: number;
   roiNet: number | null;
 }> {
   const anchorTs = params.anchorTs ?? Math.floor(Date.now() / 1000);
 
   const key = cacheKey({
-    v: "group_summary_v2_active_members_semantics",
+    v: REALIZED_ONLY ? "group_summary_v3_realized_only" : "group_summary_v2_active_members_semantics",
     slug: params.slug,
     league: params.league,
     range: params.range,
@@ -290,13 +303,15 @@ export async function getGroupSummaryBySlug(params: {
       start,
       end,
       bulk,
+      realizedOnly: REALIZED_ONLY,
       includeUserGame: (u, gameId, lockTime, _league) => includeUserGame(u, gameId, lockTime),
     });
 
     for (const u of batch) {
       const m = perUser.get(u);
       if (!m) continue;
-      sumTraded += m.tradedGross || 0;
+      const traded = REALIZED_ONLY ? (m.tradedRealized ?? 0) : (m.tradedGross ?? 0);
+      sumTraded += traded;
       sumPnL += m.claimsFinal || 0;
     }
   }
@@ -306,7 +321,7 @@ export async function getGroupSummaryBySlug(params: {
   const out = {
     asOf: new Date().toISOString(),
     group: { id: g.id, slug: g.slug, name: g.name, bio: g.bio ?? null },
-    tradedGross: sumTraded,
+    tradedGross: sumTraded, // realized traded when REALIZED_ONLY=true
     claimsFinal: sumPnL,
     roiNet,
   };
@@ -324,7 +339,7 @@ export async function getGroupMembersBySlug(params: {
   const anchorTs = params.anchorTs ?? Math.floor(Date.now() / 1000);
 
   const key = cacheKey({
-    v: "group_members_v2_active_members_semantics",
+    v: REALIZED_ONLY ? "group_members_v3_realized_only" : "group_members_v2_active_members_semantics",
     slug: params.slug,
     league: params.league,
     range: params.range,
@@ -382,14 +397,18 @@ export async function getGroupMembersBySlug(params: {
       start,
       end,
       bulk,
+      realizedOnly: REALIZED_ONLY,
       includeUserGame: (u, gameId, lockTime, _league) => includeUserGame(u, gameId, lockTime),
     });
 
     for (const u of batch) {
       const m = perUser.get(u);
       if (!m) continue;
+
+      const traded = REALIZED_ONLY ? (m.tradedRealized ?? 0) : (m.tradedGross ?? 0);
+
       totals.set(u, {
-        tradedGross: m.tradedGross || 0,
+        tradedGross: traded, // now realized traded when REALIZED_ONLY=true
         claimsFinal: m.claimsFinal || 0,
         roiNet: m.roiNet ?? null,
         betsCount: m.betsCount || 0,
@@ -419,7 +438,7 @@ export async function getGroupMembersBySlug(params: {
       userAddress: u,
       joinedAt: interval?.joined_at || new Date(0).toISOString(),
       leftAt: interval?.left_at ?? null,
-      tradedGross: t.tradedGross,
+      tradedGross: t.tradedGross, // realized traded when REALIZED_ONLY=true
       claimsFinal: t.claimsFinal,
       roiNet: t.roiNet,
       betsCount: t.betsCount,

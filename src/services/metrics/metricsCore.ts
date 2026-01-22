@@ -29,8 +29,9 @@ export function leagueList(league: LeagueKey): string[] {
 }
 
 // ---------------------------
-// Subgraph query (copied semantics from master)
-// Window is keyed by GAME.lockTime
+// Subgraph query
+// Window is keyed by GAME.lockTime (unchanged).
+// We will compute "realized-only" using game.isFinal at query time.
 // ---------------------------
 const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
   query UsersTradesClaimsStatsBulkPage(
@@ -339,7 +340,10 @@ export async function fetchBulkWindowed(params: {
 }
 
 export type UserMetricsAgg = {
-  tradedGross: number; // BUY only
+  // NOTE: tradedGross is still returned for backwards compatibility,
+  // but when realizedOnly=true, tradedRealized is the real denominator to use.
+  tradedGross: number; // BUY only (gross amount), lockTime-windowed
+  tradedRealized?: number; // BUY only, FINAL games only (subset of tradedGross)
   claimsFinal: number; // P/L = claims + sell proceeds
   roiNet: number | null;
   betsCount: number; // buys + sells
@@ -374,12 +378,17 @@ export function aggregateUsersFromBulk(params: {
   start: number;
   end: number;
   bulk: Awaited<ReturnType<typeof fetchBulkWindowed>>;
+  realizedOnly?: boolean;
   // optional: additional filter at user-game level
   // return true to include this user-game aggregate
   includeUserGame?: (u: string, gameId: string, lockTime: number, league: string) => boolean;
 }): Map<string, UserMetricsAgg> {
   const { users, leagues, start, end, bulk } = params;
 
+  // IMPORTANT:
+  // Your subgraph windowing is by game.lockTime. We'll keep that.
+  // For realized-only ROI/traded, we will only include FINAL games (game.isFinal=true)
+  // in the denominator (and in favorite-league volume).
   const inLockWindow = (lockTime: number) => lockTime >= start && lockTime <= end;
 
   const byUserGame = new Map<string, UserGameAgg>();
@@ -443,6 +452,9 @@ export function aggregateUsersFromBulk(params: {
         claimTotal: 0,
       } as UserGameAgg);
 
+    // keep isFinal in sync (if any entity says final, treat as final)
+    cur.isFinal = cur.isFinal || !!t.game.isFinal;
+
     cur.sellNet += toNum(t.netOutDec);
     cur.sellCostClosed += toNum(t.costBasisClosedDec);
     cur.sellPnl += toNum(t.realizedPnlDec);
@@ -477,6 +489,8 @@ export function aggregateUsersFromBulk(params: {
         claimTotal: 0,
       } as UserGameAgg);
 
+    cur.isFinal = cur.isFinal || !!b.game.isFinal;
+
     cur.buyGross += toNum(b.grossAmount);
     cur.buyCount += 1;
 
@@ -509,14 +523,17 @@ export function aggregateUsersFromBulk(params: {
         claimTotal: 0,
       } as UserGameAgg);
 
+    cur.isFinal = cur.isFinal || !!c.game.isFinal;
+
     cur.claimTotal += toNum(c.amountDec);
 
     byUserGame.set(k, cur);
   }
 
-  // Roll up per-user (same as master semantics)
+  // Roll up per-user
   type UserAgg = {
-    buyGross: number;
+    buyGross: number; // all buys in lockTime window
+    buyRealized: number; // buys for FINAL games only
     sellNet: number;
     claimTotal: number;
 
@@ -527,12 +544,14 @@ export function aggregateUsersFromBulk(params: {
     gamesTouched: number;
 
     favLeagueVolume: Record<string, number>;
+    favLeagueRealizedVolume: Record<string, number>;
   };
 
   const perUser = new Map<string, UserAgg>();
 
   for (const [k, g] of byUserGame.entries()) {
     const [u, gid] = k.split("|");
+
     const include = params.includeUserGame
       ? params.includeUserGame(u, gid, g.lockTime, g.league)
       : true;
@@ -546,6 +565,7 @@ export function aggregateUsersFromBulk(params: {
       perUser.get(u) ||
       ({
         buyGross: 0,
+        buyRealized: 0,
         sellNet: 0,
         claimTotal: 0,
         sellPnl: 0,
@@ -553,9 +573,16 @@ export function aggregateUsersFromBulk(params: {
         tradesCount: 0,
         gamesTouched: 0,
         favLeagueVolume: {},
+        favLeagueRealizedVolume: {},
       } as UserAgg);
 
     agg.buyGross += g.buyGross;
+
+    // realized-only: only count buys for FINAL games
+    if (g.isFinal) {
+      agg.buyRealized += g.buyGross;
+    }
+
     agg.sellNet += g.sellNet;
     agg.claimTotal += g.claimTotal;
 
@@ -565,7 +592,11 @@ export function aggregateUsersFromBulk(params: {
     agg.tradesCount += g.buyCount + g.sellCount;
     agg.gamesTouched += 1;
 
+    // favorite league: use gross by default, realized by option
     agg.favLeagueVolume[g.league] = (agg.favLeagueVolume[g.league] || 0) + g.buyGross;
+    if (g.isFinal) {
+      agg.favLeagueRealizedVolume[g.league] = (agg.favLeagueRealizedVolume[g.league] || 0) + g.buyGross;
+    }
 
     perUser.set(u, agg);
   }
@@ -577,6 +608,7 @@ export function aggregateUsersFromBulk(params: {
       perUser.get(u) ||
       ({
         buyGross: 0,
+        buyRealized: 0,
         sellNet: 0,
         claimTotal: 0,
         sellPnl: 0,
@@ -584,19 +616,29 @@ export function aggregateUsersFromBulk(params: {
         tradesCount: 0,
         gamesTouched: 0,
         favLeagueVolume: {},
+        favLeagueRealizedVolume: {},
       } as UserAgg);
 
-    const totalBuy = agg.buyGross;
-    const pnl = agg.claimTotal + agg.sellNet;
-    const roiNet = totalBuy > 0 ? pnl / totalBuy - 1 : null;
+    const totalBuyGross = agg.buyGross;
+    const totalBuyRealized = agg.buyRealized;
 
-    const fav =
-      Object.entries(agg.favLeagueVolume).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    // NOTE:
+    // claimsFinal is already effectively realized because claims happen after final,
+    // and sells are realized actions. We keep pnl as-is.
+    const pnl = agg.claimTotal + agg.sellNet;
+
+    // ROI denominator switches when realizedOnly is enabled.
+    const denom = params.realizedOnly ? totalBuyRealized : totalBuyGross;
+    const roiNet = denom > 0 ? pnl / denom - 1 : null;
+
+    const favMap = params.realizedOnly ? agg.favLeagueRealizedVolume : agg.favLeagueVolume;
+    const fav = Object.entries(favMap).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
     const sellsRoi = agg.sellCost > 0 ? agg.sellPnl / agg.sellCost : null;
 
     out.set(u, {
-      tradedGross: totalBuy,
+      tradedGross: totalBuyGross,
+      tradedRealized: totalBuyRealized,
       claimsFinal: pnl,
       roiNet,
       betsCount: agg.tradesCount,
