@@ -6,6 +6,11 @@ import multer from "multer";
 import path from "path";
 import { PrivyClient } from "@privy-io/server-auth";
 
+// ✅ Metrics: reuse the same SELL-aware “recent trades” logic used by leaderboard.
+// NOTE: adjust the import name if your masterMetrics export differs.
+// The route below will hard-fail fast with a clear error if the function is missing.
+import * as masterMetrics from "../services/metrics/masterMetrics";
+
 const router = Router();
 
 // Store avatar files under /uploads/avatars (relative to compiled server)
@@ -91,7 +96,11 @@ const privyOptionalClient =
     ? new PrivyClient(PRIVY_APP_ID, PRIVY_APP_SECRET)
     : null;
 
-async function authPrivyOptional(req: AuthedRequest, _res: Response, next: NextFunction) {
+async function authPrivyOptional(
+  req: AuthedRequest,
+  _res: Response,
+  next: NextFunction
+) {
   try {
     if (!privyOptionalClient) return next();
 
@@ -110,7 +119,9 @@ async function authPrivyOptional(req: AuthedRequest, _res: Response, next: NextF
     const smartAddress = user.smartWallet?.address
       ? user.smartWallet.address.toLowerCase()
       : null;
-    const eoaAddress = user.wallet?.address ? user.wallet.address.toLowerCase() : null;
+    const eoaAddress = user.wallet?.address
+      ? user.wallet.address.toLowerCase()
+      : null;
     const primaryAddress = smartAddress ?? eoaAddress;
 
     if (!primaryAddress) return next();
@@ -128,6 +139,147 @@ async function authPrivyOptional(req: AuthedRequest, _res: Response, next: NextF
     return next();
   }
 }
+
+/* =======================================================================================
+   ✅ NEW: Cached Profile Trade History (SELL-aware) so the whole profile page can be cached
+   ---------------------------------------------------------------------------------------
+   Frontend should call:
+     GET /api/profile/address/:address/trades?league=ALL&range=ALL&limit=50&anchorTs=...
+
+   This endpoint is designed to mirror leaderboard “recent trades” semantics:
+   - Includes BUY and SELL rows
+   - Includes realizedPnlDec / costBasisClosedDec / netPositionDec when available
+   - Includes claimByGame mapping for Won line items
+   - Safe for CDN caching (short TTL + stale-while-revalidate)
+======================================================================================= */
+
+type ApiTimeRange = "ALL" | "D90" | "D30";
+type ApiLeague = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL";
+
+const VALID_RANGES = new Set<ApiTimeRange>(["ALL", "D90", "D30"]);
+const VALID_LEAGUES = new Set<ApiLeague>([
+  "ALL",
+  "MLB",
+  "NFL",
+  "NBA",
+  "NHL",
+  "EPL",
+  "UCL",
+]);
+
+function normRange(v: any): ApiTimeRange {
+  const s = String(v ?? "ALL").toUpperCase().trim();
+  return (VALID_RANGES.has(s as ApiTimeRange) ? s : "ALL") as ApiTimeRange;
+}
+
+function normLeague(v: any): ApiLeague {
+  const s = String(v ?? "ALL").toUpperCase().trim();
+  return (VALID_LEAGUES.has(s as ApiLeague) ? s : "ALL") as ApiLeague;
+}
+
+function clampInt(n: any, def: number, min: number, max: number): number {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return def;
+  return Math.max(min, Math.min(max, Math.floor(x)));
+}
+
+// Small in-process cache (works even without Redis). CDN headers still applied.
+const RECENT_CACHE_TTL_MS = 30_000; // 30s in-memory
+const recentCache = new Map<
+  string,
+  { at: number; payload: any }
+>();
+
+function setCacheHeaders(res: Response) {
+  // CDN-friendly; tweak if you’re fronting with Cloudflare/Vercel/etc.
+  res.setHeader(
+    "Cache-Control",
+    "public, max-age=15, s-maxage=60, stale-while-revalidate=300"
+  );
+}
+
+router.get(
+  "/address/:address/trades",
+  authPrivyOptional,
+  async (req: AuthedRequest, res: Response) => {
+    try {
+      const address = String(req.params.address || "").toLowerCase().trim();
+      if (!address || !address.startsWith("0x")) {
+        return res.status(400).json({ ok: false, error: "address is required" });
+      }
+
+      const league = normLeague(req.query.league);
+      const range = normRange(req.query.range);
+      const limit = clampInt(req.query.limit, 50, 1, 200);
+
+      // Keep your “anchored range” behavior consistent with leaderboard
+      const anchorTsRaw = req.query.anchorTs ?? req.query.anchor;
+      const anchorTs =
+        anchorTsRaw === undefined || anchorTsRaw === null || anchorTsRaw === ""
+          ? undefined
+          : clampInt(anchorTsRaw, Math.floor(Date.now() / 1000), 0, 10_000_000_000);
+
+      const cacheKey = `recent:${address}:${league}:${range}:${limit}:${anchorTs ?? "na"}`;
+      const now = Date.now();
+
+      const cached = recentCache.get(cacheKey);
+      if (cached && now - cached.at < RECENT_CACHE_TTL_MS) {
+        setCacheHeaders(res);
+        return res.json(cached.payload);
+      }
+
+      // Resolve the correct function from masterMetrics (avoid guessing your exact export name)
+      const fn =
+        (masterMetrics as any).getUserRecent ||
+        (masterMetrics as any).getUserRecentTrades ||
+        (masterMetrics as any).userRecent ||
+        null;
+
+      if (typeof fn !== "function") {
+        return res.status(500).json({
+          ok: false,
+          error:
+            "metrics function missing: expected masterMetrics.getUserRecent (or compatible export)",
+        });
+      }
+
+      // IMPORTANT: Your leaderboard route already uses this same logic.
+      // We are simply exposing it under /profile so the profile page can be cached.
+      const resp = await fn({
+        address,
+        user: address, // allow either parameter name depending on your implementation
+        league,
+        range,
+        limit,
+        anchorTs,
+      });
+
+      const payload = {
+        ok: true,
+        user: address,
+        league,
+        range,
+        limit,
+        anchorTs: anchorTs ?? null,
+        // standardize to your frontend expectations
+        recent: resp?.recent ?? resp?.rows ?? resp?.data ?? [],
+        rows: resp?.rows ?? resp?.recent ?? resp?.data ?? [],
+        claimByGame: resp?.claimByGame ?? resp?.claimsByGame ?? {},
+        asOf: resp?.asOf ?? resp?.anchorTs ?? null,
+      };
+
+      recentCache.set(cacheKey, { at: now, payload });
+      setCacheHeaders(res);
+      return res.json(payload);
+    } catch (err: any) {
+      console.error("[GET /api/profile/address/:address/trades] error", err);
+      return res.status(500).json({
+        ok: false,
+        error: "Internal server error",
+      });
+    }
+  }
+);
 
 /**
  * GET /api/profile/me
@@ -187,7 +339,8 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
     const primaryAddress = req.user.primaryAddress.toLowerCase();
     const eoaAddress = req.user.eoaAddress ? req.user.eoaAddress.toLowerCase() : null;
 
-    const { username, display_name, x_handle, instagram_handle, avatar_url } = req.body || {};
+    const { username, display_name, x_handle, instagram_handle, avatar_url } =
+      req.body || {};
 
     if (!username || typeof username !== "string") {
       return res.status(400).json({ error: "username is required" });
@@ -341,7 +494,9 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
     );
 
     const publicBaseUrl = getPublicBaseUrl(req);
-    return res.json((result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl)));
+    return res.json(
+      (result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl))
+    );
   } catch (err) {
     console.error("[POST /api/profile/by-addresses] error", err);
     return res.status(500).json({ error: "Internal server error" });
@@ -402,8 +557,6 @@ router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response
  * GET /api/profile/:profileId
  * Backwards compatibility endpoint.
  * Note: DIDs in a path are brittle; prefer /by-id.
- * If you still call this publicly, it will work. If auth is present, it can include follow info only
- * if something upstream already populated req.user (generally not, so treat as legacy).
  */
 router.get("/:profileId", async (req: AuthedRequest, res: Response) => {
   try {
@@ -461,10 +614,12 @@ router.post("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: Res
     const { profileId } = req.params;
 
     if (!profileId) return res.status(400).json({ error: "profileId is required" });
-    if (viewerId === profileId) return res.status(400).json({ error: "Cannot follow your own profile" });
+    if (viewerId === profileId)
+      return res.status(400).json({ error: "Cannot follow your own profile" });
 
     const targetRes = await pool.query(`SELECT id FROM users WHERE id = $1`, [profileId]);
-    if (targetRes.rows.length === 0) return res.status(404).json({ error: "Target profile not found" });
+    if (targetRes.rows.length === 0)
+      return res.status(404).json({ error: "Target profile not found" });
 
     await pool.query(
       `
