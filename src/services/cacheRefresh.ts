@@ -7,8 +7,8 @@ import {
   Q_USER_SUMMARY,
   Q_USER_BETS_PAGE,
   Q_USER_CLAIMS_AND_STATS,
-  // NEW
-  Q_USER_TRADES_PAGE,
+  // ✅ correct query for merged activity (trades + bets)
+  Q_USER_ACTIVITY_PAGE,
 } from "../subgraph/queries";
 
 type CacheEntry = {
@@ -20,8 +20,8 @@ type CacheEntry = {
 };
 
 const mem = new Map<string, CacheEntry>();
-const inflight = new Map<string, Promise<CacheEntry>>(); // de-dupe concurrent refreshes
-const lastRevalidateAt = new Map<string, number>(); // debounce stampede
+const inflight = new Map<string, Promise<CacheEntry>>();
+const lastRevalidateAt = new Map<string, number>();
 
 function nowIso() {
   return new Date().toISOString();
@@ -43,7 +43,8 @@ async function runRefresh(
 
   const p = (async () => {
     const prev =
-      mem.get(cacheKey) || ({
+      mem.get(cacheKey) ||
+      ({
         payload: null,
         lastOkAt: null,
         lastErrAt: null,
@@ -93,7 +94,8 @@ export async function serveWithStaleWhileRevalidate(opts: {
   refreshFn: (params: any) => Promise<any>;
 }) {
   const entry =
-    mem.get(opts.cacheKey) || ({
+    mem.get(opts.cacheKey) ||
+    ({
       payload: null,
       lastOkAt: null,
       lastErrAt: null,
@@ -179,8 +181,6 @@ export async function serveWithStaleWhileRevalidate(opts: {
 // -------------------- helpers --------------------
 
 function normalizeLeagues(leagues: string[] | undefined) {
-  // Your subgraph expects league strings like "NFL", "NBA", "NHL", etc.
-  // If you pass ["ALL"] or empty, do not filter by league_in.
   const arr = (leagues || []).map((s) => String(s).toUpperCase()).filter(Boolean);
   if (!arr.length) return null;
   if (arr.includes("ALL")) return null;
@@ -195,29 +195,19 @@ function toSort(sort: string | undefined): LeaderboardSort {
   return "ROI";
 }
 
-/**
- * Trades query window helper:
- * Your Q_USER_TRADES_PAGE filters by game.lockTime_gte/lte.
- *
- * We interpret `range` as:
- * - ALL: wide window (0..farFuture)
- * - D30/D90: lockTime within last 30/90 days (relative to now)
- *
- * NOTE: This is slightly different than "trade timestamp" windows,
- * but it matches your existing leaderboard/window queries approach
- * (anchor by game.lockTime).
- */
 function tradesWindowFromRange(range: string | undefined) {
   const r = String(range || "ALL").toUpperCase();
   const nowSec = Math.floor(Date.now() / 1000);
-
   const farFuture = 4102444800; // 2100-01-01
 
   if (r === "D30") return { start: nowSec - 30 * 86400, end: nowSec };
   if (r === "D90") return { start: nowSec - 90 * 86400, end: nowSec };
-
-  // ALL must include future games too
   return { start: 0, end: farFuture };
+}
+
+function toNum(v: any): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
 // -------------------- Refresh functions --------------------
@@ -266,7 +256,6 @@ export async function refreshLeaderboard(params: {
   const sourceBlock = data._meta?.block?.number ?? null;
   const rows = data.userLeagueStats || [];
 
-  // Preserve your existing range behavior for leaderboard (range-aware via lastUpdatedAt)
   const r = String(params.range || "ALL").toUpperCase();
   const cutoff =
     r === "D30"
@@ -331,8 +320,11 @@ export async function refreshUserBetsPage(params: {
 }
 
 /**
- * NEW: user trades page (BUY + SELL)
- * Expects your Q_USER_TRADES_PAGE query in src/subgraph/queries.ts (you already have it).
+ * ✅ User trade ledger (BUY + SELL):
+ * - SELL rows come from `trades`
+ * - BUY rows are backfilled from `bets` as BUY-like rows
+ *
+ * Necessary fix: page-aware overfetch so older rows show on later pages.
  */
 export async function refreshUserTradesPage(params: {
   user: string;
@@ -341,26 +333,79 @@ export async function refreshUserTradesPage(params: {
   page: number;
   pageSize: number;
 }) {
-  const skip = Math.max(0, (params.page - 1) * params.pageSize);
-  const first = params.pageSize;
+  const page = Math.max(1, Number(params.page || 1));
+  const pageSize = Math.max(1, Math.min(Number(params.pageSize || 25), 50));
 
   const leaguesNorm = normalizeLeagues(params.leagues);
   const leaguesForQuery = leaguesNorm ?? ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
 
-const { start, end } = tradesWindowFromRange(params.range);
+  const { start, end } = tradesWindowFromRange(params.range);
 
-const data = await subgraphQuery<any>(Q_USER_TRADES_PAGE, {
-  user: params.user.toLowerCase(),
-  leagues: leaguesForQuery,
-  start: String(start),
-  end: String(end),
-  skip,
-  first,
-});
+  // ✅ Necessary fix: grow fetch with page depth (still capped to 1000 by TheGraph).
+  const overfetch = Math.max(page * pageSize * 2, 120);
+  const first = Math.min(overfetch, 1000);
+
+  const data = await subgraphQuery<any>(Q_USER_ACTIVITY_PAGE, {
+    user: params.user.toLowerCase(),
+    leagues: leaguesForQuery,
+    start: String(start),
+    end: String(end),
+    first,
+    skipTrades: 0,
+    skipBets: 0,
+  });
+
+  const sourceBlock = data?._meta?.block?.number ?? null;
+
+  const trades = Array.isArray(data?.trades) ? data.trades : [];
+  const bets = Array.isArray(data?.bets) ? data.bets : [];
+
+  // Normalize bets into BUY-like trade rows (so old buys appear in the same list)
+  const betAsTrades = bets.map((b: any) => {
+    const g = b?.game ?? {};
+    const ts = toNum(b?.timestamp);
+
+    return {
+      id: `bet-${b.id}`,
+      type: "BUY",
+      side: b?.side ?? "A",
+      timestamp: ts,
+      txHash: b?.txHash ?? null,
+
+      spotPriceBps: b?.priceBps ?? null,
+      avgPriceBps: b?.priceBps ?? null,
+
+      grossInDec: b?.grossAmount ?? "0",
+      grossOutDec: "0",
+      feeDec: b?.fee ?? "0",
+      netStakeDec: b?.amountDec ?? "0",
+      netOutDec: "0",
+
+      costBasisClosedDec: "0",
+      realizedPnlDec: "0",
+
+      game: g,
+      __source: "bet",
+    };
+  });
+
+  const tradeRows = trades.map((t: any) => ({
+    ...t,
+    id: `trade-${t.id}`,
+    timestamp: toNum(t?.timestamp),
+    __source: "trade",
+  }));
+
+  const merged = [...tradeRows, ...betAsTrades].sort(
+    (a, b) => toNum(b?.timestamp) - toNum(a?.timestamp)
+  );
+
+  const startIdx = (page - 1) * pageSize;
+  const rows = merged.slice(startIdx, startIdx + pageSize);
 
   return {
-    meta: { sourceBlock: data?._meta?.block?.number ?? null },
-    rows: data?.trades ?? [],
+    meta: { sourceBlock },
+    rows,
   };
 }
 

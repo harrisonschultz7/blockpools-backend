@@ -297,20 +297,21 @@ query UserSummary($user: String!, $betsFirst: Int!, $claimsFirst: Int!, $statsFi
 // If you want a generic trades page query (outside of masterMetrics.ts),
 // this is a clean canonical version.
 
-export const Q_USER_TRADES_PAGE = `
-query UserTradesPage(
+export const Q_USER_ACTIVITY_PAGE = `
+query UserActivityPage(
   $user: String!
   $leagues: [String!]!
   $start: BigInt!
   $end: BigInt!
   $first: Int!
-  $skip: Int!
+  $skipTrades: Int!
+  $skipBets: Int!
 ) {
   _meta { block { number } }
 
   trades(
     first: $first
-    skip: $skip
+    skip: $skipTrades
     where: {
       user: $user
       game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
@@ -319,8 +320,6 @@ query UserTradesPage(
     orderDirection: desc
   ) {
     id
-    user { id }
-    league
     type
     side
     timestamp
@@ -334,18 +333,28 @@ query UserTradesPage(
     netOutDec
     costBasisClosedDec
     realizedPnlDec
-    game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      winnerTeamCode
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
+    game { id league lockTime isFinal winnerSide winnerTeamCode teamACode teamBCode teamAName teamBName }
+  }
+
+  bets(
+    first: $first
+    skip: $skipBets
+    where: {
+      user: $user
+      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
     }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    id
+    timestamp
+    side
+    amountDec
+    grossAmount
+    fee
+    priceBps
+    sharesOutDec
+    game { id league lockTime isFinal winnerSide winnerTeamCode teamACode teamBCode teamAName teamBName }
   }
 }
 `;
