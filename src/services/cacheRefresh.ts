@@ -211,15 +211,13 @@ function tradesWindowFromRange(range: string | undefined) {
   const r = String(range || "ALL").toUpperCase();
   const nowSec = Math.floor(Date.now() / 1000);
 
-  // The Graph's Int is 32-bit signed; never exceed 2,147,483,647.
-  // For ALL-time, ending at "now" is correct and avoids overflow.
-  if (r === "D30") {
-    return { start: nowSec - 30 * 86400, end: nowSec };
-  }
-  if (r === "D90") {
-    return { start: nowSec - 90 * 86400, end: nowSec };
-  }
-  return { start: 0, end: nowSec };
+  const farFuture = 4102444800; // 2100-01-01
+
+  if (r === "D30") return { start: nowSec - 30 * 86400, end: nowSec };
+  if (r === "D90") return { start: nowSec - 90 * 86400, end: nowSec };
+
+  // ALL must include future games too
+  return { start: 0, end: farFuture };
 }
 
 // -------------------- Refresh functions --------------------
@@ -349,16 +347,16 @@ export async function refreshUserTradesPage(params: {
   const leaguesNorm = normalizeLeagues(params.leagues);
   const leaguesForQuery = leaguesNorm ?? ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
 
-  const { start, end } = tradesWindowFromRange(params.range);
+const { start, end } = tradesWindowFromRange(params.range);
 
-  const data = await subgraphQuery<any>(Q_USER_TRADES_PAGE, {
-    user: params.user.toLowerCase(),
-    leagues: leaguesForQuery,
-    start,
-    end,
-    skip,
-    first,
-  });
+const data = await subgraphQuery<any>(Q_USER_TRADES_PAGE, {
+  user: params.user.toLowerCase(),
+  leagues: leaguesForQuery,
+  start: String(start),
+  end: String(end),
+  skip,
+  first,
+});
 
   return {
     meta: { sourceBlock: data?._meta?.block?.number ?? null },
