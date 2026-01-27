@@ -6,6 +6,9 @@ import multer from "multer";
 import path from "path";
 import { PrivyClient } from "@privy-io/server-auth";
 
+// ✅ Portfolio builder (create this file OR point this import to wherever your builder lives)
+import { buildProfilePortfolio } from "../services/profilePortfolio";
+
 const router = Router();
 
 // Store avatar files under /uploads/avatars (relative to compiled server)
@@ -91,7 +94,11 @@ const privyOptionalClient =
     ? new PrivyClient(PRIVY_APP_ID, PRIVY_APP_SECRET)
     : null;
 
-async function authPrivyOptional(req: AuthedRequest, _res: Response, next: NextFunction) {
+async function authPrivyOptional(
+  req: AuthedRequest,
+  _res: Response,
+  next: NextFunction
+) {
   try {
     if (!privyOptionalClient) return next();
 
@@ -128,6 +135,20 @@ async function authPrivyOptional(req: AuthedRequest, _res: Response, next: NextF
     return next();
   }
 }
+
+/**
+ * ✅ GET /api/profile/:address/portfolio
+ * IMPORTANT: must be defined BEFORE `/:profileId` so it doesn't get swallowed.
+ */
+router.get("/:address(0x[a-fA-F0-9]{40})/portfolio", async (req: AuthedRequest, res: Response) => {
+  try {
+    const out = await buildProfilePortfolio(req);
+    return res.json(out);
+  } catch (err: any) {
+    console.error("[GET /api/profile/:address/portfolio] error", err);
+    return res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
 
 /**
  * GET /api/profile/me
@@ -402,8 +423,6 @@ router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response
  * GET /api/profile/:profileId
  * Backwards compatibility endpoint.
  * Note: DIDs in a path are brittle; prefer /by-id.
- * If you still call this publicly, it will work. If auth is present, it can include follow info only
- * if something upstream already populated req.user (generally not, so treat as legacy).
  */
 router.get("/:profileId", async (req: AuthedRequest, res: Response) => {
   try {
