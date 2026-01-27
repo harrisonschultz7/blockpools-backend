@@ -34,6 +34,14 @@ export function keyUserBetsPage(params: any) {
   return `userBetsPage:user:${hashParams(params)}`;
 }
 
+/**
+ * NEW: user trades (BUY + SELL) page cache key
+ * Params should include: { user, leagues, range, page, pageSize }
+ */
+export function keyUserTradesPage(params: any) {
+  return `userTradesPage:user:${hashParams(params)}`;
+}
+
 export function keyUserClaimsAndStats(params: any) {
   return `userClaimsAndStats:user:${hashParams(params)}`;
 }

@@ -7,6 +7,8 @@ import {
   Q_USER_SUMMARY,
   Q_USER_BETS_PAGE,
   Q_USER_CLAIMS_AND_STATS,
+  // NEW
+  Q_USER_TRADES_PAGE,
 } from "../subgraph/queries";
 
 type CacheEntry = {
@@ -185,23 +187,38 @@ function normalizeLeagues(leagues: string[] | undefined) {
   return arr;
 }
 
-function rangeCutoffSec(range: string | undefined) {
-  // Range is an API concern; schema doesn't implement it.
-  // We filter post-query using lastUpdatedAt (a BigInt stored as string).
-  const r = String(range || "ALL").toUpperCase();
-  const nowSec = Math.floor(Date.now() / 1000);
-
-  if (r === "D30") return nowSec - 30 * 86400;
-  if (r === "D90") return nowSec - 90 * 86400;
-  return null; // ALL
-}
-
 function toSort(sort: string | undefined): LeaderboardSort {
   const s = String(sort || "ROI").toUpperCase();
   if (s === "TOTAL_STAKED") return "TOTAL_STAKED";
   if (s === "GROSS_VOLUME") return "GROSS_VOLUME";
   if (s === "LAST_UPDATED") return "LAST_UPDATED";
   return "ROI";
+}
+
+/**
+ * Trades query window helper:
+ * Your Q_USER_TRADES_PAGE filters by game.lockTime_gte/lte.
+ *
+ * We interpret `range` as:
+ * - ALL: wide window (0..farFuture)
+ * - D30/D90: lockTime within last 30/90 days (relative to now)
+ *
+ * NOTE: This is slightly different than "trade timestamp" windows,
+ * but it matches your existing leaderboard/window queries approach
+ * (anchor by game.lockTime).
+ */
+function tradesWindowFromRange(range: string | undefined) {
+  const r = String(range || "ALL").toUpperCase();
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const farFuture = 4102444800; // 2100-01-01, safe upper bound
+  if (r === "D30") {
+    return { start: nowSec - 30 * 86400, end: farFuture };
+  }
+  if (r === "D90") {
+    return { start: nowSec - 90 * 86400, end: farFuture };
+  }
+  return { start: 0, end: farFuture };
 }
 
 // -------------------- Refresh functions --------------------
@@ -216,22 +233,8 @@ export async function refreshLeaderboard(params: {
   const skip = Math.max(0, (params.page - 1) * params.pageSize);
   const first = params.pageSize;
 
-  // If leagues null => no filter, but Graph requires [String!] variable.
-  // We'll pass ALL leagues by omitting league_in entirely (handled by query by passing null).
-  // However, GraphQL variables cannot be "omitted"; easiest is: pass null and query uses league_in: $leagues.
-  // Since schema expects league_in: [String!], we instead do one of:
-  // 1) If no filter: send a very large "all leagues list" (not ideal).
-  // 2) Better: have two query variants (with and without where). We’ll do simplest here:
-  //    if no filter: set leagues to ["NFL","NBA","NHL","MLB","EPL","UCL"] etc.
-  //
-  // To avoid guessing, we keep existing behavior but require caller to pass actual list.
-  // If your endpoint sends ["ALL"], we turn that into null and then into a safe list fallback.
   const leaguesNorm = normalizeLeagues(params.leagues);
-
-  // If you want "ALL" without maintaining a list, you should implement a no-where query variant.
-  // For now, use a sane default set that matches your frontend options.
-  const leaguesForQuery =
-    leaguesNorm ?? ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
+  const leaguesForQuery = leaguesNorm ?? ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
 
   type Row = {
     user: { id: string };
@@ -264,13 +267,20 @@ export async function refreshLeaderboard(params: {
   const sourceBlock = data._meta?.block?.number ?? null;
   const rows = data.userLeagueStats || [];
 
-  // Apply "range" server-side using lastUpdatedAt
-  const cutoff = rangeCutoffSec(params.range);
+  // Preserve your existing range behavior for leaderboard (range-aware via lastUpdatedAt)
+  const r = String(params.range || "ALL").toUpperCase();
+  const cutoff =
+    r === "D30"
+      ? Math.floor(Date.now() / 1000) - 30 * 86400
+      : r === "D90"
+        ? Math.floor(Date.now() / 1000) - 90 * 86400
+        : null;
+
   const filtered =
     cutoff == null
       ? rows
-      : rows.filter((r) => {
-          const v = Number(r.lastUpdatedAt || 0);
+      : rows.filter((row) => {
+          const v = Number(row.lastUpdatedAt || 0);
           return Number.isFinite(v) && v >= cutoff;
         });
 
@@ -279,9 +289,6 @@ export async function refreshLeaderboard(params: {
     rows: filtered,
   };
 }
-
-// Optional endpoints (used by profile pages / user detail)
-// These now match schema and variables in revised queries.ts
 
 export async function refreshUserSummary(params: {
   user: string;
@@ -321,6 +328,40 @@ export async function refreshUserBetsPage(params: {
   return {
     meta: { sourceBlock: data?._meta?.block?.number ?? null },
     rows: data?.bets ?? [],
+  };
+}
+
+/**
+ * NEW: user trades page (BUY + SELL)
+ * Expects your Q_USER_TRADES_PAGE query in src/subgraph/queries.ts (you already have it).
+ */
+export async function refreshUserTradesPage(params: {
+  user: string;
+  leagues: string[];
+  range: string;
+  page: number;
+  pageSize: number;
+}) {
+  const skip = Math.max(0, (params.page - 1) * params.pageSize);
+  const first = params.pageSize;
+
+  const leaguesNorm = normalizeLeagues(params.leagues);
+  const leaguesForQuery = leaguesNorm ?? ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
+
+  const { start, end } = tradesWindowFromRange(params.range);
+
+  const data = await subgraphQuery<any>(Q_USER_TRADES_PAGE, {
+    user: params.user.toLowerCase(),
+    leagues: leaguesForQuery,
+    start,
+    end,
+    skip,
+    first,
+  });
+
+  return {
+    meta: { sourceBlock: data?._meta?.block?.number ?? null },
+    rows: data?.trades ?? [],
   };
 }
 

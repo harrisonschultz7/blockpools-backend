@@ -6,6 +6,8 @@ import {
   keyUserBetsPage,
   keyUserClaimsAndStats,
   keyUserSummary,
+  // NEW
+  keyUserTradesPage,
 } from "../cache/cacheKeys";
 import {
   serveWithStaleWhileRevalidate,
@@ -13,6 +15,8 @@ import {
   refreshUserBetsPage,
   refreshUserClaimsAndStats,
   refreshUserSummary,
+  // NEW
+  refreshUserTradesPage,
 } from "../services/cacheRefresh";
 
 function clampPageSize(v: any) {
@@ -48,7 +52,6 @@ cacheRoutes.get("/leaderboard", async (req, res) => {
   const sort = String(req.query.sort || "ROI").toUpperCase();
 
   const params = {
-    // refreshLeaderboard expects leagues array (it will normalize)
     leagues: league === "ALL" ? DEFAULT_LEAGUES : [league],
     range,
     sort,
@@ -67,7 +70,6 @@ cacheRoutes.get("/leaderboard", async (req, res) => {
   });
 
   res.setHeader("Cache-Control", "public, max-age=3, stale-while-revalidate=30");
-  // payload is { meta, rows } from refreshLeaderboard
   res.json({ ok: true, ...out.payload, cache: out.meta });
 });
 
@@ -75,8 +77,8 @@ cacheRoutes.get("/leaderboard", async (req, res) => {
 // User dropdown summary (bets + claims + userGameStats)
 // GET /cache/user/:address/summary?first=20
 //
-// NOTE: We keep the same endpoint, but internally split `first`
-// into betsFirst/claimsFirst/statsFirst.
+// NOTE: This is legacy “summary”, not a trade ledger.
+// It will never include SELL.
 // ------------------------------------------------------------
 cacheRoutes.get("/user/:address/summary", async (req, res) => {
   const address = normAddr(String(req.params.address));
@@ -87,8 +89,8 @@ cacheRoutes.get("/user/:address/summary", async (req, res) => {
   const params = {
     user: address,
     betsFirst: first,
-    claimsFirst: Math.min(250, first * 5), // claims are usually smaller; allow more
-    statsFirst: 250, // userGameStats for “active bets” UX
+    claimsFirst: Math.min(250, first * 5),
+    statsFirst: 250,
   };
 
   const cacheKey = keyUserSummary(params);
@@ -102,17 +104,52 @@ cacheRoutes.get("/user/:address/summary", async (req, res) => {
   });
 
   res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=15");
-  // payload is { meta, bets, claims, userGameStats }
   res.json({ ok: true, ...out.payload, cache: out.meta });
 });
 
 // ------------------------------------------------------------
-// User trade history (paginated bets)
+// User trade ledger (BUY + SELL) - NEW
+// GET /cache/user/:address/trades?page=1&pageSize=25&league=ALL&range=ALL
+//
+// This is the endpoint your frontend should use for “trade history”
+// if you want SELL rows to appear as their own entries.
+// ------------------------------------------------------------
+cacheRoutes.get("/user/:address/trades", async (req, res) => {
+  const address = normAddr(String(req.params.address));
+  if (!assertAddr(address)) return res.status(400).json({ error: "Invalid address" });
+
+  const league = String(req.query.league || "ALL").toUpperCase();
+  const range = String(req.query.range || "ALL").toUpperCase();
+
+  const params = {
+    user: address,
+    leagues: league === "ALL" ? DEFAULT_LEAGUES : [league],
+    range,
+    page: clampPage(req.query.page),
+    pageSize: clampPageSize(req.query.pageSize),
+  };
+
+  const cacheKey = keyUserTradesPage(params);
+
+  const out = await serveWithStaleWhileRevalidate({
+    cacheKey,
+    params,
+    view: "userTradesPage",
+    refreshFn: refreshUserTradesPage,
+    scope: "user",
+  });
+
+  // Trades change a bit less frequently; same caching policy is fine
+  res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=15");
+  // payload should be { meta, rows } where rows include `type: BUY|SELL`
+  res.json({ ok: true, ...out.payload, cache: out.meta });
+});
+
+// ------------------------------------------------------------
+// User trade history (paginated bets) - LEGACY
 // GET /cache/user/:address/bets?page=1&pageSize=10
 //
-// We keep optional league/range params for backward compatibility,
-// but the subgraph does not support these filters in the backend cache;
-// the frontend can filter client-side if needed.
+// This is buy-only (bets entity). KEEP for backward compatibility.
 // ------------------------------------------------------------
 cacheRoutes.get("/user/:address/bets", async (req, res) => {
   const address = normAddr(String(req.params.address));
@@ -135,7 +172,6 @@ cacheRoutes.get("/user/:address/bets", async (req, res) => {
   });
 
   res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=15");
-  // payload is { meta, rows }
   res.json({ ok: true, ...out.payload, cache: out.meta });
 });
 
@@ -164,7 +200,6 @@ cacheRoutes.get("/user/:address/claims-stats", async (req, res) => {
   });
 
   res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=15");
-  // payload is { meta, claims, userGameStats }
   res.json({ ok: true, ...out.payload, cache: out.meta });
 });
 
