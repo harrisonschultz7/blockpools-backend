@@ -211,14 +211,15 @@ function tradesWindowFromRange(range: string | undefined) {
   const r = String(range || "ALL").toUpperCase();
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const farFuture = 4102444800; // 2100-01-01, safe upper bound
+  // The Graph's Int is 32-bit signed; never exceed 2,147,483,647.
+  // For ALL-time, ending at "now" is correct and avoids overflow.
   if (r === "D30") {
-    return { start: nowSec - 30 * 86400, end: farFuture };
+    return { start: nowSec - 30 * 86400, end: nowSec };
   }
   if (r === "D90") {
-    return { start: nowSec - 90 * 86400, end: farFuture };
+    return { start: nowSec - 90 * 86400, end: nowSec };
   }
-  return { start: 0, end: farFuture };
+  return { start: 0, end: nowSec };
 }
 
 // -------------------- Refresh functions --------------------
