@@ -383,6 +383,10 @@ export async function refreshUserBetsPage(params: {
  * CRITICAL FIX:
  * - Deduplicate “same BUY” appearing in both arrays (bets + trades).
  * - Prefer __source:"trade" (or txHash-present) over __source:"bet".
+ *
+ * NEW FIX:
+ * - Preserve price + shares fields from bets so UI can compute:
+ *   Avg Price, Shares, Potential ROI for OPEN POSITIONS + history.
  */
 export async function refreshUserTradesPage(params: {
   user: string;
@@ -418,10 +422,16 @@ export async function refreshUserTradesPage(params: {
   const trades = Array.isArray(data?.trades) ? data.trades : [];
   const bets = Array.isArray(data?.bets) ? data.bets : [];
 
-  // Normalize bets into BUY-like trade rows
+  // Normalize bets into BUY-like trade rows (but preserve bet fields needed by UI)
   const betAsTrades = bets.map((b: any) => {
     const g = b?.game ?? {};
     const ts = toNum(b?.timestamp);
+
+    // Prefer a stable unified priceBps field
+    const priceBps = b?.priceBps ?? b?.spotPriceBps ?? b?.avgPriceBps ?? null;
+
+    // Preserve shares
+    const sharesOutDec = b?.sharesOutDec ?? b?.sharesOut ?? null;
 
     // NOTE: we intentionally prefix for uniqueness, but we canonicalize later for dedupe
     return {
@@ -431,8 +441,14 @@ export async function refreshUserTradesPage(params: {
       timestamp: ts,
       txHash: b?.txHash ?? null,
 
-      spotPriceBps: b?.priceBps ?? null,
-      avgPriceBps: b?.priceBps ?? null,
+      // ✅ trade-style price fields (what the trade history expects)
+      spotPriceBps: priceBps,
+      avgPriceBps: priceBps,
+
+      // ✅ ALSO keep bet-style names so any UI fallbacks work
+      priceBps,
+      sharesOutDec,
+      sharesOut: b?.sharesOut ?? null,
 
       grossInDec: b?.grossAmount ?? "0",
       grossOutDec: "0",
