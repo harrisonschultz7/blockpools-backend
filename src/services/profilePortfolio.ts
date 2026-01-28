@@ -3,17 +3,13 @@ import type { Request } from "express";
 import { pool } from "../db";
 
 /**
- * This service is intentionally defensive because your DB schema has been in flux.
+ * Defensive portfolio builder.
  *
- * It will:
- * 1) Load a user's trade ledger from the first matching table it can find (see CANDIDATE tables below).
- * 2) Build game metadata (league/team names/lockTime/winner) from the first matching games table it can find.
- * 3) Compute open positions + basic stats.
- *
- * If none of the candidate tables exist, it returns ok:true with empty arrays
- * AND includes a "debug" field so you can see what it attempted (and the first error).
- *
- * Once you confirm the real table names/columns, we can tighten this up to a single query.
+ * Key fixes in this revision:
+ * ✅ Canonical event identity using (tx_hash, log_index) when available
+ * ✅ In-memory de-duplication to prevent double-counting (keeps the “best” row)
+ * ✅ Safer fallback IDs (missing logIndex no longer silently becomes 0)
+ * ✅ Re-sorts after dedupe so pagination + cursor remain stable
  */
 
 /* ===================== Types ===================== */
@@ -130,24 +126,81 @@ function asTradeType(v: any): TradeType {
   return "BUY";
 }
 
-function looksLikeMissingTable(err: any): boolean {
-  // Postgres missing relation: 42P01
-  return String(err?.code || "") === "42P01" || /relation .* does not exist/i.test(String(err?.message || ""));
+/**
+ * Canonical event key to dedupe.
+ * If you have txHash+logIndex, that should uniquely identify a chain event.
+ */
+function eventKey(t: TradeEvent): string | null {
+  const h = (t.txHash || "").toLowerCase();
+  if (!h) return null;
+  if (t.logIndex == null) return null;
+  return `${h}:${t.logIndex}`;
+}
+
+function tradeCompletenessScore(t: TradeEvent): number {
+  // Prefer rows that have more “accounting complete” fields.
+  return (
+    (t.sharesDec != null ? 1 : 0) +
+    (t.priceBps != null ? 1 : 0) +
+    (t.feeDec != null ? 1 : 0) +
+    (t.grossAmountDec != null ? 1 : 0) +
+    (t.netAmountDec != null ? 1 : 0)
+  );
 }
 
 /**
- * Try a list of SQL candidates until one works.
- * Returns { ok:true, rows, used } on success; else ok:false with debug.
+ * De-dupe trades by (txHash, logIndex) when possible.
+ * - Keeps the most complete row
+ * - If tie, keeps the newest timestamp, then lexicographically larger id
+ * - Trades without a key pass through (rare; but prevents accidental drops)
  */
-async function queryFirstWorking<T = any>(candidates: Array<{ name: string; sql: string; params: any[] }>): Promise<{
-  ok: true;
-  rows: T[];
-  used: string;
-} | {
-  ok: false;
-  attempted: string[];
-  firstError: string;
-}> {
+function dedupeTrades(trades: TradeEvent[]) {
+  const keyed = new Map<string, TradeEvent>();
+  const passthrough: TradeEvent[] = [];
+
+  for (const t of trades) {
+    const k = eventKey(t);
+    if (!k) {
+      passthrough.push(t);
+      continue;
+    }
+
+    const prev = keyed.get(k);
+    if (!prev) {
+      keyed.set(k, t);
+      continue;
+    }
+
+    const ps = tradeCompletenessScore(prev);
+    const ns = tradeCompletenessScore(t);
+
+    if (ns > ps) {
+      keyed.set(k, t);
+      continue;
+    }
+    if (ns < ps) continue;
+
+    // tie-breakers
+    if (t.timestamp > prev.timestamp) {
+      keyed.set(k, t);
+      continue;
+    }
+    if (t.timestamp < prev.timestamp) continue;
+
+    if (String(t.id).localeCompare(String(prev.id)) > 0) {
+      keyed.set(k, t);
+    }
+  }
+
+  return [...keyed.values(), ...passthrough];
+}
+
+/* ===================== DB candidate query runner ===================== */
+
+async function queryFirstWorking<T = any>(candidates: Array<{ name: string; sql: string; params: any[] }>): Promise<
+  | { ok: true; rows: T[]; used: string }
+  | { ok: false; attempted: string[]; firstError: string }
+> {
   const attempted: string[] = [];
   let firstError = "";
 
@@ -158,7 +211,6 @@ async function queryFirstWorking<T = any>(candidates: Array<{ name: string; sql:
       return { ok: true, rows: (res.rows || []) as T[], used: c.name };
     } catch (err: any) {
       if (!firstError) firstError = String(err?.message || err);
-      // if it's missing table, keep trying; otherwise still keep trying but note it
       continue;
     }
   }
@@ -170,7 +222,6 @@ async function queryFirstWorking<T = any>(candidates: Array<{ name: string; sql:
 
 /**
  * Weighted-average cost basis per (game,side).
- * (If you prefer strict FIFO lots later, we can swap this.)
  */
 function derivePositions(trades: TradeEvent[], gameMetaById: Record<string, GameMeta>) {
   const pos = new Map<PositionKey, PositionState>();
@@ -220,7 +271,9 @@ function derivePositions(trades: TradeEvent[], gameMetaById: Record<string, Game
 
         if (t.priceBps != null) {
           const prevBps = p.avgEntryBps ?? t.priceBps;
-          p.avgEntryBps = Math.round(((prevBps * prevQty) + (t.priceBps * addQty)) / Math.max(1e-9, nextQty));
+          p.avgEntryBps = Math.round(
+            ((prevBps * prevQty) + (t.priceBps * addQty)) / Math.max(1e-9, nextQty)
+          );
         }
       } else {
         // fallback if shares not present
@@ -257,27 +310,6 @@ function derivePositions(trades: TradeEvent[], gameMetaById: Record<string, Game
 
 /* ===================== Data loading ===================== */
 
-/**
- * CANDIDATE tables for user trade ledger.
- *
- * You MUST update these once you confirm the actual table you created in your backend caching work.
- * This is the “best-effort” set based on typical naming from your recent commits.
- *
- * Expected columns (any subset ok, we coalesce):
- * - id (text)
- * - timestamp / ts / block_time (seconds)
- * - type (BUY/SELL/CLAIM)
- * - game_id
- * - side (A/B)
- * - gross_amount_dec / gross_amount / gross
- * - net_amount_dec / net_amount / net
- * - fee_dec / fee
- * - price_bps
- * - shares_dec / shares
- * - tx_hash
- * - log_index
- * - league (optional)
- */
 async function loadUserLedger(args: {
   userLower: string;
   league: League;
@@ -295,20 +327,12 @@ async function loadUserLedger(args: {
   const window = rangeWindowSeconds(args.range);
   const anchorTs = args.anchorTs ?? null;
 
-  // Time bounds:
-  // - If D30/D90: include [anchor-window, anchor]
-  // - If ALL: no bounds
   const timeMin = window && anchorTs ? anchorTs - window : null;
   const timeMax = window && anchorTs ? anchorTs : null;
 
-  // For pagination, we use descending (newest first).
-  // If cursor is present, we fetch rows strictly older than cursor (ts,id).
   const cursorTs = decoded?.ts ?? null;
   const cursorId = decoded?.id ?? null;
 
-  // We try multiple candidate SQLs with different table/column assumptions.
-  // IMPORTANT: these queries assume there is a "user" column holding the user's address lowercased.
-  // If your column differs (e.g., user_address), update below.
   const paramsBase: any[] = [];
   let p = 1;
 
@@ -321,7 +345,6 @@ async function loadUserLedger(args: {
   const limitParam = `$${p++}`;
   paramsBase.push(args.limit);
 
-  // optional time bounds
   const timeMinParam = timeMin != null ? `$${p++}` : null;
   if (timeMin != null) paramsBase.push(timeMin);
 
@@ -334,7 +357,6 @@ async function loadUserLedger(args: {
   const cursorIdParam = cursorId != null ? `$${p++}` : null;
   if (cursorId != null) paramsBase.push(cursorId);
 
-  // shared WHERE snippets
   const whereUser = `LOWER(t.user) = ${userParam}`;
   const whereLeague = args.league === "ALL" ? `TRUE` : `UPPER(COALESCE(t.league, '')) = ${leagueParam}`;
   const whereTime =
@@ -351,7 +373,6 @@ async function loadUserLedger(args: {
       ? `((t.timestamp < ${cursorTsParam}) OR (t.timestamp = ${cursorTsParam} AND t.id < ${cursorIdParam}))`
       : `TRUE`;
 
-  // Candidate 1: table already has "timestamp" seconds
   const cand1 = {
     name: "user_trade_events.timestamp",
     sql: `
@@ -380,7 +401,6 @@ async function loadUserLedger(args: {
     params: paramsBase,
   };
 
-  // Candidate 2: same table but "ts" column
   const cand2 = {
     name: "user_trade_events.ts",
     sql: `
@@ -409,7 +429,6 @@ async function loadUserLedger(args: {
     params: paramsBase,
   };
 
-  // Candidate 3: different table name
   const cand3 = {
     name: "cached_trade_events",
     sql: `
@@ -454,7 +473,7 @@ async function loadUserLedger(args: {
   const ledgerRes = await queryFirstWorking<any>([cand1, cand2, cand3]);
 
   let rows: any[] = [];
-  let ledgerDebug: any = {};
+  const ledgerDebug: any = {};
 
   if (ledgerRes.ok) {
     rows = ledgerRes.rows;
@@ -463,7 +482,6 @@ async function loadUserLedger(args: {
     ledgerDebug.ledgerSource = null;
     ledgerDebug.ledgerAttempted = ledgerRes.attempted;
     ledgerDebug.ledgerFirstError = ledgerRes.firstError;
-    // return empty (don't hard crash your UI)
     return {
       trades: [],
       nextCursor: null,
@@ -472,24 +490,53 @@ async function loadUserLedger(args: {
     };
   }
 
-  // Normalize to TradeEvent shape
-  const trades: TradeEvent[] = rows.map((r) => {
-    const timestamp = asNum(r.timestamp ?? r.ts ?? r.block_time, 0);
-    return {
-      id: asStr(r.id, `${timestamp}:${asStr(r.tx_hash, "noid")}:${asNum(r.log_index, 0)}`),
-      timestamp,
-      type: asTradeType(r.type),
-      gameId: asStr(r.game_id ?? r.gameId ?? r.gameid, ""),
-      side: asSide(r.side),
-      grossAmountDec: asNum(r.gross_amount_dec ?? r.gross_amount ?? r.gross, 0),
-      netAmountDec: asNum(r.net_amount_dec ?? r.net_amount ?? r.net, 0),
-      feeDec: r.fee_dec != null || r.fee != null ? asNum(r.fee_dec ?? r.fee, 0) : undefined,
-      priceBps: r.price_bps == null ? null : asNum(r.price_bps, 0),
-      sharesDec: r.shares_dec != null || r.shares != null ? asNum(r.shares_dec ?? r.shares, 0) : null,
-      txHash: r.tx_hash ? String(r.tx_hash) : undefined,
-      logIndex: r.log_index != null ? asNum(r.log_index, 0) : undefined,
-    };
-  }).filter((t) => !!t.gameId);
+  // Normalize rows -> trades (with canonical IDs)
+  let trades: TradeEvent[] = rows
+    .map((r) => {
+      const timestamp = asNum(r.timestamp ?? r.ts ?? r.block_time, 0);
+
+      const txHash = r.tx_hash ? String(r.tx_hash).toLowerCase() : undefined;
+      const logIndex = r.log_index != null ? asNum(r.log_index, 0) : undefined;
+
+      // ✅ Canonical id if possible; otherwise fallback with missing logIndex = -1 (not 0)
+      const canonicalId =
+        txHash && logIndex != null
+          ? `${txHash}:${logIndex}`
+          : asStr(
+              r.id,
+              `${timestamp}:${asStr(r.tx_hash, "nohash")}:${r.log_index == null ? -1 : asNum(r.log_index, 0)}`
+            );
+
+      return {
+        id: canonicalId,
+        timestamp,
+        type: asTradeType(r.type),
+        gameId: asStr(r.game_id ?? r.gameId ?? r.gameid, ""),
+        side: asSide(r.side),
+        grossAmountDec: asNum(r.gross_amount_dec ?? r.gross_amount ?? r.gross, 0),
+        netAmountDec: asNum(r.net_amount_dec ?? r.net_amount ?? r.net, 0),
+        feeDec: r.fee_dec != null || r.fee != null ? asNum(r.fee_dec ?? r.fee, 0) : undefined,
+        priceBps: r.price_bps == null ? null : asNum(r.price_bps, 0),
+        sharesDec: r.shares_dec != null || r.shares != null ? asNum(r.shares_dec ?? r.shares, 0) : null,
+        txHash,
+        logIndex,
+      };
+    })
+    .filter((t) => !!t.gameId);
+
+  // ✅ De-dupe to prevent double counting
+  const before = trades.length;
+  trades = dedupeTrades(trades);
+  const after = trades.length;
+
+  ledgerDebug.dedupe = {
+    before,
+    after,
+    dropped: before - after,
+  };
+
+  // ✅ Sort newest-first after dedupe so cursor paging stays stable
+  trades.sort((a, b) => b.timestamp - a.timestamp || String(b.id).localeCompare(String(a.id)));
 
   // next cursor: if we returned exactly limit rows, set cursor from last row
   let nextCursor: string | null = null;
@@ -506,7 +553,6 @@ async function loadUserLedger(args: {
     return { trades, nextCursor, gameMetaById, debug: ledgerDebug };
   }
 
-  // Candidate games tables (update once you confirm real name)
   const gamesCand1 = {
     name: "games",
     sql: `
@@ -621,6 +667,7 @@ export async function buildProfilePortfolio(req: Request) {
     limit,
   });
 
+  // derive realized pnl / open positions using the *deduped* trades
   const { pos } = derivePositions(trades, gameMetaById);
 
   const openPositions = Array.from(pos.values())
@@ -641,12 +688,15 @@ export async function buildProfilePortfolio(req: Request) {
         side: p.side,
         netPositionDec: p.netPositionDec,
         avgEntryBps: p.avgEntryBps,
-        lastPriceBps: null, // optional: you can fill from a prices table later
+        lastPriceBps: null, // optional: fill later
         costBasisOpenDec: p.costBasisOpenDec,
       };
     });
 
   const tradesCount = trades.length;
+
+  // NOTE: If your ingestion fields are inconsistent, you may later want net vs gross.
+  // For now, keep your existing semantics but on deduped data.
   const tradedGross = trades
     .filter((t) => t.type === "BUY")
     .reduce((s, t) => s + (t.grossAmountDec || 0), 0);
@@ -675,8 +725,7 @@ export async function buildProfilePortfolio(req: Request) {
     const lg = (gameMetaById[t.gameId]?.league || "—").toUpperCase();
     buyByLeague[lg] = (buyByLeague[lg] || 0) + (t.grossAmountDec || 0);
   }
-  const mostBetLeague =
-    Object.entries(buyByLeague).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const mostBetLeague = Object.entries(buyByLeague).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
   return {
     ok: true,
@@ -700,7 +749,7 @@ export async function buildProfilePortfolio(req: Request) {
 
     page: { limit, nextCursor },
 
-    // ✅ keep debug for now; you can remove once stable
+    // keep debug until stable
     debug,
   };
 }
