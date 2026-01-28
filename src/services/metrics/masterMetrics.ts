@@ -42,6 +42,39 @@ function safeLeague(v: any): string {
   return String(v || "").toUpperCase();
 }
 
+/**
+ * Normalizes winnerSide so ties/draws/pushes do NOT get treated as "lost".
+ * If the subgraph emits winnerTeamCode like TIE/DRAW/PUSH, or winnerSide is not A/B,
+ * we return null.
+ */
+function normalizeWinnerSide(
+  winnerSideRaw: any,
+  winnerTeamCodeRaw?: any
+): "A" | "B" | null {
+  const side = String(winnerSideRaw ?? "").trim().toUpperCase();
+  const code = String(winnerTeamCodeRaw ?? "").trim().toUpperCase();
+
+  // Treat explicit tie/draw/push codes as "no winner side"
+  if (
+    code === "TIE" ||
+    code === "DRAW" ||
+    code === "PUSH" ||
+    side === "TIE" ||
+    side === "DRAW" ||
+    side === "PUSH"
+  ) {
+    return null;
+  }
+
+  // Some subgraphs emit "0"/"NONE"/"" for no-winner
+  if (!side || side === "0" || side === "NONE" || side === "NULL" || side === "UNSET") {
+    return null;
+  }
+
+  if (side === "A" || side === "B") return side;
+  return null;
+}
+
 function cacheKey(parts: Record<string, any>) {
   return Object.entries(parts)
     .map(([k, v]) => `${k}=${String(v)}`)
@@ -92,7 +125,9 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
         game_: { lockTime_gte: $start, lockTime_lte: $end }
       }
     ) {
-      user { id }
+      user {
+        id
+      }
       stakedDec
       withdrawnDec
       game {
@@ -120,7 +155,9 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
       orderDirection: desc
     ) {
       id
-      user { id }
+      user {
+        id
+      }
       amountDec
       timestamp
       game {
@@ -129,6 +166,7 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
         lockTime
         isFinal
         winnerSide
+        winnerTeamCode
         teamACode
         teamBCode
         teamAName
@@ -147,7 +185,9 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
       orderDirection: desc
     ) {
       id
-      user { id }
+      user {
+        id
+      }
       league
       type
       side
@@ -168,6 +208,7 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
         lockTime
         isFinal
         winnerSide
+        winnerTeamCode
         teamACode
         teamBCode
         teamAName
@@ -187,7 +228,9 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
       orderDirection: desc
     ) {
       id
-      user { id }
+      user {
+        id
+      }
       amountDec
       grossAmount
       fee
@@ -199,6 +242,7 @@ const Q_USERS_TRADES_CLAIMS_STATS_BULK_PAGE = /* GraphQL */ `
         lockTime
         isFinal
         winnerSide
+        winnerTeamCode
         teamACode
         teamBCode
         teamAName
@@ -227,7 +271,9 @@ const Q_USER_RECENT_TRADES_PAGE = /* GraphQL */ `
         game_: { lockTime_gte: $start, lockTime_lte: $end }
       }
     ) {
-      user { id }
+      user {
+        id
+      }
       stakedDec
       withdrawnDec
       game {
@@ -252,7 +298,9 @@ const Q_USER_RECENT_TRADES_PAGE = /* GraphQL */ `
       }
     ) {
       id
-      user { id }
+      user {
+        id
+      }
       amountDec
       timestamp
       game {
@@ -261,6 +309,7 @@ const Q_USER_RECENT_TRADES_PAGE = /* GraphQL */ `
         lockTime
         isFinal
         winnerSide
+        winnerTeamCode
         teamACode
         teamBCode
         teamAName
@@ -281,7 +330,9 @@ const Q_USER_RECENT_TRADES_PAGE = /* GraphQL */ `
       orderDirection: desc
     ) {
       id
-      user { id }
+      user {
+        id
+      }
       league
       type
       side
@@ -306,6 +357,7 @@ const Q_USER_RECENT_TRADES_PAGE = /* GraphQL */ `
         lockTime
         isFinal
         winnerSide
+        winnerTeamCode
         teamACode
         teamBCode
         teamAName
@@ -350,6 +402,7 @@ type G_Trade = {
     lockTime: string;
     isFinal: boolean;
     winnerSide?: string | null;
+    winnerTeamCode?: string | null;
     teamACode?: string | null;
     teamBCode?: string | null;
     teamAName?: string | null;
@@ -368,6 +421,7 @@ type G_Claim = {
     lockTime: string;
     isFinal: boolean;
     winnerSide?: string | null;
+    winnerTeamCode?: string | null;
     teamACode?: string | null;
     teamBCode?: string | null;
     teamAName?: string | null;
@@ -385,6 +439,7 @@ type G_UserGameStat = {
     lockTime: string;
     isFinal: boolean;
     winnerSide?: string | null;
+    winnerTeamCode?: string | null;
     teamACode?: string | null;
     teamBCode?: string | null;
     teamAName?: string | null;
@@ -408,6 +463,7 @@ type G_Bet = {
     lockTime: string;
     isFinal: boolean;
     winnerSide?: string | null;
+    winnerTeamCode?: string | null;
     teamACode?: string | null;
     teamBCode?: string | null;
     teamAName?: string | null;
@@ -1288,9 +1344,8 @@ export async function getUserRecent(params: {
       const gid = String(g.id || "").toLowerCase();
       const ts = toNum(t.timestamp);
 
-      const winnerRaw = String(g.winnerSide || "").toUpperCase();
-      const winnerSide: "A" | "B" | null =
-        winnerRaw === "A" || winnerRaw === "B" ? (winnerRaw as any) : null;
+      // ✅ tie-safe normalization (prevents ties from appearing as losses)
+      const winnerSide = normalizeWinnerSide((g as any).winnerSide, (g as any).winnerTeamCode);
 
       // Normalize columns for UI:
       // BUY: amount=netStake, gross=grossIn
@@ -1341,9 +1396,8 @@ export async function getUserRecent(params: {
         const sideRaw = String(b.side || "").toUpperCase();
         const side: "A" | "B" = sideRaw === "B" ? "B" : "A";
 
-        const winnerRaw = String(g.winnerSide || "").toUpperCase();
-        const winnerSide: "A" | "B" | null =
-          winnerRaw === "A" || winnerRaw === "B" ? (winnerRaw as any) : null;
+        // ✅ tie-safe normalization (prevents ties from appearing as losses)
+        const winnerSide = normalizeWinnerSide((g as any).winnerSide, (g as any).winnerTeamCode);
 
         // Legacy bets are effectively BUY rows for the dropdown UX
         return {
