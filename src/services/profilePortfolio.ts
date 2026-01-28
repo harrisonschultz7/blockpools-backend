@@ -10,6 +10,7 @@ import { pool } from "../db";
  * ✅ In-memory de-duplication to prevent double-counting (keeps the “best” row)
  * ✅ Safer fallback IDs (missing logIndex no longer silently becomes 0)
  * ✅ Re-sorts after dedupe so pagination + cursor remain stable
+ * ✅ FIX: winnerSide parsing supports "TIE"/"DRAW"/"PUSH" and never coerces unknowns to "A"
  */
 
 /* ===================== Types ===================== */
@@ -49,7 +50,7 @@ export type GameMeta = {
   teamBName?: string;
   lockTime: number;
   isFinal: boolean;
-  winnerSide?: "A" | "B" | null;
+  winnerSide?: "A" | "B" | "TIE" | null; // ✅ allow TIE
 };
 
 type PositionKey = string; // `${gameId}:${side}`
@@ -117,6 +118,29 @@ function asStr(v: any, fallback = ""): string {
 function asSide(v: any): "A" | "B" {
   const s = String(v ?? "").toUpperCase();
   return s === "B" ? "B" : "A";
+}
+
+/**
+ * ✅ Winner-side parser:
+ * - Supports "A" | "B" | "TIE"
+ * - Treats unknown values as null (NEVER coerces to "A")
+ */
+function asWinnerSide(v: any): "A" | "B" | "TIE" | null {
+  const s = String(v ?? "").trim().toUpperCase();
+  if (!s) return null;
+
+  // common “no winner” encodings
+  if (s === "NULL" || s === "NONE" || s === "N/A" || s === "NA" || s === "0") return null;
+
+  // tie encodings
+  if (s === "TIE" || s === "DRAW" || s === "PUSH") return "TIE";
+
+  // normal
+  if (s === "A") return "A";
+  if (s === "B") return "B";
+
+  // defensive: unknown values should not be forced to a side
+  return null;
 }
 
 function asTradeType(v: any): TradeType {
@@ -197,7 +221,9 @@ function dedupeTrades(trades: TradeEvent[]) {
 
 /* ===================== DB candidate query runner ===================== */
 
-async function queryFirstWorking<T = any>(candidates: Array<{ name: string; sql: string; params: any[] }>): Promise<
+async function queryFirstWorking<T = any>(
+  candidates: Array<{ name: string; sql: string; params: any[] }>
+): Promise<
   | { ok: true; rows: T[]; used: string }
   | { ok: false; attempted: string[]; firstError: string }
 > {
@@ -272,7 +298,7 @@ function derivePositions(trades: TradeEvent[], gameMetaById: Record<string, Game
         if (t.priceBps != null) {
           const prevBps = p.avgEntryBps ?? t.priceBps;
           p.avgEntryBps = Math.round(
-            ((prevBps * prevQty) + (t.priceBps * addQty)) / Math.max(1e-9, nextQty)
+            ((prevBps * prevQty) + t.priceBps * addQty) / Math.max(1e-9, nextQty)
           );
         }
       } else {
@@ -358,7 +384,8 @@ async function loadUserLedger(args: {
   if (cursorId != null) paramsBase.push(cursorId);
 
   const whereUser = `LOWER(t.user) = ${userParam}`;
-  const whereLeague = args.league === "ALL" ? `TRUE` : `UPPER(COALESCE(t.league, '')) = ${leagueParam}`;
+  const whereLeague =
+    args.league === "ALL" ? `TRUE` : `UPPER(COALESCE(t.league, '')) = ${leagueParam}`;
   const whereTime =
     timeMinParam && timeMaxParam
       ? `(t.timestamp >= ${timeMinParam} AND t.timestamp <= ${timeMaxParam})`
@@ -517,7 +544,8 @@ async function loadUserLedger(args: {
         netAmountDec: asNum(r.net_amount_dec ?? r.net_amount ?? r.net, 0),
         feeDec: r.fee_dec != null || r.fee != null ? asNum(r.fee_dec ?? r.fee, 0) : undefined,
         priceBps: r.price_bps == null ? null : asNum(r.price_bps, 0),
-        sharesDec: r.shares_dec != null || r.shares != null ? asNum(r.shares_dec ?? r.shares, 0) : null,
+        sharesDec:
+          r.shares_dec != null || r.shares != null ? asNum(r.shares_dec ?? r.shares, 0) : null,
         txHash,
         logIndex,
       };
@@ -625,7 +653,7 @@ async function loadUserLedger(args: {
         teamBName: r.team_b_name ?? undefined,
         lockTime: asNum(r.lock_time, 0),
         isFinal: !!r.is_final,
-        winnerSide: r.winner_side ? asSide(r.winner_side) : null,
+        winnerSide: asWinnerSide(r.winner_side), // ✅ FIX: keep TIE and avoid coercion
       };
     }
   } else {
@@ -640,9 +668,7 @@ async function loadUserLedger(args: {
 /* ===================== Public API ===================== */
 
 export async function buildProfilePortfolio(req: Request) {
-  const userLower = String((req as any).params?.address || "")
-    .toLowerCase()
-    .trim();
+  const userLower = String((req as any).params?.address || "").toLowerCase().trim();
 
   const league = clampLeague((req as any).query?.league);
   const range = clampRange((req as any).query?.range);
@@ -725,7 +751,8 @@ export async function buildProfilePortfolio(req: Request) {
     const lg = (gameMetaById[t.gameId]?.league || "—").toUpperCase();
     buyByLeague[lg] = (buyByLeague[lg] || 0) + (t.grossAmountDec || 0);
   }
-  const mostBetLeague = Object.entries(buyByLeague).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const mostBetLeague =
+    Object.entries(buyByLeague).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
   return {
     ok: true,
