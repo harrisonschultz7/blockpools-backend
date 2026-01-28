@@ -210,6 +210,62 @@ function toNum(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Canonicalize IDs so `trade-trade-<tx>-<log>` and `bet-bet-<tx>-<log>` map to the same key.
+ * This matches what we saw in your live API output.
+ */
+function canonicalActivityId(id: string): string {
+  return String(id || "")
+    .replace(/^trade-trade-/, "")
+    .replace(/^bet-bet-/, "")
+    .replace(/^trade-/, "")
+    .replace(/^bet-/, "");
+}
+
+/**
+ * Dedupe merged activity rows by canonical id.
+ * Prefer:
+ *  1) __source === "trade"
+ *  2) txHash present
+ */
+function dedupeActivityRows(rows: any[]): { rows: any[]; dropped: number } {
+  const bestByKey = new Map<string, any>();
+
+  for (const r of rows || []) {
+    const key = canonicalActivityId(r?.id);
+    if (!key) continue;
+
+    const prev = bestByKey.get(key);
+    if (!prev) {
+      bestByKey.set(key, r);
+      continue;
+    }
+
+    const rIsTrade = r?.__source === "trade";
+    const pIsTrade = prev?.__source === "trade";
+
+    const rHasTx = !!r?.txHash;
+    const pHasTx = !!prev?.txHash;
+
+    const takeR = (rIsTrade && !pIsTrade) || (rHasTx && !pHasTx);
+    if (takeR) bestByKey.set(key, r);
+  }
+
+  // Preserve original ordering as much as possible
+  const out: any[] = [];
+  const seen = new Set<string>();
+
+  for (const r of rows || []) {
+    const key = canonicalActivityId(r?.id);
+    if (!key || seen.has(key)) continue;
+    const best = bestByKey.get(key);
+    if (best) out.push(best);
+    seen.add(key);
+  }
+
+  return { rows: out, dropped: Math.max(0, (rows?.length || 0) - out.length) };
+}
+
 // -------------------- Refresh functions --------------------
 
 export async function refreshLeaderboard(params: {
@@ -324,7 +380,9 @@ export async function refreshUserBetsPage(params: {
  * - SELL rows come from `trades`
  * - BUY rows are backfilled from `bets` as BUY-like rows
  *
- * Necessary fix: page-aware overfetch so older rows show on later pages.
+ * CRITICAL FIX:
+ * - Deduplicate “same BUY” appearing in both arrays (bets + trades).
+ * - Prefer __source:"trade" (or txHash-present) over __source:"bet".
  */
 export async function refreshUserTradesPage(params: {
   user: string;
@@ -341,7 +399,7 @@ export async function refreshUserTradesPage(params: {
 
   const { start, end } = tradesWindowFromRange(params.range);
 
-  // ✅ Necessary fix: grow fetch with page depth (still capped to 1000 by TheGraph).
+  // page-aware overfetch (still capped to 1000 by TheGraph)
   const overfetch = Math.max(page * pageSize * 2, 120);
   const first = Math.min(overfetch, 1000);
 
@@ -360,11 +418,12 @@ export async function refreshUserTradesPage(params: {
   const trades = Array.isArray(data?.trades) ? data.trades : [];
   const bets = Array.isArray(data?.bets) ? data.bets : [];
 
-  // Normalize bets into BUY-like trade rows (so old buys appear in the same list)
+  // Normalize bets into BUY-like trade rows
   const betAsTrades = bets.map((b: any) => {
     const g = b?.game ?? {};
     const ts = toNum(b?.timestamp);
 
+    // NOTE: we intentionally prefix for uniqueness, but we canonicalize later for dedupe
     return {
       id: `bet-${b.id}`,
       type: "BUY",
@@ -396,15 +455,24 @@ export async function refreshUserTradesPage(params: {
     __source: "trade",
   }));
 
-  const merged = [...tradeRows, ...betAsTrades].sort(
-    (a, b) => toNum(b?.timestamp) - toNum(a?.timestamp)
-  );
+  // Merge, sort, then dedupe (dedupe AFTER sort to preserve newest ordering)
+  const mergedSorted = [...tradeRows, ...betAsTrades].sort((a, b) => {
+    const dt = toNum(b?.timestamp) - toNum(a?.timestamp);
+    if (dt !== 0) return dt;
+    // stable tie-break by id
+    return String(b?.id || "").localeCompare(String(a?.id || ""));
+  });
+
+  const deduped = dedupeActivityRows(mergedSorted);
 
   const startIdx = (page - 1) * pageSize;
-  const rows = merged.slice(startIdx, startIdx + pageSize);
+  const rows = deduped.rows.slice(startIdx, startIdx + pageSize);
 
   return {
-    meta: { sourceBlock },
+    meta: {
+      sourceBlock,
+      droppedDupes: deduped.dropped, // helpful for debugging; safe to remove later
+    },
     rows,
   };
 }
