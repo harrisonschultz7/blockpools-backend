@@ -332,8 +332,8 @@ async function backfillUser(opts: {
 }
 
 async function run() {
-if (!ENV.SUBGRAPH_QUERY_URL) {
-    console.log(`[backfill] ENV.SUBGRAPH_URL missing — cannot query subgraph.`);
+  if (!ENV.SUBGRAPH_QUERY_URL) {
+    console.log(`[backfill] ENV.SUBGRAPH_QUERY_URL missing — cannot query subgraph.`);
     process.exit(1);
   }
 
