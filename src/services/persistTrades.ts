@@ -1,11 +1,14 @@
 // src/services/persistTrades.ts
 import { pool } from "../db";
 
+type TradeType = "BUY" | "SELL";
+type Side = "A" | "B";
+
 type PersistTradeRow = {
   id: string;
   user: string;
-  type: "BUY" | "SELL";
-  side: "A" | "B";
+  type: TradeType;
+  side: Side;
   timestamp: number;
   txHash: string | null;
 
@@ -39,34 +42,68 @@ type PersistGameRow = {
   teamBName: string | null;
 };
 
+function toStr(v: any, fallback = "0"): string {
+  if (v == null) return fallback;
+  return String(v);
+}
+
+function toNumOrNull(v: any): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toInt(v: any): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+function toBoolOrNull(v: any): boolean | null {
+  if (v == null) return null;
+  return Boolean(v);
+}
+
+function toTradeType(v: any): TradeType {
+  return v === "SELL" ? "SELL" : "BUY";
+}
+
+function toSide(v: any): Side {
+  return v === "B" ? "B" : "A";
+}
+
 export async function upsertUserTradesAndGames(opts: {
   user: string;
   tradeRows: any[];
 }) {
-  const user = opts.user.toLowerCase();
+  const user = String(opts.user || "").toLowerCase();
 
-  // ---- map trade rows -> DB shape
+  // ---- map trade rows -> DB shape (typed literal unions)
   const trades: PersistTradeRow[] = (opts.tradeRows || [])
     .map((r: any) => {
       const g = r?.game ?? {};
+
+      const tType: TradeType = toTradeType(r?.type);
+      const tSide: Side = toSide(r?.side);
+
       return {
         id: String(r?.id || ""),
         user,
-        type: (r?.type === "SELL" ? "SELL" : "BUY"),
-        side: (r?.side === "B" ? "B" : "A"),
-        timestamp: Number(r?.timestamp || 0),
+        type: tType,
+        side: tSide,
+        timestamp: toInt(r?.timestamp),
         txHash: r?.txHash ? String(r.txHash) : null,
 
-        spotPriceBps: r?.spotPriceBps == null ? null : Number(r.spotPriceBps),
-        avgPriceBps: r?.avgPriceBps == null ? null : Number(r.avgPriceBps),
+        spotPriceBps: toNumOrNull(r?.spotPriceBps),
+        avgPriceBps: toNumOrNull(r?.avgPriceBps),
 
-        grossInDec: String(r?.grossInDec ?? "0"),
-        grossOutDec: String(r?.grossOutDec ?? "0"),
-        feeDec: String(r?.feeDec ?? "0"),
-        netStakeDec: String(r?.netStakeDec ?? "0"),
-        netOutDec: String(r?.netOutDec ?? "0"),
-        costBasisClosedDec: String(r?.costBasisClosedDec ?? "0"),
-        realizedPnlDec: String(r?.realizedPnlDec ?? "0"),
+        grossInDec: toStr(r?.grossInDec ?? r?.grossAmount, "0"),
+        grossOutDec: toStr(r?.grossOutDec, "0"),
+        feeDec: toStr(r?.feeDec ?? r?.fee, "0"),
+        netStakeDec: toStr(r?.netStakeDec ?? r?.amountDec, "0"),
+        netOutDec: toStr(r?.netOutDec, "0"),
+
+        costBasisClosedDec: toStr(r?.costBasisClosedDec, "0"),
+        realizedPnlDec: toStr(r?.realizedPnlDec, "0"),
 
         gameId: String(g?.id || r?.gameId || ""),
         league: g?.league ? String(g.league) : null,
@@ -85,8 +122,8 @@ export async function upsertUserTradesAndGames(opts: {
       gamesById.set(gameId, {
         gameId,
         league: g?.league ?? null,
-        lockTime: g?.lockTime == null ? null : Number(g.lockTime),
-        isFinal: g?.isFinal == null ? null : Boolean(g.isFinal),
+        lockTime: g?.lockTime == null ? null : toInt(g.lockTime),
+        isFinal: toBoolOrNull(g?.isFinal),
         winnerSide: g?.winnerSide ?? null,
         winnerTeamCode: g?.winnerTeamCode ?? null,
         teamACode: g?.teamACode ?? null,
