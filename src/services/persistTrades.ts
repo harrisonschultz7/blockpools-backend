@@ -1,8 +1,20 @@
 // src/services/persistTrades.ts
 import { pool } from "../db";
 
-type TradeType = "BUY" | "SELL";
-type Side = "A" | "B";
+/**
+ * We normalize TIEs here so your DB never stores contradictory outcomes like:
+ *   winner_team_code = 'TIE' but winner_side = 'A'
+ *
+ * Your desired encoding:
+ *   winner_side = 'C'  // means tie / neither A nor B
+ *
+ * We enforce:
+ * - If winnerTeamCode is "TIE" (or "DRAW"), winnerSide => "C"
+ * - Else winnerSide must be "A" | "B" (or null)
+ */
+
+type TradeType = "BUY" | "SELL" | "CLAIM";
+type Side = "A" | "B" | null;
 
 type PersistTradeRow = {
   id: string;
@@ -12,7 +24,6 @@ type PersistTradeRow = {
   timestamp: number;
   txHash: string | null;
 
-  // amounts / prices (keep as strings if your DB columns are numeric)
   spotPriceBps: number | null;
   avgPriceBps: number | null;
 
@@ -34,8 +45,11 @@ type PersistGameRow = {
   league: string | null;
   lockTime: number | null;
   isFinal: boolean | null;
+
+  // IMPORTANT: winnerSide can now be 'A' | 'B' | 'C' | null
   winnerSide: string | null;
   winnerTeamCode: string | null;
+
   teamACode: string | null;
   teamBCode: string | null;
   teamAName: string | null;
@@ -44,7 +58,8 @@ type PersistGameRow = {
 
 function toStr(v: any, fallback = "0"): string {
   if (v == null) return fallback;
-  return String(v);
+  const s = String(v);
+  return s === "" ? fallback : s;
 }
 
 function toNumOrNull(v: any): number | null {
@@ -64,11 +79,63 @@ function toBoolOrNull(v: any): boolean | null {
 }
 
 function toTradeType(v: any): TradeType {
-  return v === "SELL" ? "SELL" : "BUY";
+  const s = String(v || "").toUpperCase().trim();
+  if (s === "SELL") return "SELL";
+  if (s === "CLAIM") return "CLAIM";
+  return "BUY";
 }
 
 function toSide(v: any): Side {
-  return v === "B" ? "B" : "A";
+  const s = String(v || "").toUpperCase().trim();
+  if (s === "B") return "B";
+  if (s === "A") return "A";
+  return null;
+}
+
+function normWinnerTeamCode(v: any): string | null {
+  if (v == null) return null;
+  const s = String(v).toUpperCase().trim();
+  return s ? s : null;
+}
+
+/**
+ * Normalize winner_side + winner_team_code into a consistent encoding.
+ *
+ * Desired behavior:
+ * - If winner_team_code indicates a tie => winner_side = 'C'
+ * - Else winner_side = 'A' | 'B' (or null)
+ */
+function normalizeWinnerSide(opts: {
+  winnerSide: any;
+  winnerTeamCode: any;
+  isFinal: any;
+}): { winnerSide: string | null; winnerTeamCode: string | null } {
+  const isFinal = opts.isFinal == null ? null : Boolean(opts.isFinal);
+
+  const wtc = normWinnerTeamCode(opts.winnerTeamCode);
+
+  // If it's not final yet, don't force anything
+  if (!isFinal) {
+    const wsRaw = opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
+    const ws =
+      wsRaw === "A" || wsRaw === "B" || wsRaw === "C"
+        ? wsRaw
+        : null;
+
+    return { winnerSide: ws, winnerTeamCode: wtc };
+  }
+
+  // Final game:
+  // If team code says tie/draw => force side 'C'
+  if (wtc === "TIE" || wtc === "DRAW") {
+    return { winnerSide: "C", winnerTeamCode: "TIE" };
+  }
+
+  // Otherwise use winnerSide if valid
+  const wsRaw = opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
+  const ws = wsRaw === "A" || wsRaw === "B" ? wsRaw : null;
+
+  return { winnerSide: ws, winnerTeamCode: wtc };
 }
 
 export async function upsertUserTradesAndGames(opts: {
@@ -77,13 +144,33 @@ export async function upsertUserTradesAndGames(opts: {
 }) {
   const user = String(opts.user || "").toLowerCase();
 
-  // ---- map trade rows -> DB shape (typed literal unions)
+  // ---- map trade rows -> DB shape
   const trades: PersistTradeRow[] = (opts.tradeRows || [])
     .map((r: any) => {
       const g = r?.game ?? {};
 
       const tType: TradeType = toTradeType(r?.type);
       const tSide: Side = toSide(r?.side);
+
+      const gameId = String(g?.id || r?.gameId || "");
+      const league =
+        g?.league != null ? String(g.league) : r?.league != null ? String(r.league) : null;
+
+      const spotPriceBps = toNumOrNull(
+        r?.spotPriceBps ?? r?.priceBps ?? r?.spot_price_bps ?? r?.spotPrice
+      );
+      const avgPriceBps = toNumOrNull(
+        r?.avgPriceBps ?? r?.priceBps ?? r?.avg_price_bps ?? r?.avgPrice
+      );
+
+      const grossInDec = toStr(r?.grossInDec ?? r?.grossAmount ?? r?.gross_in_dec, "0");
+      const grossOutDec = toStr(r?.grossOutDec ?? r?.gross_out_dec, "0");
+      const feeDec = toStr(r?.feeDec ?? r?.fee ?? r?.fee_dec, "0");
+      const netStakeDec = toStr(r?.netStakeDec ?? r?.amountDec ?? r?.net_stake_dec, "0");
+      const netOutDec = toStr(r?.netOutDec ?? r?.net_out_dec, "0");
+
+      const costBasisClosedDec = toStr(r?.costBasisClosedDec ?? r?.cost_basis_closed_dec, "0");
+      const realizedPnlDec = toStr(r?.realizedPnlDec ?? r?.realized_pnl_dec, "0");
 
       return {
         id: String(r?.id || ""),
@@ -93,20 +180,20 @@ export async function upsertUserTradesAndGames(opts: {
         timestamp: toInt(r?.timestamp),
         txHash: r?.txHash ? String(r.txHash) : null,
 
-        spotPriceBps: toNumOrNull(r?.spotPriceBps),
-        avgPriceBps: toNumOrNull(r?.avgPriceBps),
+        spotPriceBps,
+        avgPriceBps,
 
-        grossInDec: toStr(r?.grossInDec ?? r?.grossAmount, "0"),
-        grossOutDec: toStr(r?.grossOutDec, "0"),
-        feeDec: toStr(r?.feeDec ?? r?.fee, "0"),
-        netStakeDec: toStr(r?.netStakeDec ?? r?.amountDec, "0"),
-        netOutDec: toStr(r?.netOutDec, "0"),
+        grossInDec,
+        grossOutDec,
+        feeDec,
+        netStakeDec,
+        netOutDec,
 
-        costBasisClosedDec: toStr(r?.costBasisClosedDec, "0"),
-        realizedPnlDec: toStr(r?.realizedPnlDec, "0"),
+        costBasisClosedDec,
+        realizedPnlDec,
 
-        gameId: String(g?.id || r?.gameId || ""),
-        league: g?.league ? String(g.league) : null,
+        gameId,
+        league,
       };
     })
     .filter((t) => t.id && t.gameId && t.timestamp > 0);
@@ -119,13 +206,26 @@ export async function upsertUserTradesAndGames(opts: {
     if (!gameId) continue;
 
     if (!gamesById.has(gameId)) {
-      gamesById.set(gameId, {
-        gameId,
-        league: g?.league ?? null,
-        lockTime: g?.lockTime == null ? null : toInt(g.lockTime),
-        isFinal: toBoolOrNull(g?.isFinal),
+      const league = g?.league ?? null;
+      const lockTime = g?.lockTime == null ? null : toInt(g.lockTime);
+      const isFinal = toBoolOrNull(g?.isFinal);
+
+      const normalized = normalizeWinnerSide({
         winnerSide: g?.winnerSide ?? null,
         winnerTeamCode: g?.winnerTeamCode ?? null,
+        isFinal,
+      });
+
+      gamesById.set(gameId, {
+        gameId,
+        league,
+        lockTime,
+        isFinal,
+
+        // ✅ normalized tie encoding
+        winnerSide: normalized.winnerSide,
+        winnerTeamCode: normalized.winnerTeamCode,
+
         teamACode: g?.teamACode ?? null,
         teamBCode: g?.teamBCode ?? null,
         teamAName: g?.teamAName ?? null,
@@ -141,7 +241,7 @@ export async function upsertUserTradesAndGames(opts: {
   try {
     await client.query("BEGIN");
 
-    // Upsert games (optional but recommended for filters/labels)
+    // Upsert games
     if (games.length) {
       const values: any[] = [];
       const chunks: string[] = [];
@@ -155,8 +255,8 @@ export async function upsertUserTradesAndGames(opts: {
           g.league,
           g.lockTime,
           g.isFinal,
-          g.winnerSide,
-          g.winnerTeamCode,
+          g.winnerSide,     // now can be 'C'
+          g.winnerTeamCode, // 'TIE'
           g.teamACode,
           g.teamBCode,
           g.teamAName,
@@ -184,7 +284,7 @@ export async function upsertUserTradesAndGames(opts: {
       );
     }
 
-    // Upsert trade ledger
+    // Upsert trade ledger (BUY/SELL/CLAIM)
     if (trades.length) {
       const values: any[] = [];
       const chunks: string[] = [];

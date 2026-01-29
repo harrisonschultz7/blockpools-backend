@@ -16,9 +16,9 @@ type TradeAggRow = {
   buyGross: number;
   allInPriceBps: number | null;
 
-  returnAmount: number;
-  claimAmount?: number;
-  sellAmount?: number;
+  returnAmount: number;       // sell + claim
+  claimAmount?: number;       // claim only
+  sellAmount?: number;        // sell only
 
   teamACode?: string;
   teamBCode?: string;
@@ -69,14 +69,6 @@ function safeNum(v: any): number {
 
 export const tradeAggRoutes = Router();
 
-/**
- * Supports BOTH:
- * 1) GET /api/profile/trade-agg?user=0x...&league=ALL&range=ALL&page=1&pageSize=10
- * 2) GET /api/profile/trade-agg/user/:address?league=ALL&range=ALL&page=1&pageSize=10
- *
- * Returns:
- *  { ok: true, rows: TradeAggRow[], page, pageSize, totalRows }
- */
 async function handleTradeAgg(req: any, res: any) {
   const address = normAddr(String(req.query.user || req.params.address || ""));
   if (!assertAddr(address)) {
@@ -92,13 +84,6 @@ async function handleTradeAgg(req: any, res: any) {
 
   const { start, end } = rangeToWindow(range);
 
-  // Fixed placeholders:
-  // $1 user_address
-  // $2 start
-  // $3 end
-  // $4 league (or 'ALL')
-  // $5 limit
-  // $6 offset
   const params = [address, start, end, league, pageSize, offset];
 
   const client = await pool.connect();
@@ -131,8 +116,7 @@ async function handleTradeAgg(req: any, res: any) {
             0
           )::numeric AS buy_gross,
 
-          -- Weighted price bps for BUYs (use avg_price_bps if present, else spot_price_bps),
-          -- weighted by gross_in_dec.
+          -- Weighted price bps for BUYs
           CASE
             WHEN COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0) > 0 THEN
               (
@@ -146,13 +130,19 @@ async function handleTradeAgg(req: any, res: any) {
             ELSE NULL
           END AS all_in_price_bps,
 
-          -- SELL totals (full exit; treat as closed)
+          -- SELL totals (user exited)
           COALESCE(
             SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'SELL'),
             0
           )::numeric AS sell_amount,
 
-          -- last activity
+          -- CLAIM totals (payout/refund)
+          COALESCE(
+            SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'CLAIM'),
+            0
+          )::numeric AS claim_amount,
+
+          -- last activity (BUY/SELL/CLAIM)
           MAX(e.timestamp)::bigint AS last_activity_ts
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
@@ -167,6 +157,7 @@ async function handleTradeAgg(req: any, res: any) {
         a.buy_gross,
         a.all_in_price_bps,
         a.sell_amount,
+        a.claim_amount,
         a.last_activity_ts,
 
         g.league,
@@ -200,7 +191,7 @@ async function handleTradeAgg(req: any, res: any) {
       const isFinal = r.is_final == null ? undefined : Boolean(r.is_final);
 
       // Winner mapping:
-      // - if is_final and winner_side is null/empty => treat as TIE
+      // - if is_final and winner_side is null/empty/other => treat as TIE
       // - else A/B
       let winnerSide: "A" | "B" | "TIE" | null = null;
       const ws =
@@ -212,11 +203,13 @@ async function handleTradeAgg(req: any, res: any) {
 
       const buyGross = safeNum(r.buy_gross);
       const sellAmount = safeNum(r.sell_amount);
+      const claimAmount = safeNum(r.claim_amount);
+
       const allInPriceBps =
         r.all_in_price_bps == null ? null : Math.round(Number(r.all_in_price_bps));
 
-      // Return is SELL proceeds for now. (Claims can be added later.)
-      const returnAmount = sellAmount > 0 ? sellAmount : 0;
+      // ✅ Return = SELL proceeds + CLAIM payout
+      const returnAmount = (sellAmount > 0 ? sellAmount : 0) + (claimAmount > 0 ? claimAmount : 0);
 
       // Action
       let action: TradeAggRow["action"] = "Pending";
@@ -224,11 +217,26 @@ async function handleTradeAgg(req: any, res: any) {
       else if (isFinal && winnerSide === "TIE") action = "Tie";
       else if (isFinal && side && (winnerSide === "A" || winnerSide === "B")) {
         action = winnerSide === side ? "Won" : "Lost";
+      } else if (claimAmount > 0 && buyGross > 0) {
+        // defensive: if we got a claim but game meta is missing
+        action = "Won";
       }
 
-      // ROI
-      const roi =
-        sellAmount > 0 && buyGross > 0 ? (sellAmount - buyGross) / buyGross : null;
+      // ✅ ROI rules:
+      // - If we have realized return (sell or claim): (return - buy)/buy
+      // - If final and Lost: show -100% (unless return present, which would be unusual)
+      // - If final and Tie with no return: show 0 (neutral)
+      // - Pending: null
+      let roi: number | null = null;
+      if (buyGross > 0 && returnAmount > 0) {
+        roi = (returnAmount - buyGross) / buyGross;
+      } else if (buyGross > 0 && isFinal && action === "Lost") {
+        roi = -1;
+      } else if (buyGross > 0 && isFinal && action === "Tie") {
+        roi = 0;
+      } else {
+        roi = null;
+      }
 
       const gameLabel =
         teamAName && teamBName
@@ -251,6 +259,7 @@ async function handleTradeAgg(req: any, res: any) {
         allInPriceBps,
 
         returnAmount,
+        claimAmount: claimAmount > 0 ? claimAmount : undefined,
         sellAmount: sellAmount > 0 ? sellAmount : undefined,
 
         teamACode,
@@ -275,10 +284,7 @@ async function handleTradeAgg(req: any, res: any) {
   }
 }
 
-// Query-based (current frontend expectation in your client)
 tradeAggRoutes.get("/", handleTradeAgg);
-
-// Path-param based (back-compat for earlier curl/frontend attempts)
 tradeAggRoutes.get("/user/:address", handleTradeAgg);
 
 export default tradeAggRoutes;

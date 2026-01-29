@@ -7,12 +7,9 @@ import {
   Q_USER_SUMMARY,
   Q_USER_BETS_PAGE,
   Q_USER_CLAIMS_AND_STATS,
-  // ✅ correct query for merged activity (trades + bets)
   Q_USER_ACTIVITY_PAGE,
 } from "../subgraph/queries";
 
-// ✅ NEW: write-through persistence into Supabase/Postgres
-// Create this file as discussed (it uses your existing `pool` in src/db.ts)
 import { upsertUserTradesAndGames } from "./persistTrades";
 
 type CacheEntry = {
@@ -202,7 +199,7 @@ function toSort(sort: string | undefined): LeaderboardSort {
 function tradesWindowFromRange(range: string | undefined) {
   const r = String(range || "ALL").toUpperCase();
   const nowSec = Math.floor(Date.now() / 1000);
-  const farFuture = 4102444800; // 2100-01-01
+  const farFuture = 4102444800;
 
   if (r === "D30") return { start: nowSec - 30 * 86400, end: nowSec };
   if (r === "D90") return { start: nowSec - 90 * 86400, end: nowSec };
@@ -214,24 +211,16 @@ function toNum(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/**
- * Canonicalize IDs so `trade-trade-<tx>-<log>` and `bet-bet-<tx>-<log>` map to the same key.
- * This matches what we saw in your live API output.
- */
 function canonicalActivityId(id: string): string {
   return String(id || "")
     .replace(/^trade-trade-/, "")
     .replace(/^bet-bet-/, "")
+    .replace(/^claim-claim-/, "")
     .replace(/^trade-/, "")
-    .replace(/^bet-/, "");
+    .replace(/^bet-/, "")
+    .replace(/^claim-/, "");
 }
 
-/**
- * Dedupe merged activity rows by canonical id.
- * Prefer:
- *  1) __source === "trade"
- *  2) txHash present
- */
 function dedupeActivityRows(rows: any[]): { rows: any[]; dropped: number } {
   const bestByKey = new Map<string, any>();
 
@@ -248,14 +237,20 @@ function dedupeActivityRows(rows: any[]): { rows: any[]; dropped: number } {
     const rIsTrade = r?.__source === "trade";
     const pIsTrade = prev?.__source === "trade";
 
+    const rIsClaim = r?.__source === "claim";
+    const pIsClaim = prev?.__source === "claim";
+
     const rHasTx = !!r?.txHash;
     const pHasTx = !!prev?.txHash;
 
-    const takeR = (rIsTrade && !pIsTrade) || (rHasTx && !pHasTx);
+    // Prefer trades over bets; claims are distinct event types so they usually won't collide,
+    // but if they do, keep txHash and prefer trade > claim > bet.
+    const rank = (x: any) => (x?.__source === "trade" ? 3 : x?.__source === "claim" ? 2 : 1);
+    const takeR = rank(r) > rank(prev) || (rHasTx && !pHasTx) || (rIsTrade && !pIsTrade) || (rIsClaim && !pIsClaim);
+
     if (takeR) bestByKey.set(key, r);
   }
 
-  // Preserve original ordering as much as possible
   const out: any[] = [];
   const seen = new Set<string>();
 
@@ -321,8 +316,8 @@ export async function refreshLeaderboard(params: {
     r === "D30"
       ? Math.floor(Date.now() / 1000) - 30 * 86400
       : r === "D90"
-        ? Math.floor(Date.now() / 1000) - 90 * 86400
-        : null;
+      ? Math.floor(Date.now() / 1000) - 90 * 86400
+      : null;
 
   const filtered =
     cutoff == null
@@ -380,25 +375,11 @@ export async function refreshUserBetsPage(params: {
 }
 
 /**
- * ✅ User trade ledger (BUY + SELL):
+ * ✅ User trade ledger (BUY + SELL persisted):
  * - SELL rows come from `trades`
  * - BUY rows are backfilled from `bets` as BUY-like rows
  *
- * CRITICAL FIX:
- * - Deduplicate “same BUY” appearing in both arrays (bets + trades).
- * - Prefer __source:"trade" (or txHash-present) over __source:"bet".
- *
- * NEW FIX:
- * - Preserve price + shares fields from bets so UI can compute:
- *   Avg Price, Shares, Potential ROI for OPEN POSITIONS + history.
- *
- * ✅ NEW SETUP:
- * - After building `deduped.rows`, we UPSERT them into Supabase Postgres tables
- *   (and also upsert game metadata) via `upsertUserTradesAndGames`.
- *
- * IMPORTANT:
- * - We persist the FULL deduped set (not just the page slice) so DB has complete history.
- * - We do not fail the endpoint if persistence fails (DB outage shouldn’t break API reads).
+ * Claims are persisted in refreshUserClaimsAndStats() below.
  */
 export async function refreshUserTradesPage(params: {
   user: string;
@@ -415,7 +396,6 @@ export async function refreshUserTradesPage(params: {
 
   const { start, end } = tradesWindowFromRange(params.range);
 
-  // page-aware overfetch (still capped to 1000 by TheGraph)
   const overfetch = Math.max(page * pageSize * 2, 120);
   const first = Math.min(overfetch, 1000);
 
@@ -434,18 +414,13 @@ export async function refreshUserTradesPage(params: {
   const trades = Array.isArray(data?.trades) ? data.trades : [];
   const bets = Array.isArray(data?.bets) ? data.bets : [];
 
-  // Normalize bets into BUY-like trade rows (but preserve bet fields needed by UI)
   const betAsTrades = bets.map((b: any) => {
     const g = b?.game ?? {};
     const ts = toNum(b?.timestamp);
-
-    // Prefer a stable unified priceBps field
     const priceBps = b?.priceBps ?? b?.spotPriceBps ?? b?.avgPriceBps ?? null;
 
-    // Preserve shares
     const sharesOutDec = b?.sharesOutDec ?? b?.sharesOut ?? null;
 
-    // NOTE: we intentionally prefix for uniqueness, but we canonicalize later for dedupe
     return {
       id: `bet-${b.id}`,
       type: "BUY",
@@ -453,11 +428,9 @@ export async function refreshUserTradesPage(params: {
       timestamp: ts,
       txHash: b?.txHash ?? null,
 
-      // ✅ trade-style price fields (what the trade history expects)
       spotPriceBps: priceBps,
       avgPriceBps: priceBps,
 
-      // ✅ ALSO keep bet-style names so any UI fallbacks work
       priceBps,
       sharesOutDec,
       sharesOut: b?.sharesOut ?? null,
@@ -483,41 +456,44 @@ export async function refreshUserTradesPage(params: {
     __source: "trade",
   }));
 
-  // Merge, sort, then dedupe (dedupe AFTER sort to preserve newest ordering)
   const mergedSorted = [...tradeRows, ...betAsTrades].sort((a, b) => {
     const dt = toNum(b?.timestamp) - toNum(a?.timestamp);
     if (dt !== 0) return dt;
-    // stable tie-break by id
     return String(b?.id || "").localeCompare(String(a?.id || ""));
   });
 
   const deduped = dedupeActivityRows(mergedSorted);
 
-  // ✅ NEW: write-through persist (full deduped set, not just the page slice)
-  // If you want to gate this behind ENV, add ENV.TRADES_PERSIST_ENABLED.
+  // ✅ persist BUY/SELL
   try {
     await upsertUserTradesAndGames({
       user: params.user,
       tradeRows: deduped.rows,
     });
   } catch (e: any) {
-    // Don’t break the API if persistence fails
-    console.log(`[persistTrades] err: ${String(e?.message || e)}`);
+    console.log(`[persistTrades BUY/SELL] err: ${String(e?.message || e)}`);
   }
 
-  // Page slice for response
   const startIdx = (page - 1) * pageSize;
   const rows = deduped.rows.slice(startIdx, startIdx + pageSize);
 
   return {
     meta: {
       sourceBlock,
-      droppedDupes: deduped.dropped, // helpful for debugging; safe to remove later
+      droppedDupes: deduped.dropped,
     },
     rows,
   };
 }
 
+/**
+ * ✅ Claims persistence:
+ * - Fetch claims from subgraph
+ * - Persist each as type='CLAIM' into public.user_trade_events
+ *   (net_out_dec and gross_out_dec set to claim amount)
+ *
+ * This is the missing piece causing Supabase net_out_dec to stay 0 and ROI to be blank.
+ */
 export async function refreshUserClaimsAndStats(params: {
   user: string;
   claimsFirst?: number;
@@ -529,9 +505,57 @@ export async function refreshUserClaimsAndStats(params: {
     statsFirst: params.statsFirst ?? 250,
   });
 
+  const sourceBlock = data?._meta?.block?.number ?? null;
+  const claims = Array.isArray(data?.claims) ? data.claims : [];
+
+  // Map claims -> tradeRows for persistence (CLAIM events)
+  const claimRows = claims.map((c: any) => {
+    const g = c?.game ?? {};
+    const winnerSide = String(g?.winnerSide || "").toUpperCase().trim();
+    const side = winnerSide === "A" || winnerSide === "B" ? winnerSide : null;
+
+    const amt = c?.amountDec ?? "0";
+    const ts = toNum(c?.timestamp);
+
+    return {
+      id: `claim-${c.id}`, // unique namespace
+      type: "CLAIM",
+      side,
+      timestamp: ts,
+      txHash: c?.txHash ?? null,
+
+      spotPriceBps: null,
+      avgPriceBps: null,
+
+      grossInDec: "0",
+      grossOutDec: amt,
+      feeDec: "0",
+      netStakeDec: "0",
+      netOutDec: amt,
+
+      costBasisClosedDec: "0",
+      realizedPnlDec: "0",
+
+      game: g,
+      __source: "claim",
+    };
+  });
+
+  // ✅ persist CLAIM rows (and game metadata)
+  if (claimRows.length) {
+    try {
+      await upsertUserTradesAndGames({
+        user: params.user,
+        tradeRows: claimRows,
+      });
+    } catch (e: any) {
+      console.log(`[persistTrades CLAIM] err: ${String(e?.message || e)}`);
+    }
+  }
+
   return {
-    meta: { sourceBlock: data?._meta?.block?.number ?? null },
-    claims: data?.claims ?? [],
+    meta: { sourceBlock },
+    claims,
     userGameStats: data?.userGameStats ?? [],
   };
 }
