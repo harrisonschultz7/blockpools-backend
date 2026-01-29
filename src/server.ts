@@ -21,6 +21,9 @@ import leaderboardRouter from "./routes/leaderboard";
 // ✅ Groups leaderboard routes (backend-computed group metrics)
 import groupsMetricsRouter from "./routes/groupsMetrics";
 
+// ✅ Trade agg route (NEW)
+import tradeAggRoutes from "./routes/tradeAggRoutes";
+
 const PORT = Number(process.env.PORT || 3001);
 
 // Behind Nginx/Cloudflare, this ensures req.protocol/host are derived from forwarded headers.
@@ -78,6 +81,11 @@ export function makeServer() {
 
   // Existing backend routes (unchanged)
   app.use("/api/profile", profileRouter);
+
+  // ✅ NEW: Trade agg (query-based)
+  //   GET /api/profile/trade-agg?user=0x...&page=1&pageSize=10&league=ALL&range=ALL
+  app.use("/api/profile/trade-agg", tradeAggRoutes);
+
   app.use("/api", wallRouter);
   app.use("/api", invitesRouter);
   app.use("/api", emailTestRouter);

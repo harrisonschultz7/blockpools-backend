@@ -1,7 +1,6 @@
 // src/routes/tradeAggRoutes.ts
 import { Router } from "express";
-import { pool } from "../db";
-import { ENV } from "../config/env";
+import { pool } from "../db/pg";
 
 type TradeAggRow = {
   gameId: string;
@@ -46,7 +45,7 @@ function clampPage(v: any) {
 }
 
 function normAddr(a: string) {
-  return (a || "").toLowerCase();
+  return (a || "").toLowerCase().trim();
 }
 
 function assertAddr(address: string) {
@@ -71,22 +70,19 @@ function safeNum(v: any): number {
 export const tradeAggRoutes = Router();
 
 /**
- * GET /trade-agg/user/:address
- * Query:
- *  - league=ALL | NFL | ...
- *  - range=ALL | D30 | D90
- *  - page=1
- *  - pageSize=10
+ * GET /api/profile/trade-agg?user=0x...&league=ALL&range=ALL&page=1&pageSize=10
  *
  * Returns:
  *  { ok: true, rows: TradeAggRow[], page, pageSize, totalRows }
  */
-tradeAggRoutes.get("/user/:address", async (req, res) => {
-  const address = normAddr(String(req.params.address));
-  if (!assertAddr(address)) return res.status(400).json({ ok: false, error: "Invalid address" });
+tradeAggRoutes.get("/", async (req, res) => {
+  const address = normAddr(String(req.query.user || ""));
+  if (!assertAddr(address)) {
+    return res.status(400).json({ ok: false, error: "Invalid address" });
+  }
 
-  const league = String(req.query.league || "ALL").toUpperCase();
-  const range = String(req.query.range || "ALL").toUpperCase();
+  const league = String(req.query.league || "ALL").toUpperCase().trim();
+  const range = String(req.query.range || "ALL").toUpperCase().trim();
 
   const page = clampPage(req.query.page);
   const pageSize = clampPageSize(req.query.pageSize);
@@ -94,15 +90,17 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
 
   const { start, end } = rangeToWindow(range);
 
-  // Filtering:
-  const leagueFilterSql = league === "ALL" ? "" : `AND g.league = $3`;
-  const leagueParam = league === "ALL" ? null : league;
+  // Fixed placeholders:
+  // $1 user_address
+  // $2 start
+  // $3 end
+  // $4 league (or 'ALL')
+  // $5 limit
+  // $6 offset
+  const params = [address, start, end, league, pageSize, offset];
 
-  // We aggregate by (game_id, side) so that if a user could ever trade both sides,
-  // you still get distinct rows. Your current product likely prevents this, but it's safe.
   const client = await pool.connect();
   try {
-    // total rows count for paging
     const countSql = `
       SELECT COUNT(*)::int AS cnt
       FROM (
@@ -110,16 +108,13 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
         WHERE lower(e.user_address) = lower($1)
-          AND g.lock_time >= $2 AND g.lock_time <= $4
-          ${leagueFilterSql}
+          AND g.lock_time >= $2 AND g.lock_time <= $3
+          AND ($4 = 'ALL' OR g.league = $4)
         GROUP BY e.game_id, e.side
       ) x
     `;
 
-    const countParams =
-      league === "ALL" ? [address, start, end] : [address, start, leagueParam, end];
-
-    const countRes = await client.query(countSql, countParams);
+    const countRes = await client.query(countSql, params.slice(0, 4));
     const totalRows = Number(countRes.rows?.[0]?.cnt || 0);
 
     const sql = `
@@ -129,9 +124,13 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
           e.side,
 
           -- BUY totals
-          COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0)::numeric AS buy_gross,
+          COALESCE(
+            SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'),
+            0
+          )::numeric AS buy_gross,
 
-          -- Weighted price bps for BUYs (use avg_price_bps if present, else spot_price_bps)
+          -- Weighted price bps for BUYs (use avg_price_bps if present, else spot_price_bps),
+          -- weighted by gross_in_dec (robust even if shares missing).
           CASE
             WHEN COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0) > 0 THEN
               (
@@ -146,15 +145,18 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
           END AS all_in_price_bps,
 
           -- SELL totals (full exit; treat as closed)
-          COALESCE(SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'SELL'), 0)::numeric AS sell_amount,
+          COALESCE(
+            SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'SELL'),
+            0
+          )::numeric AS sell_amount,
 
           -- last activity
           MAX(e.timestamp)::bigint AS last_activity_ts
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
         WHERE lower(e.user_address) = lower($1)
-          AND g.lock_time >= $2 AND g.lock_time <= $4
-          ${leagueFilterSql}
+          AND g.lock_time >= $2 AND g.lock_time <= $3
+          AND ($4 = 'ALL' OR g.league = $4)
         GROUP BY e.game_id, e.side
       )
       SELECT
@@ -179,28 +181,11 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
       LIMIT $5 OFFSET $6
     `;
 
-    const params =
-      league === "ALL"
-        ? [address, start, end, end, pageSize, offset] // placeholder, corrected below
-        : [address, start, leagueParam, end, pageSize, offset];
-
-    // Fix param positions (because leagueFilterSql uses $3 only when league != ALL)
-    // When league === ALL, our placeholders are $1=user, $2=start, $4=end in the SQL above,
-    // so we pass [$1,$2,$4,$5,$6] by duplicating end as third param to keep indexing aligned.
-    // We'll rewrite cleanly:
-    let finalParams: any[];
-    if (league === "ALL") {
-      // $1 address, $2 start, $4 end, $5 limit, $6 offset; we use $3 as a harmless filler
-      finalParams = [address, start, end, end, pageSize, offset];
-    } else {
-      // $1 address, $2 start, $3 league, $4 end, $5 limit, $6 offset
-      finalParams = [address, start, leagueParam, end, pageSize, offset];
-    }
-
-    const out = await client.query(sql, finalParams);
+    const out = await client.query(sql, params);
 
     const rows: TradeAggRow[] = (out.rows || []).map((r: any) => {
-      const side: "A" | "B" | null = r.side === "B" ? "B" : r.side === "A" ? "A" : null;
+      const side: "A" | "B" | null =
+        r.side === "B" ? "B" : r.side === "A" ? "A" : null;
 
       const teamACode = r.team_a_code ? String(r.team_a_code) : undefined;
       const teamBCode = r.team_b_code ? String(r.team_b_code) : undefined;
@@ -208,24 +193,18 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
       const teamBName = r.team_b_name ? String(r.team_b_name) : "";
 
       const predictionCode =
-        side === "A"
-          ? (teamACode || "A")
-          : side === "B"
-            ? (teamBCode || "B")
-            : "—";
+        side === "A" ? teamACode || "A" : side === "B" ? teamBCode || "B" : "—";
 
       const isFinal = r.is_final == null ? undefined : Boolean(r.is_final);
 
       // Winner mapping:
-      // - if is_final and winner_side is null => treat as TIE
+      // - if is_final and winner_side is null/empty => treat as TIE
       // - else A/B
-      let winnerSide: "A" | "B" | "TIE" | null | undefined = null;
-      const ws = r.winner_side == null ? null : String(r.winner_side);
+      let winnerSide: "A" | "B" | "TIE" | null = null;
+      const ws = r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
       if (isFinal) {
         if (ws === "A" || ws === "B") winnerSide = ws as any;
         else winnerSide = "TIE";
-      } else {
-        winnerSide = null;
       }
 
       const buyGross = safeNum(r.buy_gross);
@@ -233,21 +212,18 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
       const allInPriceBps =
         r.all_in_price_bps == null ? null : Math.round(Number(r.all_in_price_bps));
 
-      // Since your product is "sell full position", any SELL means closed.
-      // Return is sell proceeds (for now). Claims can be added later.
+      // Return is SELL proceeds for now. (Claims can be added later.)
       const returnAmount = sellAmount > 0 ? sellAmount : 0;
 
-      // Action:
+      // Action
       let action: TradeAggRow["action"] = "Pending";
       if (sellAmount > 0) action = "Sold";
       else if (isFinal && winnerSide === "TIE") action = "Tie";
       else if (isFinal && side && (winnerSide === "A" || winnerSide === "B")) {
         action = winnerSide === side ? "Won" : "Lost";
-      } else action = "Pending";
+      }
 
-      // ROI:
-      // - If Sold: realized ROI from sell vs buy
-      // - Else: null (until claims are ingested)
+      // ROI
       const roi =
         sellAmount > 0 && buyGross > 0 ? (sellAmount - buyGross) / buyGross : null;
 
@@ -278,7 +254,7 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
         teamBCode,
 
         isFinal,
-        winnerSide: winnerSide ?? null,
+        winnerSide,
 
         roi,
 
@@ -289,6 +265,7 @@ tradeAggRoutes.get("/user/:address", async (req, res) => {
 
     res.json({ ok: true, rows, page, pageSize, totalRows });
   } catch (e: any) {
+    console.error("[tradeAggRoutes] error", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   } finally {
     client.release();
