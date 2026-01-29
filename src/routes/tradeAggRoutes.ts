@@ -1,6 +1,6 @@
 // src/routes/tradeAggRoutes.ts
 import { Router } from "express";
-import { pool } from "../db/pg";
+import { pool } from "../db";
 
 type TradeAggRow = {
   gameId: string;
