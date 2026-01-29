@@ -520,30 +520,58 @@ async function loadUserLedger(args: {
   // Normalize rows -> trades (with canonical IDs)
   let trades: TradeEvent[] = rows
     .map((r) => {
-      const timestamp = asNum(r.timestamp ?? r.ts ?? r.block_time, 0);
+// inside .map((r) => { ... })
 
-      const txHash = r.tx_hash ? String(r.tx_hash).toLowerCase() : undefined;
-      const logIndex = r.log_index != null ? asNum(r.log_index, 0) : undefined;
+const timestamp = asNum(r.timestamp ?? r.ts ?? r.block_time, 0);
 
-      // ✅ Canonical id if possible; otherwise fallback with missing logIndex = -1 (not 0)
-      const canonicalId =
-        txHash && logIndex != null
-          ? `${txHash}:${logIndex}`
-          : asStr(
-              r.id,
-              `${timestamp}:${asStr(r.tx_hash, "nohash")}:${r.log_index == null ? -1 : asNum(r.log_index, 0)}`
-            );
+const txHash = r.tx_hash ? String(r.tx_hash).toLowerCase() : undefined;
+const logIndex = r.log_index != null ? asNum(r.log_index, 0) : undefined;
 
-      return {
-        id: canonicalId,
-        timestamp,
-        type: asTradeType(r.type),
-        gameId: asStr(r.game_id ?? r.gameId ?? r.gameid, ""),
-        side: asSide(r.side),
-        grossAmountDec: asNum(r.gross_amount_dec ?? r.gross_amount ?? r.gross, 0),
-        netAmountDec: asNum(r.net_amount_dec ?? r.net_amount ?? r.net, 0),
-        feeDec: r.fee_dec != null || r.fee != null ? asNum(r.fee_dec ?? r.fee, 0) : undefined,
-        priceBps: r.price_bps == null ? null : asNum(r.price_bps, 0),
+// ✅ Canonical id if possible; otherwise fallback with missing logIndex = -1 (not 0)
+const canonicalId =
+  txHash && logIndex != null
+    ? `${txHash}:${logIndex}`
+    : asStr(
+        r.id,
+        `${timestamp}:${asStr(r.tx_hash, "nohash")}:${r.log_index == null ? -1 : asNum(r.log_index, 0)}`
+      );
+
+const gameId = asStr(r.game_id ?? r.gameId ?? r.gameid, "");
+
+const grossAmountDec = asNum(r.gross_amount_dec ?? r.gross_amount ?? r.gross, 0);
+const netAmountDec = asNum(r.net_amount_dec ?? r.net_amount ?? r.net, 0);
+
+const sharesDec =
+  r.shares_dec != null || r.shares != null ? asNum(r.shares_dec ?? r.shares, 0) : null;
+
+const rawPriceBps = r.price_bps == null ? null : asNum(r.price_bps, 0);
+
+// ✅ Fallback: compute all-in price if price_bps missing but we have gross + shares
+const derivedAllInPriceBps =
+  rawPriceBps == null && (sharesDec ?? 0) > 0 && grossAmountDec > 0
+    ? (grossAmountDec / (sharesDec as number)) * 10_000
+    : null;
+
+return {
+  id: canonicalId,
+  timestamp,
+  type: asTradeType(r.type),
+  gameId,
+  side: asSide(r.side),
+
+  grossAmountDec,
+  netAmountDec,
+
+  feeDec: r.fee_dec != null || r.fee != null ? asNum(r.fee_dec ?? r.fee, 0) : undefined,
+
+  // ✅ preserve old contracts; only fill when missing
+  priceBps: rawPriceBps ?? derivedAllInPriceBps,
+
+  sharesDec,
+
+  txHash,
+  logIndex,
+};
         sharesDec:
           r.shares_dec != null || r.shares != null ? asNum(r.shares_dec ?? r.shares, 0) : null,
         txHash,
