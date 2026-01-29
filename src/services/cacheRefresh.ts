@@ -11,6 +11,10 @@ import {
   Q_USER_ACTIVITY_PAGE,
 } from "../subgraph/queries";
 
+// ✅ NEW: write-through persistence into Supabase/Postgres
+// Create this file as discussed (it uses your existing `pool` in src/db.ts)
+import { upsertUserTradesAndGames } from "./persistTrades";
+
 type CacheEntry = {
   payload: any;
   lastOkAt: string | null;
@@ -387,6 +391,14 @@ export async function refreshUserBetsPage(params: {
  * NEW FIX:
  * - Preserve price + shares fields from bets so UI can compute:
  *   Avg Price, Shares, Potential ROI for OPEN POSITIONS + history.
+ *
+ * ✅ NEW SETUP:
+ * - After building `deduped.rows`, we UPSERT them into Supabase Postgres tables
+ *   (and also upsert game metadata) via `upsertUserTradesAndGames`.
+ *
+ * IMPORTANT:
+ * - We persist the FULL deduped set (not just the page slice) so DB has complete history.
+ * - We do not fail the endpoint if persistence fails (DB outage shouldn’t break API reads).
  */
 export async function refreshUserTradesPage(params: {
   user: string;
@@ -481,6 +493,19 @@ export async function refreshUserTradesPage(params: {
 
   const deduped = dedupeActivityRows(mergedSorted);
 
+  // ✅ NEW: write-through persist (full deduped set, not just the page slice)
+  // If you want to gate this behind ENV, add ENV.TRADES_PERSIST_ENABLED.
+  try {
+    await upsertUserTradesAndGames({
+      user: params.user,
+      tradeRows: deduped.rows,
+    });
+  } catch (e: any) {
+    // Don’t break the API if persistence fails
+    console.log(`[persistTrades] err: ${String(e?.message || e)}`);
+  }
+
+  // Page slice for response
   const startIdx = (page - 1) * pageSize;
   const rows = deduped.rows.slice(startIdx, startIdx + pageSize);
 
