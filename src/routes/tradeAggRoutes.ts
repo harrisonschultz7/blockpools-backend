@@ -6,7 +6,7 @@ type TradeAggRow = {
   gameId: string;
 
   league: string;
-  dateTs: number; // seconds (use lock_time)
+  dateTs: number;
   gameLabel: string;
 
   side: "A" | "B" | null;
@@ -16,9 +16,9 @@ type TradeAggRow = {
   buyGross: number;
   allInPriceBps: number | null;
 
-  returnAmount: number;       // sell + claim
-  claimAmount?: number;       // claim only
-  sellAmount?: number;        // sell only
+  returnAmount: number;
+  claimAmount?: number;
+  sellAmount?: number;
 
   teamACode?: string;
   teamBCode?: string;
@@ -130,19 +130,18 @@ async function handleTradeAgg(req: any, res: any) {
             ELSE NULL
           END AS all_in_price_bps,
 
-          -- SELL totals (user exited)
+          -- SELL totals (full exit)
           COALESCE(
             SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'SELL'),
             0
           )::numeric AS sell_amount,
 
-          -- CLAIM totals (payout/refund)
+          -- ✅ CLAIM totals (payouts)
           COALESCE(
             SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'CLAIM'),
             0
           )::numeric AS claim_amount,
 
-          -- last activity (BUY/SELL/CLAIM)
           MAX(e.timestamp)::bigint AS last_activity_ts
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
@@ -164,6 +163,7 @@ async function handleTradeAgg(req: any, res: any) {
         g.lock_time,
         g.is_final,
         g.winner_side,
+        g.winner_team_code,
         g.team_a_code,
         g.team_b_code,
         g.team_a_name,
@@ -191,13 +191,15 @@ async function handleTradeAgg(req: any, res: any) {
       const isFinal = r.is_final == null ? undefined : Boolean(r.is_final);
 
       // Winner mapping:
-      // - if is_final and winner_side is null/empty/other => treat as TIE
-      // - else A/B
+      // If final and winner_team_code is TIE/DRAW OR winner_side is C => treat as TIE
+      // Else A/B when present; otherwise TIE for final games missing winner fields
       let winnerSide: "A" | "B" | "TIE" | null = null;
-      const ws =
-        r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
+      const ws = r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
+      const wtc = r.winner_team_code == null ? "" : String(r.winner_team_code).toUpperCase().trim();
+
       if (isFinal) {
-        if (ws === "A" || ws === "B") winnerSide = ws as any;
+        if (wtc === "TIE" || wtc === "DRAW" || ws === "C") winnerSide = "TIE";
+        else if (ws === "A" || ws === "B") winnerSide = ws as any;
         else winnerSide = "TIE";
       }
 
@@ -208,8 +210,8 @@ async function handleTradeAgg(req: any, res: any) {
       const allInPriceBps =
         r.all_in_price_bps == null ? null : Math.round(Number(r.all_in_price_bps));
 
-      // ✅ Return = SELL proceeds + CLAIM payout
-      const returnAmount = (sellAmount > 0 ? sellAmount : 0) + (claimAmount > 0 ? claimAmount : 0);
+      // ✅ Return = sell + claim
+      const returnAmount = Math.max(0, sellAmount + claimAmount);
 
       // Action
       let action: TradeAggRow["action"] = "Pending";
@@ -218,32 +220,20 @@ async function handleTradeAgg(req: any, res: any) {
       else if (isFinal && side && (winnerSide === "A" || winnerSide === "B")) {
         action = winnerSide === side ? "Won" : "Lost";
       } else if (claimAmount > 0 && buyGross > 0) {
-        // defensive: if we got a claim but game meta is missing
+        // defensive: claim implies settled
         action = "Won";
       }
 
-      // ✅ ROI rules:
-      // - If we have realized return (sell or claim): (return - buy)/buy
-      // - If final and Lost: show -100% (unless return present, which would be unusual)
-      // - If final and Tie with no return: show 0 (neutral)
-      // - Pending: null
-      let roi: number | null = null;
-      if (buyGross > 0 && returnAmount > 0) {
-        roi = (returnAmount - buyGross) / buyGross;
-      } else if (buyGross > 0 && isFinal && action === "Lost") {
-        roi = -1;
-      } else if (buyGross > 0 && isFinal && action === "Tie") {
-        roi = 0;
-      } else {
-        roi = null;
-      }
+      // ✅ ROI uses total return
+      const roi =
+        returnAmount > 0 && buyGross > 0 ? (returnAmount - buyGross) / buyGross : null;
 
       const gameLabel =
         teamAName && teamBName
           ? `${teamAName} vs ${teamBName}`
           : teamACode && teamBCode
-          ? `${teamACode} vs ${teamBCode}`
-          : String(r.game_id);
+            ? `${teamACode} vs ${teamBCode}`
+            : String(r.game_id);
 
       return {
         gameId: String(r.game_id),
@@ -259,8 +249,8 @@ async function handleTradeAgg(req: any, res: any) {
         allInPriceBps,
 
         returnAmount,
-        claimAmount: claimAmount > 0 ? claimAmount : undefined,
         sellAmount: sellAmount > 0 ? sellAmount : undefined,
+        claimAmount: claimAmount > 0 ? claimAmount : undefined,
 
         teamACode,
         teamBCode,

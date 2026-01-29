@@ -5,9 +5,9 @@ import { upsertUserTradesAndGames } from "../services/persistTrades";
 
 /**
  * One-time backfill:
- * - Discover all distinct user addresses from the subgraph (trades + bets).
- * - For each user, page through ALL trades and bets (window=ALL by default).
- * - Normalize + dedupe (same logic as cacheRefresh), then UPSERT into Postgres tables.
+ * - Discover all distinct user addresses from the subgraph (trades + bets + claims).
+ * - For each user, page through ALL trades + bets + claims (window=ALL by default).
+ * - Normalize + dedupe (bets+trades only), then UPSERT into Postgres tables.
  *
  * Run (after build):
  *   node dist/workers/backfillTrades.js
@@ -31,9 +31,7 @@ query UsersFromTrades($leagues:[String!]!, $start:BigInt!, $end:BigInt!, $first:
     where: { game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end } }
     orderBy: timestamp
     orderDirection: desc
-  ) {
-    user { id }
-  }
+  ) { user { id } }
 }
 `;
 
@@ -45,13 +43,24 @@ query UsersFromBets($leagues:[String!]!, $start:BigInt!, $end:BigInt!, $first:In
     where: { game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end } }
     orderBy: timestamp
     orderDirection: desc
-  ) {
-    user { id }
-  }
+  ) { user { id } }
 }
 `;
 
-// Same activity query you already use, but we WILL paginate skipTrades/skipBets.
+// ✅ NEW: include users that only have claims
+const Q_USERS_FROM_CLAIMS = `
+query UsersFromClaims($leagues:[String!]!, $start:BigInt!, $end:BigInt!, $first:Int!, $skip:Int!) {
+  claims(
+    first: $first
+    skip: $skip
+    where: { game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end } }
+    orderBy: timestamp
+    orderDirection: desc
+  ) { user { id } }
+}
+`;
+
+// Same activity query you already use (trades+bets), paged.
 const Q_USER_ACTIVITY_PAGE_PAGED = `
 query UserActivityPagePaged(
   $user: String!
@@ -62,53 +71,54 @@ query UserActivityPagePaged(
   $skipTrades: Int!
   $skipBets: Int!
 ) {
-  _meta { block { number } }
-
   trades(
     first: $first
     skip: $skipTrades
-    where: {
-      user: $user
-      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
-    }
+    where: { user: $user, game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end } }
     orderBy: timestamp
     orderDirection: desc
   ) {
-    id
-    type
-    side
-    timestamp
-    txHash
-    spotPriceBps
-    avgPriceBps
-    grossInDec
-    grossOutDec
-    feeDec
-    netStakeDec
-    netOutDec
-    costBasisClosedDec
-    realizedPnlDec
+    id type side timestamp txHash
+    spotPriceBps avgPriceBps
+    grossInDec grossOutDec feeDec netStakeDec netOutDec
+    costBasisClosedDec realizedPnlDec
     game { id league lockTime isFinal winnerSide winnerTeamCode teamACode teamBCode teamAName teamBName }
   }
 
   bets(
     first: $first
     skip: $skipBets
-    where: {
-      user: $user
-      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
-    }
+    where: { user: $user, game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end } }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    id timestamp side amountDec grossAmount fee priceBps sharesOutDec
+    game { id league lockTime isFinal winnerSide winnerTeamCode teamACode teamBCode teamAName teamBName }
+  }
+}
+`;
+
+// ✅ NEW: claims paged
+const Q_USER_CLAIMS_PAGED = `
+query UserClaimsPaged(
+  $user: String!
+  $leagues: [String!]!
+  $start: BigInt!
+  $end: BigInt!
+  $first: Int!
+  $skip: Int!
+) {
+  claims(
+    first: $first
+    skip: $skip
+    where: { user: $user, game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end } }
     orderBy: timestamp
     orderDirection: desc
   ) {
     id
-    timestamp
-    side
     amountDec
-    grossAmount
-    fee
-    priceBps
-    sharesOutDec
+    timestamp
+    txHash
     game { id league lockTime isFinal winnerSide winnerTeamCode teamACode teamBCode teamAName teamBName }
   }
 }
@@ -131,8 +141,7 @@ function toNum(v: any): number {
 function tradesWindowFromRange(range: string | undefined) {
   const r = String(range || "ALL").toUpperCase();
   const nowSec = Math.floor(Date.now() / 1000);
-  const farFuture = 4102444800; // 2100-01-01
-
+  const farFuture = 4102444800;
   if (r === "D30") return { start: nowSec - 30 * 86400, end: nowSec };
   if (r === "D90") return { start: nowSec - 90 * 86400, end: nowSec };
   return { start: 0, end: farFuture };
@@ -191,7 +200,7 @@ async function discoverUsers(leagues: string[], start: number, end: number) {
   const first = 1000;
   const users = new Set<string>();
 
-  async function pageUsers(query: string) {
+  async function pageUsers(query: string, key: "trades" | "bets" | "claims") {
     let skip = 0;
     for (;;) {
       const data = await subgraphQuery<any>(query, {
@@ -202,7 +211,7 @@ async function discoverUsers(leagues: string[], start: number, end: number) {
         skip,
       });
 
-      const arr = (query === Q_USERS_FROM_TRADES ? data?.trades : data?.bets) || [];
+      const arr = data?.[key] || [];
       for (const row of arr) {
         const id = String(row?.user?.id || "").toLowerCase();
         if (id) users.add(id);
@@ -210,16 +219,18 @@ async function discoverUsers(leagues: string[], start: number, end: number) {
 
       if (!Array.isArray(arr) || arr.length < first) break;
       skip += first;
-      // small pause so we don’t hammer
       await sleep(75);
     }
   }
 
   console.log(`[backfill] discovering users (trades)…`);
-  await pageUsers(Q_USERS_FROM_TRADES);
+  await pageUsers(Q_USERS_FROM_TRADES, "trades");
 
   console.log(`[backfill] discovering users (bets)…`);
-  await pageUsers(Q_USERS_FROM_BETS);
+  await pageUsers(Q_USERS_FROM_BETS, "bets");
+
+  console.log(`[backfill] discovering users (claims)…`);
+  await pageUsers(Q_USERS_FROM_CLAIMS, "claims");
 
   return [...users.values()];
 }
@@ -237,11 +248,13 @@ async function backfillUser(opts: {
 
   let skipTrades = 0;
   let skipBets = 0;
+  let skipClaims = 0;
 
   let totalPersistedRows = 0;
   let totalDroppedDupes = 0;
   let loops = 0;
 
+  // ---- 1) trades+bets paged
   for (;;) {
     loops++;
 
@@ -258,7 +271,6 @@ async function backfillUser(opts: {
     const trades = Array.isArray(data?.trades) ? data.trades : [];
     const bets = Array.isArray(data?.bets) ? data.bets : [];
 
-    // Normalize bets into BUY-like rows
     const betAsTrades = bets.map((b: any) => {
       const g = b?.game ?? {};
       const ts = toNum(b?.timestamp);
@@ -309,14 +321,11 @@ async function backfillUser(opts: {
     const deduped = dedupeActivityRows(mergedSorted);
     totalDroppedDupes += deduped.dropped;
 
-    // Persist this chunk (UPSERT makes duplicates safe)
     if (deduped.rows.length) {
       await upsertUserTradesAndGames({ user, tradeRows: deduped.rows });
       totalPersistedRows += deduped.rows.length;
     }
 
-    // Advance pagination
-    // We page trades and bets independently.
     if (trades.length > 0) skipTrades += trades.length;
     if (bets.length > 0) skipBets += bets.length;
 
@@ -324,6 +333,60 @@ async function backfillUser(opts: {
     const doneBets = bets.length < first;
 
     if (doneTrades && doneBets) break;
+    if (opts.sleepMs > 0) await sleep(opts.sleepMs);
+  }
+
+  // ---- 2) claims paged (separate loop)
+  for (;;) {
+    const data = await subgraphQuery<any>(Q_USER_CLAIMS_PAGED, {
+      user,
+      leagues: opts.leagues,
+      start: String(opts.start),
+      end: String(opts.end),
+      first,
+      skip: skipClaims,
+    });
+
+    const claims = Array.isArray(data?.claims) ? data.claims : [];
+
+    const claimRows = claims.map((c: any) => {
+      const g = c?.game ?? {};
+      const ts = toNum(c?.timestamp);
+      const amt = c?.amountDec ?? "0";
+
+      return {
+        id: `claim-${c.id}`,
+        type: "CLAIM",
+        side: null, // claim is payout; side not needed for ROI aggregation
+        timestamp: ts,
+        txHash: c?.txHash ?? null,
+
+        spotPriceBps: null,
+        avgPriceBps: null,
+
+        grossInDec: "0",
+        grossOutDec: amt,
+        feeDec: "0",
+        netStakeDec: "0",
+        netOutDec: amt,
+
+        costBasisClosedDec: "0",
+        realizedPnlDec: "0",
+
+        game: g,
+        __source: "claim",
+      };
+    });
+
+    if (claimRows.length) {
+      await upsertUserTradesAndGames({ user, tradeRows: claimRows });
+      totalPersistedRows += claimRows.length;
+    }
+
+    if (claims.length > 0) skipClaims += claims.length;
+
+    const doneClaims = claims.length < first;
+    if (doneClaims) break;
 
     if (opts.sleepMs > 0) await sleep(opts.sleepMs);
   }
@@ -359,36 +422,37 @@ async function run() {
   let ok = 0;
   let err = 0;
 
-  const workers = Array.from({ length: concurrency }, () => (async () => {
-    for (;;) {
-      const my = idx++;
-      if (my >= users.length) return;
+  const workers = Array.from({ length: concurrency }, () =>
+    (async () => {
+      for (;;) {
+        const my = idx++;
+        if (my >= users.length) return;
 
-      const user = users[my];
-      const label = `[backfill] (${my + 1}/${users.length}) ${user}`;
+        const user = users[my];
+        const label = `[backfill] (${my + 1}/${users.length}) ${user}`;
 
-      try {
-        const out = await backfillUser({
-          user,
-          leagues,
-          start,
-          end,
-          pageSize: 1000,
-          sleepMs,
-        });
-        ok++;
-        console.log(
-          `${label} ok loops=${out.loops} persisted=${out.totalPersistedRows} droppedDupes=${out.totalDroppedDupes}`
-        );
-      } catch (e: any) {
-        err++;
-        console.log(`${label} ERR: ${String(e?.message || e)}`);
+        try {
+          const out = await backfillUser({
+            user,
+            leagues,
+            start,
+            end,
+            pageSize: 1000,
+            sleepMs,
+          });
+          ok++;
+          console.log(
+            `${label} ok loops=${out.loops} persisted=${out.totalPersistedRows} droppedDupes=${out.totalDroppedDupes}`
+          );
+        } catch (e: any) {
+          err++;
+          console.log(`${label} ERR: ${String(e?.message || e)}`);
+        }
       }
-    }
-  })());
+    })()
+  );
 
   await Promise.all(workers);
-
   console.log(`[backfill] done ok=${ok} err=${err} totalUsers=${users.length}`);
 }
 

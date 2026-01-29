@@ -200,7 +200,6 @@ function tradesWindowFromRange(range: string | undefined) {
   const r = String(range || "ALL").toUpperCase();
   const nowSec = Math.floor(Date.now() / 1000);
   const farFuture = 4102444800;
-
   if (r === "D30") return { start: nowSec - 30 * 86400, end: nowSec };
   if (r === "D90") return { start: nowSec - 90 * 86400, end: nowSec };
   return { start: 0, end: farFuture };
@@ -215,10 +214,8 @@ function canonicalActivityId(id: string): string {
   return String(id || "")
     .replace(/^trade-trade-/, "")
     .replace(/^bet-bet-/, "")
-    .replace(/^claim-claim-/, "")
     .replace(/^trade-/, "")
-    .replace(/^bet-/, "")
-    .replace(/^claim-/, "");
+    .replace(/^bet-/, "");
 }
 
 function dedupeActivityRows(rows: any[]): { rows: any[]; dropped: number } {
@@ -237,17 +234,10 @@ function dedupeActivityRows(rows: any[]): { rows: any[]; dropped: number } {
     const rIsTrade = r?.__source === "trade";
     const pIsTrade = prev?.__source === "trade";
 
-    const rIsClaim = r?.__source === "claim";
-    const pIsClaim = prev?.__source === "claim";
-
     const rHasTx = !!r?.txHash;
     const pHasTx = !!prev?.txHash;
 
-    // Prefer trades over bets; claims are distinct event types so they usually won't collide,
-    // but if they do, keep txHash and prefer trade > claim > bet.
-    const rank = (x: any) => (x?.__source === "trade" ? 3 : x?.__source === "claim" ? 2 : 1);
-    const takeR = rank(r) > rank(prev) || (rHasTx && !pHasTx) || (rIsTrade && !pIsTrade) || (rIsClaim && !pIsClaim);
-
+    const takeR = (rIsTrade && !pIsTrade) || (rHasTx && !pHasTx);
     if (takeR) bestByKey.set(key, r);
   }
 
@@ -316,8 +306,8 @@ export async function refreshLeaderboard(params: {
     r === "D30"
       ? Math.floor(Date.now() / 1000) - 30 * 86400
       : r === "D90"
-      ? Math.floor(Date.now() / 1000) - 90 * 86400
-      : null;
+        ? Math.floor(Date.now() / 1000) - 90 * 86400
+        : null;
 
   const filtered =
     cutoff == null
@@ -354,11 +344,7 @@ export async function refreshUserSummary(params: {
   };
 }
 
-export async function refreshUserBetsPage(params: {
-  user: string;
-  page: number;
-  pageSize: number;
-}) {
+export async function refreshUserBetsPage(params: { user: string; page: number; pageSize: number }) {
   const skip = Math.max(0, (params.page - 1) * params.pageSize);
   const first = params.pageSize;
 
@@ -375,11 +361,9 @@ export async function refreshUserBetsPage(params: {
 }
 
 /**
- * ✅ User trade ledger (BUY + SELL persisted):
- * - SELL rows come from `trades`
- * - BUY rows are backfilled from `bets` as BUY-like rows
- *
- * Claims are persisted in refreshUserClaimsAndStats() below.
+ * User trade ledger (BUY + SELL) plus CLAIM persistence side-effect.
+ * Response rows remain trades+bets only (history UI),
+ * but DB will also receive CLAIM rows so tradeAgg can compute ROI/returns.
  */
 export async function refreshUserTradesPage(params: {
   user: string;
@@ -399,6 +383,7 @@ export async function refreshUserTradesPage(params: {
   const overfetch = Math.max(page * pageSize * 2, 120);
   const first = Math.min(overfetch, 1000);
 
+  // Pull trades+bets for activity page
   const data = await subgraphQuery<any>(Q_USER_ACTIVITY_PAGE, {
     user: params.user.toLowerCase(),
     leagues: leaguesForQuery,
@@ -418,7 +403,6 @@ export async function refreshUserTradesPage(params: {
     const g = b?.game ?? {};
     const ts = toNum(b?.timestamp);
     const priceBps = b?.priceBps ?? b?.spotPriceBps ?? b?.avgPriceBps ?? null;
-
     const sharesOutDec = b?.sharesOutDec ?? b?.sharesOut ?? null;
 
     return {
@@ -464,16 +448,61 @@ export async function refreshUserTradesPage(params: {
 
   const deduped = dedupeActivityRows(mergedSorted);
 
-  // ✅ persist BUY/SELL
+  // ✅ Persist deduped trades+bets
   try {
     await upsertUserTradesAndGames({
       user: params.user,
       tradeRows: deduped.rows,
     });
   } catch (e: any) {
-    console.log(`[persistTrades BUY/SELL] err: ${String(e?.message || e)}`);
+    console.log(`[persistTrades] err: ${String(e?.message || e)}`);
   }
 
+  // ✅ ALSO persist CLAIMS (lightweight: use existing claims-stats query)
+  // This keeps DB claims fresh without bloating the trades endpoint response.
+  try {
+    const cs = await subgraphQuery<any>(Q_USER_CLAIMS_AND_STATS, {
+      user: params.user.toLowerCase(),
+      claimsFirst: 250,
+      statsFirst: 1,
+    });
+
+    const claims = Array.isArray(cs?.claims) ? cs.claims : [];
+    const claimRows = claims.map((c: any) => {
+      const g = c?.game ?? {};
+      const amt = c?.amountDec ?? "0";
+      return {
+        id: `claim-${c.id}`,
+        type: "CLAIM",
+        side: null,
+        timestamp: toNum(c?.timestamp),
+        txHash: c?.txHash ?? null,
+
+        spotPriceBps: null,
+        avgPriceBps: null,
+
+        grossInDec: "0",
+        grossOutDec: amt,
+        feeDec: "0",
+        netStakeDec: "0",
+        netOutDec: amt,
+
+        costBasisClosedDec: "0",
+        realizedPnlDec: "0",
+
+        game: g,
+        __source: "claim",
+      };
+    });
+
+    if (claimRows.length) {
+      await upsertUserTradesAndGames({ user: params.user, tradeRows: claimRows });
+    }
+  } catch (e: any) {
+    console.log(`[persistClaims] err: ${String(e?.message || e)}`);
+  }
+
+  // Response page slice
   const startIdx = (page - 1) * pageSize;
   const rows = deduped.rows.slice(startIdx, startIdx + pageSize);
 
@@ -486,14 +515,6 @@ export async function refreshUserTradesPage(params: {
   };
 }
 
-/**
- * ✅ Claims persistence:
- * - Fetch claims from subgraph
- * - Persist each as type='CLAIM' into public.user_trade_events
- *   (net_out_dec and gross_out_dec set to claim amount)
- *
- * This is the missing piece causing Supabase net_out_dec to stay 0 and ROI to be blank.
- */
 export async function refreshUserClaimsAndStats(params: {
   user: string;
   claimsFirst?: number;
@@ -505,57 +526,9 @@ export async function refreshUserClaimsAndStats(params: {
     statsFirst: params.statsFirst ?? 250,
   });
 
-  const sourceBlock = data?._meta?.block?.number ?? null;
-  const claims = Array.isArray(data?.claims) ? data.claims : [];
-
-  // Map claims -> tradeRows for persistence (CLAIM events)
-  const claimRows = claims.map((c: any) => {
-    const g = c?.game ?? {};
-    const winnerSide = String(g?.winnerSide || "").toUpperCase().trim();
-    const side = winnerSide === "A" || winnerSide === "B" ? winnerSide : null;
-
-    const amt = c?.amountDec ?? "0";
-    const ts = toNum(c?.timestamp);
-
-    return {
-      id: `claim-${c.id}`, // unique namespace
-      type: "CLAIM",
-      side,
-      timestamp: ts,
-      txHash: c?.txHash ?? null,
-
-      spotPriceBps: null,
-      avgPriceBps: null,
-
-      grossInDec: "0",
-      grossOutDec: amt,
-      feeDec: "0",
-      netStakeDec: "0",
-      netOutDec: amt,
-
-      costBasisClosedDec: "0",
-      realizedPnlDec: "0",
-
-      game: g,
-      __source: "claim",
-    };
-  });
-
-  // ✅ persist CLAIM rows (and game metadata)
-  if (claimRows.length) {
-    try {
-      await upsertUserTradesAndGames({
-        user: params.user,
-        tradeRows: claimRows,
-      });
-    } catch (e: any) {
-      console.log(`[persistTrades CLAIM] err: ${String(e?.message || e)}`);
-    }
-  }
-
   return {
-    meta: { sourceBlock },
-    claims,
+    meta: { sourceBlock: data?._meta?.block?.number ?? null },
+    claims: data?.claims ?? [],
     userGameStats: data?.userGameStats ?? [],
   };
 }
