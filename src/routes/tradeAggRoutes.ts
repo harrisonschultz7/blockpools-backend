@@ -53,7 +53,7 @@ function assertAddr(address: string) {
 }
 
 function rangeToWindow(range: string) {
-  const r = String(range || "ALL").toUpperCase();
+  const r = String(range || "ALL").toUpperCase().trim();
   const nowSec = Math.floor(Date.now() / 1000);
   const farFuture = 4102444800;
 
@@ -70,13 +70,15 @@ function safeNum(v: any): number {
 export const tradeAggRoutes = Router();
 
 /**
- * GET /api/profile/trade-agg?user=0x...&league=ALL&range=ALL&page=1&pageSize=10
+ * Supports BOTH:
+ * 1) GET /api/profile/trade-agg?user=0x...&league=ALL&range=ALL&page=1&pageSize=10
+ * 2) GET /api/profile/trade-agg/user/:address?league=ALL&range=ALL&page=1&pageSize=10
  *
  * Returns:
  *  { ok: true, rows: TradeAggRow[], page, pageSize, totalRows }
  */
-tradeAggRoutes.get("/", async (req, res) => {
-  const address = normAddr(String(req.query.user || ""));
+async function handleTradeAgg(req: any, res: any) {
+  const address = normAddr(String(req.query.user || req.params.address || ""));
   if (!assertAddr(address)) {
     return res.status(400).json({ ok: false, error: "Invalid address" });
   }
@@ -130,7 +132,7 @@ tradeAggRoutes.get("/", async (req, res) => {
           )::numeric AS buy_gross,
 
           -- Weighted price bps for BUYs (use avg_price_bps if present, else spot_price_bps),
-          -- weighted by gross_in_dec (robust even if shares missing).
+          -- weighted by gross_in_dec.
           CASE
             WHEN COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0) > 0 THEN
               (
@@ -201,7 +203,8 @@ tradeAggRoutes.get("/", async (req, res) => {
       // - if is_final and winner_side is null/empty => treat as TIE
       // - else A/B
       let winnerSide: "A" | "B" | "TIE" | null = null;
-      const ws = r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
+      const ws =
+        r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
       if (isFinal) {
         if (ws === "A" || ws === "B") winnerSide = ws as any;
         else winnerSide = "TIE";
@@ -231,8 +234,8 @@ tradeAggRoutes.get("/", async (req, res) => {
         teamAName && teamBName
           ? `${teamAName} vs ${teamBName}`
           : teamACode && teamBCode
-            ? `${teamACode} vs ${teamBCode}`
-            : String(r.game_id);
+          ? `${teamACode} vs ${teamBCode}`
+          : String(r.game_id);
 
       return {
         gameId: String(r.game_id),
@@ -270,6 +273,12 @@ tradeAggRoutes.get("/", async (req, res) => {
   } finally {
     client.release();
   }
-});
+}
+
+// Query-based (current frontend expectation in your client)
+tradeAggRoutes.get("/", handleTradeAgg);
+
+// Path-param based (back-compat for earlier curl/frontend attempts)
+tradeAggRoutes.get("/user/:address", handleTradeAgg);
 
 export default tradeAggRoutes;
