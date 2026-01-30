@@ -15,10 +15,9 @@ import {
  * - Profile totals are computed from the canonical backend ledger:
  *   public.user_trade_events + public.games
  *
- * Therefore:
+ * Canonical semantics (MATCH tradeAggRoutes.ts):
  * - Total Traded = SUM(gross_in_dec) WHERE type='BUY'
- * - Total Return (P/L column in UI) = SUM(net_out_dec) WHERE type='CLAIM'
- *                                + SUM(realized_pnl_dec) WHERE type='SELL'
+ * - Total Return (cash back) = SUM(net_out_dec) WHERE type IN ('SELL','CLAIM')
  * - ROI = (TotalReturn / TotalTraded) - 1
  *
  * This avoids subgraph BET/TRADE double-representation issues.
@@ -88,7 +87,7 @@ type LeaderboardRowApi = {
   // Total Traded (Profile-consistent): BUY gross only
   tradedGross: number;
 
-  // Total Return (Profile-consistent): CLAIM net_out + SELL realized pnl
+  // Total Return (Profile-consistent): SELL net_out + CLAIM net_out
   claimsFinal: number;
 
   // ROI = (return / totalBuy) - 1
@@ -100,8 +99,8 @@ type LeaderboardRowApi = {
   poolsJoined: number;
   favoriteLeague?: string | null;
 
-  sellsNet?: number; // keep for UI compat (we’ll return realized pnl here? or 0)
-  sellsPnl?: number;
+  sellsNet?: number; // kept for UI compat
+  sellsPnl?: number; // kept for UI compat (we store SELL net_out here)
   sellsRoi?: number | null;
 
   user?: string;
@@ -116,7 +115,7 @@ type DbAggRow = {
   user_id: string;
   buy_gross: string | number | null;
   claim_total: string | number | null;
-  sell_pnl: string | number | null;
+  sell_net_out: string | number | null; // <-- IMPORTANT: net_out for SELL (cash back)
   trade_count: string | number | null; // BUY+SELL
   games_touched: string | number | null;
   last_ts: string | number | null;
@@ -168,7 +167,7 @@ async function fetchLeaderboardAggFromDb(params: {
     return { byUser: new Map(), buyByUserLeague: new Map() };
   }
 
-  // Main per-user rollup
+  // Main per-user rollup (canonical)
   const sqlAgg = `
     WITH filtered AS (
       SELECT
@@ -178,7 +177,6 @@ async function fetchLeaderboardAggFromDb(params: {
         e.type,
         (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in,
         (CASE WHEN e.net_out_dec  IS NULL THEN 0 ELSE e.net_out_dec::numeric  END) AS net_out,
-        (CASE WHEN e.realized_pnl_dec IS NULL THEN 0 ELSE e.realized_pnl_dec::numeric END) AS realized_pnl,
         e.timestamp::bigint AS ts
       FROM public.user_trade_events e
       JOIN public.games g ON g.game_id = e.game_id
@@ -189,10 +187,10 @@ async function fetchLeaderboardAggFromDb(params: {
     )
     SELECT
       user_id,
-      SUM(gross_in)     FILTER (WHERE type = 'BUY')::numeric  AS buy_gross,
-      SUM(net_out)      FILTER (WHERE type = 'CLAIM')::numeric AS claim_total,
-      SUM(realized_pnl) FILTER (WHERE type = 'SELL')::numeric AS sell_pnl,
-      COUNT(*)          FILTER (WHERE type IN ('BUY','SELL'))::int AS trade_count,
+      SUM(gross_in) FILTER (WHERE type = 'BUY')::numeric   AS buy_gross,
+      SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric AS claim_total,
+      SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric  AS sell_net_out,
+      COUNT(*)      FILTER (WHERE type IN ('BUY','SELL'))::int AS trade_count,
       COUNT(DISTINCT game_id)::int AS games_touched,
       MAX(ts)::bigint AS last_ts
     FROM filtered
@@ -274,7 +272,7 @@ export async function getLeaderboardUsers(params: {
 
   // bump cache version
   const key = cacheKey({
-    v: "lb_users_db_v1_profile_consistent",
+    v: "lb_users_db_v2_profile_consistent_sell_net_out",
     league: params.league,
     range: params.range,
     sort: params.sort,
@@ -286,7 +284,6 @@ export async function getLeaderboardUsers(params: {
   if (cached) return cached;
 
   // 1) Candidate users FROM DB (canonical)
-  // Pull a bit more than limit so sorting has room.
   const candidateUsers = await getCandidateUsersFromDb({
     leagues,
     start,
@@ -317,7 +314,7 @@ export async function getLeaderboardUsers(params: {
         user_id: u,
         buy_gross: 0,
         claim_total: 0,
-        sell_pnl: 0,
+        sell_net_out: 0,
         trade_count: 0,
         games_touched: 0,
         last_ts: 0,
@@ -325,13 +322,13 @@ export async function getLeaderboardUsers(params: {
 
     const totalBuy = toNum(r.buy_gross);
     const claimTotal = toNum(r.claim_total);
-    const sellPnl = toNum(r.sell_pnl);
+    const sellNetOut = toNum(r.sell_net_out);
 
-    // Profile semantics: "Total Return" = claims + realized sell pnl
-    const totalReturn = claimTotal + sellPnl;
+    // Canonical: "Total Return" = CLAIM net_out + SELL net_out
+    const totalReturn = claimTotal + sellNetOut;
     const roiNet = totalBuy > 0 ? totalReturn / totalBuy - 1 : null;
 
-    // favorite league by BUY gross (same heuristic as profile)
+    // favorite league by BUY gross
     let fav: string | null = null;
     let best = -1;
     for (const lg of leagues) {
@@ -356,8 +353,8 @@ export async function getLeaderboardUsers(params: {
 
       favoriteLeague: fav,
 
-      // keep these for UI compat
-      sellsPnl: sellPnl,
+      // keep for UI compat; store SELL cash-back here
+      sellsPnl: sellNetOut,
       sellsNet: 0,
       sellsRoi: null,
 
@@ -374,6 +371,7 @@ export async function getLeaderboardUsers(params: {
       case "TOTAL_STAKED":
         return (b.tradedGross ?? 0) - (a.tradedGross ?? 0);
       case "LAST_UPDATED":
+        // no last_ts exposed in API row, keep stable sort on ROI for now
         return (b.roiNet ?? -1e18) - (a.roiNet ?? -1e18);
       case "ROI":
       default:
