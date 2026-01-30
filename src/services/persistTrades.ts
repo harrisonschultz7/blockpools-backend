@@ -14,7 +14,7 @@ import { pool } from "../db";
  */
 
 type TradeType = "BUY" | "SELL" | "CLAIM";
-type Side = "A" | "B" | null;
+type Side = "A" | "B" | "C";
 
 type PersistTradeRow = {
   id: string;
@@ -87,11 +87,11 @@ function toTradeType(v: any): TradeType {
 
 function toSide(v: any): Side {
   const s = String(v || "").toUpperCase().trim();
-  if (s === "B") return "B";
   if (s === "A") return "A";
-  return null;
+  if (s === "B") return "B";
+  if (s === "C") return "C";
+  return "C"; // ✅ default to C so DB never gets NULL (CLAIM / unknown)
 }
-
 function normWinnerTeamCode(v: any): string | null {
   if (v == null) return null;
   const s = String(v).toUpperCase().trim();
@@ -149,8 +149,8 @@ export async function upsertUserTradesAndGames(opts: {
     .map((r: any) => {
       const g = r?.game ?? {};
 
-      const tType: TradeType = toTradeType(r?.type);
-      const tSide: Side = toSide(r?.side);
+const tType: TradeType = toTradeType(r?.type);
+const tSide: Side = tType === "CLAIM" ? "C" : toSide(r?.side);
 
       const gameId = String(g?.id || r?.gameId || "");
       const league =

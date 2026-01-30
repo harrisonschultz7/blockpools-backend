@@ -84,10 +84,15 @@ async function handleTradeAgg(req: any, res: any) {
 
   const { start, end } = rangeToWindow(range);
 
+  // params: $1 addr, $2 start, $3 end, $4 league, $5 limit, $6 offset
   const params = [address, start, end, league, pageSize, offset];
 
   const client = await pool.connect();
   try {
+    // Count distinct (game_id, side) rows within window.
+    // NOTE: if you store CLAIM rows with side='C', they will be counted as their own group.
+    // If you don't want that, change GROUP BY to (game_id, CASE WHEN side='C' THEN NULL ELSE side END)
+    // and adjust the main query similarly. For now we keep it exact.
     const countSql = `
       SELECT COUNT(*)::int AS cnt
       FROM (
@@ -116,7 +121,7 @@ async function handleTradeAgg(req: any, res: any) {
             0
           )::numeric AS buy_gross,
 
-          -- Weighted price bps for BUYs
+          -- Weighted price bps for BUYs (all-in avg)
           CASE
             WHEN COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0) > 0 THEN
               (
@@ -130,13 +135,13 @@ async function handleTradeAgg(req: any, res: any) {
             ELSE NULL
           END AS all_in_price_bps,
 
-          -- SELL totals (full exit)
+          -- SELL totals
           COALESCE(
             SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'SELL'),
             0
           )::numeric AS sell_amount,
 
-          -- ✅ CLAIM totals (payouts)
+          -- CLAIM totals (payouts)
           COALESCE(
             SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'CLAIM'),
             0
@@ -191,8 +196,8 @@ async function handleTradeAgg(req: any, res: any) {
       const isFinal = r.is_final == null ? undefined : Boolean(r.is_final);
 
       // Winner mapping:
-      // If final and winner_team_code is TIE/DRAW OR winner_side is C => treat as TIE
-      // Else A/B when present; otherwise TIE for final games missing winner fields
+      // - If final and winner_team_code is TIE/DRAW OR winner_side is C => TIE
+      // - Else A/B when present; otherwise treat missing as TIE for final games
       let winnerSide: "A" | "B" | "TIE" | null = null;
       const ws = r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
       const wtc = r.winner_team_code == null ? "" : String(r.winner_team_code).toUpperCase().trim();
@@ -210,7 +215,7 @@ async function handleTradeAgg(req: any, res: any) {
       const allInPriceBps =
         r.all_in_price_bps == null ? null : Math.round(Number(r.all_in_price_bps));
 
-      // ✅ Return = sell + claim
+      // Return = SELL proceeds + CLAIM payouts
       const returnAmount = Math.max(0, sellAmount + claimAmount);
 
       // Action
@@ -220,11 +225,11 @@ async function handleTradeAgg(req: any, res: any) {
       else if (isFinal && side && (winnerSide === "A" || winnerSide === "B")) {
         action = winnerSide === side ? "Won" : "Lost";
       } else if (claimAmount > 0 && buyGross > 0) {
-        // defensive: claim implies settled
+        // defensive: claim implies settled payout
         action = "Won";
       }
 
-      // ✅ ROI uses total return
+      // ROI uses total return
       const roi =
         returnAmount > 0 && buyGross > 0 ? (returnAmount - buyGross) / buyGross : null;
 

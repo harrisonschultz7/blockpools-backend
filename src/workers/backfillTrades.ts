@@ -354,13 +354,12 @@ async function backfillUser(opts: {
       const ts = toNum(c?.timestamp);
       const amt = c?.amountDec ?? "0";
 
-      return {
-        id: `claim-${c.id}`,
-        type: "CLAIM",
-        side: null, // claim is payout; side not needed for ROI aggregation
-        timestamp: ts,
-        txHash: c?.txHash ?? null,
-
+return {
+  id: `claim-${c.id}`,
+  type: "CLAIM",
+  side: "C", // ✅ must not be null (DB side is NOT NULL)
+  timestamp: ts,
+  txHash: c?.txHash ?? null,
         spotPriceBps: null,
         avgPriceBps: null,
 
