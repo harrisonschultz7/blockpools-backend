@@ -472,7 +472,7 @@ type G_UserRecentBetsResp = { _meta?: any; bets: G_Bet[] };
 type LeaderboardRowApi = {
   id: string;
 
-  tradedGross: number; // Total Traded (BUYS only)
+  tradedGross: number; // Total Traded (PRIMARY BUY per game only)
   claimsFinal: number; // P/L (claims + net sell proceeds)
   roiNet: number | null;
 
@@ -839,8 +839,9 @@ export async function getLeaderboardUsers(params: {
 
   const limit = Math.max(1, Math.min(params.limit || 250, 500));
 
+  // ✅ bump version to bust memCache + ensure new math shows immediately
   const key = cacheKey({
-    v: "lb_users_v7_dedup_buy_pnl_roi",
+    v: "lb_users_v8_primarybuy_no_sell_volume",
     league: params.league,
     range: params.range,
     sort: params.sort,
@@ -851,7 +852,9 @@ export async function getLeaderboardUsers(params: {
   const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
   if (cached) return cached;
 
+  // ---------------------------
   // Step 1: candidate users
+  // ---------------------------
   let users: string[] = [];
 
   if (params.range !== "ALL") {
@@ -891,7 +894,9 @@ export async function getLeaderboardUsers(params: {
     return out;
   }
 
+  // ---------------------------
   // Step 2: bulk fetch within lockTime window
+  // ---------------------------
   const bulkRaw = await fetchBulkWindowed({
     users,
     leagues,
@@ -911,15 +916,29 @@ export async function getLeaderboardUsers(params: {
 
   const inLockWindow = (lockTime: number) => lockTime >= start && lockTime <= end;
 
+  // ---------------------------
   // Step 3: aggregate per user-game
+  // ---------------------------
+  //
+  // Key rules:
+  // - Total Traded must NOT include sells.
+  // - Total Traded must not inflate if a user buys multiple times in the same game.
+  //   We count ONLY the first/primary buy per (user, game) as "tradedGross",
+  //   matching your Profile position semantics.
+  //
   type UserGameAgg = {
     league: string;
     lockTime: number;
     isFinal: boolean;
 
-    buyGross: number;
+    // ✅ Primary buy per game (used for tradedGross)
+    primaryBuyGross: number;
+    hasPrimaryBuy: boolean;
+
+    // activity counts (optional)
     buyCount: number;
 
+    // sells (never contribute to tradedGross)
     sellNet: number;
     sellGross: number;
     sellCostClosed: number;
@@ -931,7 +950,42 @@ export async function getLeaderboardUsers(params: {
 
   const byUserGame = new Map<string, UserGameAgg>();
 
-  // Seed from stats
+  function ensureUG(paramsUG: {
+    u: string;
+    gid: string;
+    league: string;
+    lockTime: number;
+    isFinal: boolean;
+  }): UserGameAgg {
+    const k = `${paramsUG.u}|${paramsUG.gid}`;
+    const existing = byUserGame.get(k);
+    if (existing) {
+      existing.isFinal = existing.isFinal || paramsUG.isFinal;
+      return existing;
+    }
+    const fresh: UserGameAgg = {
+      league: paramsUG.league,
+      lockTime: paramsUG.lockTime,
+      isFinal: !!paramsUG.isFinal,
+
+      primaryBuyGross: 0,
+      hasPrimaryBuy: false,
+
+      buyCount: 0,
+
+      sellNet: 0,
+      sellGross: 0,
+      sellCostClosed: 0,
+      sellPnl: 0,
+      sellCount: 0,
+
+      claimTotal: 0,
+    };
+    byUserGame.set(k, fresh);
+    return fresh;
+  }
+
+  // Seed from stats (helps ensure game exists even if no bets/trades page fetched)
   for (const s of bulk.userGameStats || []) {
     const u = asLower(s.user.id);
     const lockTime = toNum(s.game.lockTime);
@@ -943,31 +997,10 @@ export async function getLeaderboardUsers(params: {
     const gid = String(s.game.id || "").toLowerCase();
     if (!gid) continue;
 
-    const k = `${u}|${gid}`;
-    if (!byUserGame.has(k)) {
-      byUserGame.set(k, {
-        league: gLeague,
-        lockTime,
-        isFinal: !!s.game.isFinal,
-
-        buyGross: 0,
-        buyCount: 0,
-
-        sellNet: 0,
-        sellGross: 0,
-        sellCostClosed: 0,
-        sellPnl: 0,
-        sellCount: 0,
-
-        claimTotal: 0,
-      });
-    } else {
-      const cur = byUserGame.get(k)!;
-      cur.isFinal = cur.isFinal || !!s.game.isFinal;
-    }
+    ensureUG({ u, gid, league: gLeague, lockTime, isFinal: !!s.game.isFinal });
   }
 
-  // Trades — ONLY SELL rows (buys not included to avoid double counting with bets)
+  // Trades — ONLY SELL rows (sells do not affect tradedGross)
   for (const t of bulk.trades || []) {
     if (t.type !== "SELL") continue;
 
@@ -981,37 +1014,17 @@ export async function getLeaderboardUsers(params: {
     const gid = String(t.game.id || "").toLowerCase();
     if (!gid) continue;
 
-    const k = `${u}|${gid}`;
-    const cur =
-      byUserGame.get(k) ||
-      ({
-        league: gLeague,
-        lockTime,
-        isFinal: !!t.game.isFinal,
-
-        buyGross: 0,
-        buyCount: 0,
-
-        sellNet: 0,
-        sellGross: 0,
-        sellCostClosed: 0,
-        sellPnl: 0,
-        sellCount: 0,
-
-        claimTotal: 0,
-      } as UserGameAgg);
+    const cur = ensureUG({ u, gid, league: gLeague, lockTime, isFinal: !!t.game.isFinal });
 
     cur.sellGross += toNum(t.grossOutDec);
     cur.sellNet += toNum(t.netOutDec);
     cur.sellCostClosed += toNum(t.costBasisClosedDec);
     cur.sellPnl += toNum(t.realizedPnlDec);
     cur.sellCount += 1;
-    cur.isFinal = cur.isFinal || !!t.game.isFinal;
-
-    byUserGame.set(k, cur);
   }
 
-  // Bets — BUY totals source of truth (legacy + AMM buys)
+  // Bets — BUY source of truth (legacy + AMM buys)
+  // ✅ ONLY first/primary buy per (user, game) counts toward tradedGross
   for (const b of bulk.bets || []) {
     const u = asLower(b.user.id);
     const lockTime = toNum(b.game.lockTime);
@@ -1023,32 +1036,16 @@ export async function getLeaderboardUsers(params: {
     const gid = String(b.game.id || "").toLowerCase();
     if (!gid) continue;
 
-    const k = `${u}|${gid}`;
-    const cur =
-      byUserGame.get(k) ||
-      ({
-        league: gLeague,
-        lockTime,
-        isFinal: !!b.game.isFinal,
+    const cur = ensureUG({ u, gid, league: gLeague, lockTime, isFinal: !!b.game.isFinal });
 
-        buyGross: 0,
-        buyCount: 0,
-
-        sellNet: 0,
-        sellGross: 0,
-        sellCostClosed: 0,
-        sellPnl: 0,
-        sellCount: 0,
-
-        claimTotal: 0,
-      } as UserGameAgg);
-
-    // Use grossAmount as "capital in" (fee-inclusive) consistent across schemas.
-    cur.buyGross += toNum(b.grossAmount);
+    // Activity count: user did a buy
     cur.buyCount += 1;
-    cur.isFinal = cur.isFinal || !!b.game.isFinal;
 
-    byUserGame.set(k, cur);
+    // Primary buy volume: count once per game
+    if (!cur.hasPrimaryBuy) {
+      cur.primaryBuyGross += toNum(b.grossAmount);
+      cur.hasPrimaryBuy = true;
+    }
   }
 
   // Claims
@@ -1063,45 +1060,25 @@ export async function getLeaderboardUsers(params: {
     const gid = String(c.game.id || "").toLowerCase();
     if (!gid) continue;
 
-    const k = `${u}|${gid}`;
-    const cur =
-      byUserGame.get(k) ||
-      ({
-        league: gLeague,
-        lockTime,
-        isFinal: !!c.game.isFinal,
-
-        buyGross: 0,
-        buyCount: 0,
-
-        sellNet: 0,
-        sellGross: 0,
-        sellCostClosed: 0,
-        sellPnl: 0,
-        sellCount: 0,
-
-        claimTotal: 0,
-      } as UserGameAgg);
-
+    const cur = ensureUG({ u, gid, league: gLeague, lockTime, isFinal: !!c.game.isFinal });
     cur.claimTotal += toNum(c.amountDec);
-    cur.isFinal = cur.isFinal || !!c.game.isFinal;
-
-    byUserGame.set(k, cur);
   }
 
+  // ---------------------------
   // Step 4: roll up per-user
+  // ---------------------------
   type UserAgg = {
-    buyGross: number;
-    sellNet: number;
-    claimTotal: number;
+    buyGross: number; // ✅ primary buys only (Total Traded)
+    sellNet: number; // ✅ proceeds from sells (netOut)
+    claimTotal: number; // ✅ claims
 
     sellPnl: number;
     sellCost: number;
 
-    tradesCount: number;
+    tradesCount: number; // buys + sells (activity)
     gamesTouched: number;
 
-    favLeagueVolume: Record<string, number>;
+    favLeagueVolume: Record<string, number>; // volume based on primary buys
   };
 
   const perUser = new Map<string, UserAgg>();
@@ -1109,7 +1086,8 @@ export async function getLeaderboardUsers(params: {
   for (const [keyUG, g] of byUserGame.entries()) {
     const [u] = keyUG.split("|");
 
-    const hasAny = g.buyGross > 0 || g.sellGross > 0 || g.claimTotal > 0;
+    const hasAny =
+      g.primaryBuyGross > 0 || g.sellGross > 0 || g.claimTotal > 0 || g.buyCount > 0 || g.sellCount > 0;
     if (!hasAny) continue;
 
     const agg =
@@ -1128,17 +1106,23 @@ export async function getLeaderboardUsers(params: {
         favLeagueVolume: {},
       } as UserAgg);
 
-    agg.buyGross += g.buyGross;
+    // ✅ Total Traded is primary buy per game (no sell volume; no multi-buy inflation)
+    agg.buyGross += g.primaryBuyGross;
+
+    // P/L components
     agg.sellNet += g.sellNet;
     agg.claimTotal += g.claimTotal;
 
+    // sell analytics
     agg.sellPnl += g.sellPnl;
     agg.sellCost += g.sellCostClosed;
 
+    // activity counts
     agg.tradesCount += g.buyCount + g.sellCount;
     agg.gamesTouched += 1;
 
-    agg.favLeagueVolume[g.league] = (agg.favLeagueVolume[g.league] || 0) + g.buyGross;
+    // favorite league: based on Total Traded semantics (primary buy)
+    agg.favLeagueVolume[g.league] = (agg.favLeagueVolume[g.league] || 0) + g.primaryBuyGross;
 
     perUser.set(u, agg);
   }
@@ -1255,7 +1239,7 @@ export async function getUserRecent(params: {
     limit,
   });
 
-  // Dedup recent trades/claims too (same pagination issue can apply)
+  // Dedup recent trades/claims too
   const bundle = {
     userGameStats: bundleRaw.userGameStats || [],
     trades: dedupeById(bundleRaw.trades || []),
