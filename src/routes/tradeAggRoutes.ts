@@ -69,6 +69,16 @@ function safeNum(v: any): number {
 
 export const tradeAggRoutes = Router();
 
+/**
+ * Goal:
+ * - Return EXACTLY 1 row per (user, game_id) for Trade History.
+ * - Choose a single "prediction side" (A/B) per game based on the user's largest BUY gross.
+ * - Aggregate:
+ *   buyGross + allInPriceBps for chosen side
+ *   sellAmount for chosen side
+ *   claimAmount for the game (CLAIM rows are side='C' in your DB)
+ *   returnAmount = sellAmount + claimAmount
+ */
 async function handleTradeAgg(req: any, res: any) {
   const address = normAddr(String(req.query.user || req.params.address || ""));
   if (!assertAddr(address)) {
@@ -89,39 +99,39 @@ async function handleTradeAgg(req: any, res: any) {
 
   const client = await pool.connect();
   try {
-    // Count distinct (game_id, side) rows within window.
-    // NOTE: if you store CLAIM rows with side='C', they will be counted as their own group.
-    // If you don't want that, change GROUP BY to (game_id, CASE WHEN side='C' THEN NULL ELSE side END)
-    // and adjust the main query similarly. For now we keep it exact.
+    // Count distinct games (NOT (game_id, side)) within window
     const countSql = `
       SELECT COUNT(*)::int AS cnt
       FROM (
-        SELECT e.game_id, e.side
+        SELECT e.game_id
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
         WHERE lower(e.user_address) = lower($1)
           AND g.lock_time >= $2 AND g.lock_time <= $3
           AND ($4 = 'ALL' OR g.league = $4)
-        GROUP BY e.game_id, e.side
+        GROUP BY e.game_id
       ) x
     `;
-
     const countRes = await client.query(countSql, params.slice(0, 4));
     const totalRows = Number(countRes.rows?.[0]?.cnt || 0);
 
+    /**
+     * Strategy:
+     * 1) pos: aggregate BUY/SELL for sides A/B
+     * 2) best_side: pick the "main" side per game = max(buy_gross)
+     *    - tie-breaker: most recent activity_ts
+     *    - secondary tie-breaker: side 'A' then 'B'
+     * 3) claims: aggregate CLAIM as game-level payout (side='C' in your DB)
+     * 4) join best_side + claims + games
+     */
     const sql = `
-      WITH agg AS (
+      WITH pos AS (
         SELECT
           e.game_id,
           e.side,
 
-          -- BUY totals
-          COALESCE(
-            SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'),
-            0
-          )::numeric AS buy_gross,
+          COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0)::numeric AS buy_gross,
 
-          -- Weighted price bps for BUYs (all-in avg)
           CASE
             WHEN COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0) > 0 THEN
               (
@@ -135,17 +145,7 @@ async function handleTradeAgg(req: any, res: any) {
             ELSE NULL
           END AS all_in_price_bps,
 
-          -- SELL totals
-          COALESCE(
-            SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'SELL'),
-            0
-          )::numeric AS sell_amount,
-
-          -- CLAIM totals (payouts)
-          COALESCE(
-            SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'CLAIM'),
-            0
-          )::numeric AS claim_amount,
+          COALESCE(SUM(e.net_out_dec::numeric) FILTER (WHERE e.type = 'SELL'), 0)::numeric AS sell_amount,
 
           MAX(e.timestamp)::bigint AS last_activity_ts
         FROM public.user_trade_events e
@@ -153,16 +153,78 @@ async function handleTradeAgg(req: any, res: any) {
         WHERE lower(e.user_address) = lower($1)
           AND g.lock_time >= $2 AND g.lock_time <= $3
           AND ($4 = 'ALL' OR g.league = $4)
+          AND e.side IN ('A','B')                 -- only position sides
+          AND e.type IN ('BUY','SELL')            -- only position events
         GROUP BY e.game_id, e.side
+      ),
+
+      best_side AS (
+        SELECT DISTINCT ON (p.game_id)
+          p.game_id,
+          p.side,
+          p.buy_gross,
+          p.all_in_price_bps,
+          p.sell_amount,
+          p.last_activity_ts
+        FROM pos p
+        ORDER BY
+          p.game_id,
+          p.buy_gross DESC,
+          p.last_activity_ts DESC,
+          p.side ASC
+      ),
+
+      claims AS (
+        SELECT
+          e.game_id,
+          COALESCE(SUM(e.net_out_dec::numeric), 0)::numeric AS claim_amount,
+          MAX(e.timestamp)::bigint AS last_claim_ts
+        FROM public.user_trade_events e
+        JOIN public.games g ON g.game_id = e.game_id
+        WHERE lower(e.user_address) = lower($1)
+          AND g.lock_time >= $2 AND g.lock_time <= $3
+          AND ($4 = 'ALL' OR g.league = $4)
+          AND e.type = 'CLAIM'
+        GROUP BY e.game_id
+      ),
+
+      touched_games AS (
+        -- Ensure a game shows up even if the only thing is a CLAIM (no A/B position left)
+        SELECT DISTINCT e.game_id
+        FROM public.user_trade_events e
+        JOIN public.games g ON g.game_id = e.game_id
+        WHERE lower(e.user_address) = lower($1)
+          AND g.lock_time >= $2 AND g.lock_time <= $3
+          AND ($4 = 'ALL' OR g.league = $4)
+      ),
+
+      merged AS (
+        SELECT
+          tg.game_id,
+
+          bs.side,
+          COALESCE(bs.buy_gross, 0)::numeric AS buy_gross,
+          bs.all_in_price_bps,
+          COALESCE(bs.sell_amount, 0)::numeric AS sell_amount,
+          COALESCE(c.claim_amount, 0)::numeric AS claim_amount,
+
+          GREATEST(
+            COALESCE(bs.last_activity_ts, 0),
+            COALESCE(c.last_claim_ts, 0)
+          )::bigint AS last_activity_ts
+        FROM touched_games tg
+        LEFT JOIN best_side bs ON bs.game_id = tg.game_id
+        LEFT JOIN claims c ON c.game_id = tg.game_id
       )
+
       SELECT
-        a.game_id,
-        a.side,
-        a.buy_gross,
-        a.all_in_price_bps,
-        a.sell_amount,
-        a.claim_amount,
-        a.last_activity_ts,
+        m.game_id,
+        m.side,
+        m.buy_gross,
+        m.all_in_price_bps,
+        m.sell_amount,
+        m.claim_amount,
+        m.last_activity_ts,
 
         g.league,
         g.lock_time,
@@ -173,9 +235,9 @@ async function handleTradeAgg(req: any, res: any) {
         g.team_b_code,
         g.team_a_name,
         g.team_b_name
-      FROM agg a
-      JOIN public.games g ON g.game_id = a.game_id
-      ORDER BY a.last_activity_ts DESC
+      FROM merged m
+      JOIN public.games g ON g.game_id = m.game_id
+      ORDER BY m.last_activity_ts DESC
       LIMIT $5 OFFSET $6
     `;
 
@@ -199,8 +261,12 @@ async function handleTradeAgg(req: any, res: any) {
       // - If final and winner_team_code is TIE/DRAW OR winner_side is C => TIE
       // - Else A/B when present; otherwise treat missing as TIE for final games
       let winnerSide: "A" | "B" | "TIE" | null = null;
-      const ws = r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
-      const wtc = r.winner_team_code == null ? "" : String(r.winner_team_code).toUpperCase().trim();
+      const ws =
+        r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
+      const wtc =
+        r.winner_team_code == null
+          ? ""
+          : String(r.winner_team_code).toUpperCase().trim();
 
       if (isFinal) {
         if (wtc === "TIE" || wtc === "DRAW" || ws === "C") winnerSide = "TIE";
@@ -215,11 +281,12 @@ async function handleTradeAgg(req: any, res: any) {
       const allInPriceBps =
         r.all_in_price_bps == null ? null : Math.round(Number(r.all_in_price_bps));
 
-      // Return = SELL proceeds + CLAIM payouts
       const returnAmount = Math.max(0, sellAmount + claimAmount);
 
       // Action
       let action: TradeAggRow["action"] = "Pending";
+
+      // If user exited early, keep "Sold" (even if later claim exists — usually shouldn't, but be defensive)
       if (sellAmount > 0) action = "Sold";
       else if (isFinal && winnerSide === "TIE") action = "Tie";
       else if (isFinal && side && (winnerSide === "A" || winnerSide === "B")) {
@@ -229,9 +296,8 @@ async function handleTradeAgg(req: any, res: any) {
         action = "Won";
       }
 
-      // ROI uses total return
       const roi =
-        returnAmount > 0 && buyGross > 0 ? (returnAmount - buyGross) / buyGross : null;
+        buyGross > 0 ? (returnAmount - buyGross) / buyGross : null;
 
       const gameLabel =
         teamAName && teamBName
