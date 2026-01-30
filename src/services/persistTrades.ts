@@ -2,25 +2,28 @@
 import { pool } from "../db";
 
 /**
- * We normalize TIEs here so your DB never stores contradictory outcomes like:
- *   winner_team_code = 'TIE' but winner_side = 'A'
+ * Goal:
+ * - Persist BUY/SELL/CLAIM rows into public.user_trade_events
+ * - Persist game metadata into public.games
+ * - Ensure CLAIM rows always have side='C'
+ * - Ensure BUY/SELL rows NEVER persist with side='C' or null (drop them if malformed)
+ * - Normalize tie encoding for games:
+ *     winner_team_code in (TIE, DRAW) => winner_side='C' and winner_team_code='TIE'
  *
- * Your desired encoding:
- *   winner_side = 'C'  // means tie / neither A nor B
- *
- * We enforce:
- * - If winnerTeamCode is "TIE" (or "DRAW"), winnerSide => "C"
- * - Else winnerSide must be "A" | "B" (or null)
+ * This avoids both:
+ *  - NOT NULL errors on side
+ *  - CHECK constraint violations on side (common when CLAIM has null side)
+ *  - Silent corruption (BUY/SELL accidentally stored with side='C')
  */
 
 type TradeType = "BUY" | "SELL" | "CLAIM";
-type Side = "A" | "B" | "C";
+type Side = "A" | "B" | "C"; // DB encoding: C = tie/claim bucket
 
 type PersistTradeRow = {
   id: string;
   user: string;
   type: TradeType;
-  side: Side;
+  side: Side; // never null by the time we insert
   timestamp: number;
   txHash: string | null;
 
@@ -85,13 +88,14 @@ function toTradeType(v: any): TradeType {
   return "BUY";
 }
 
-function toSide(v: any): Side {
+// BUY/SELL side parser (A/B only). We do NOT default to C here.
+function toABSide(v: any): "A" | "B" | null {
   const s = String(v || "").toUpperCase().trim();
   if (s === "A") return "A";
   if (s === "B") return "B";
-  if (s === "C") return "C";
-  return "C"; // ✅ default to C so DB never gets NULL (CLAIM / unknown)
+  return null;
 }
+
 function normWinnerTeamCode(v: any): string | null {
   if (v == null) return null;
   const s = String(v).toUpperCase().trim();
@@ -102,8 +106,10 @@ function normWinnerTeamCode(v: any): string | null {
  * Normalize winner_side + winner_team_code into a consistent encoding.
  *
  * Desired behavior:
- * - If winner_team_code indicates a tie => winner_side = 'C'
+ * - If winner_team_code indicates a tie => winner_side = 'C' and winner_team_code='TIE'
  * - Else winner_side = 'A' | 'B' (or null)
+ *
+ * Note: If the game is not final, do not force anything (store what we have if valid).
  */
 function normalizeWinnerSide(opts: {
   winnerSide: any;
@@ -111,46 +117,47 @@ function normalizeWinnerSide(opts: {
   isFinal: any;
 }): { winnerSide: string | null; winnerTeamCode: string | null } {
   const isFinal = opts.isFinal == null ? null : Boolean(opts.isFinal);
-
   const wtc = normWinnerTeamCode(opts.winnerTeamCode);
 
-  // If it's not final yet, don't force anything
   if (!isFinal) {
-    const wsRaw = opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
-    const ws =
-      wsRaw === "A" || wsRaw === "B" || wsRaw === "C"
-        ? wsRaw
-        : null;
-
+    const wsRaw =
+      opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
+    const ws = wsRaw === "A" || wsRaw === "B" || wsRaw === "C" ? wsRaw : null;
     return { winnerSide: ws, winnerTeamCode: wtc };
   }
 
-  // Final game:
-  // If team code says tie/draw => force side 'C'
+  // Final game: tie/draw => C + TIE
   if (wtc === "TIE" || wtc === "DRAW") {
     return { winnerSide: "C", winnerTeamCode: "TIE" };
   }
 
-  // Otherwise use winnerSide if valid
-  const wsRaw = opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
+  // Otherwise winnerSide must be A/B to be valid
+  const wsRaw =
+    opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
   const ws = wsRaw === "A" || wsRaw === "B" ? wsRaw : null;
 
   return { winnerSide: ws, winnerTeamCode: wtc };
 }
 
-export async function upsertUserTradesAndGames(opts: {
-  user: string;
-  tradeRows: any[];
-}) {
+export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: any[] }) {
   const user = String(opts.user || "").toLowerCase();
 
-  // ---- map trade rows -> DB shape
+  // ---- map trade rows -> DB shape (strict rules)
+  // - CLAIM => side='C' always
+  // - BUY/SELL => side must be 'A' or 'B' else drop the row
   const trades: PersistTradeRow[] = (opts.tradeRows || [])
     .map((r: any) => {
       const g = r?.game ?? {};
 
-const tType: TradeType = toTradeType(r?.type);
-const tSide: Side = tType === "CLAIM" ? "C" : toSide(r?.side);
+      const tType: TradeType = toTradeType(r?.type);
+
+      let side: Side | null = null;
+      if (tType === "CLAIM") {
+        side = "C";
+      } else {
+        const ab = toABSide(r?.side);
+        side = ab; // A/B or null
+      }
 
       const gameId = String(g?.id || r?.gameId || "");
       const league =
@@ -176,7 +183,8 @@ const tSide: Side = tType === "CLAIM" ? "C" : toSide(r?.side);
         id: String(r?.id || ""),
         user,
         type: tType,
-        side: tSide,
+        // TEMP: side can be null here, we filter below; cast after filtering
+        side: (side as any) as Side,
         timestamp: toInt(r?.timestamp),
         txHash: r?.txHash ? String(r.txHash) : null,
 
@@ -196,7 +204,14 @@ const tSide: Side = tType === "CLAIM" ? "C" : toSide(r?.side);
         league,
       };
     })
-    .filter((t) => t.id && t.gameId && t.timestamp > 0);
+    .filter((t: any) => {
+      if (!t.id || !t.gameId || t.timestamp <= 0) return false;
+      if (t.type === "CLAIM") return true;
+      // BUY/SELL must be A/B only
+      return t.side === "A" || t.side === "B";
+    })
+    // now the type is truly PersistTradeRow (side guaranteed non-null)
+    .map((t: any) => t as PersistTradeRow);
 
   // ---- map games (dedupe by gameId)
   const gamesById = new Map<string, PersistGameRow>();
@@ -222,7 +237,6 @@ const tSide: Side = tType === "CLAIM" ? "C" : toSide(r?.side);
         lockTime,
         isFinal,
 
-        // ✅ normalized tie encoding
         winnerSide: normalized.winnerSide,
         winnerTeamCode: normalized.winnerTeamCode,
 
@@ -255,7 +269,7 @@ const tSide: Side = tType === "CLAIM" ? "C" : toSide(r?.side);
           g.league,
           g.lockTime,
           g.isFinal,
-          g.winnerSide,     // now can be 'C'
+          g.winnerSide, // can be 'C'
           g.winnerTeamCode, // 'TIE'
           g.teamACode,
           g.teamBCode,
