@@ -87,8 +87,14 @@ type LeaderboardRowApi = {
   // Total Traded (Profile-consistent): BUY gross only
   tradedGross: number;
 
-  // Total Return (Profile-consistent): SELL net_out + CLAIM net_out
-  claimsFinal: number;
+  // ✅ Explicit Return fields (prevents UI binding mistakes)
+  returnAmount: number;     // SELL net_out + CLAIM net_out (canonical "Return")
+  claimReturn: number;      // CLAIM net_out only
+  sellReturn: number;       // SELL net_out only
+
+  // Legacy fields (keep for UI compat)
+  claimsFinal: number;      // currently used by some UI as "return"
+  wonFinal?: number;        // currently used by some UI as "return"
 
   // ROI = (return / totalBuy) - 1
   roiNet: number | null;
@@ -104,7 +110,6 @@ type LeaderboardRowApi = {
   sellsRoi?: number | null;
 
   user?: string;
-  wonFinal?: number;
 };
 
 /* =========================
@@ -343,8 +348,16 @@ export async function getLeaderboardUsers(params: {
       id: u,
 
       tradedGross: totalBuy,
+
+      // ✅ explicit canonical return fields
+      returnAmount: totalReturn,
+      claimReturn: claimTotal,
+      sellReturn: sellNetOut,
+
+      // legacy fields (do not remove yet)
       claimsFinal: totalReturn,
       wonFinal: totalReturn,
+
       roiNet,
 
       tradesNet: toNum(r.games_touched),
@@ -360,7 +373,6 @@ export async function getLeaderboardUsers(params: {
 
       user: u,
     };
-  });
 
   // 4) Sort + limit final rows
   const sort = String(params.sort || "ROI").toUpperCase() as LeaderboardSort;
