@@ -10,10 +10,9 @@ import { pool } from "../db";
  * - Normalize tie encoding for games:
  *     winner_team_code in (TIE, DRAW) => winner_side='C' and winner_team_code='TIE'
  *
- * This avoids both:
- *  - NOT NULL errors on side
- *  - CHECK constraint violations on side (common when CLAIM has null side)
- *  - Silent corruption (BUY/SELL accidentally stored with side='C')
+ * IMPORTANT FIX:
+ * - On games upsert, NEVER overwrite existing non-null team codes/names with NULL.
+ *   (Use COALESCE(EXCLUDED.col, public.games.col))
  */
 
 type TradeType = "BUY" | "SELL" | "CLAIM";
@@ -59,6 +58,10 @@ type PersistGameRow = {
   teamBName: string | null;
 };
 
+/* =========================
+   Small helpers
+========================= */
+
 function toStr(v: any, fallback = "0"): string {
   if (v == null) return fallback;
   const s = String(v);
@@ -100,6 +103,33 @@ function normWinnerTeamCode(v: any): string | null {
   if (v == null) return null;
   const s = String(v).toUpperCase().trim();
   return s ? s : null;
+}
+
+function cleanTeamCode(v: any): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  return s.toUpperCase();
+}
+
+function cleanTeamName(v: any): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
+/**
+ * Pick the first non-empty string among keys on an object.
+ * Lets us support multiple shapes coming from different ingesters/subgraph versions.
+ */
+function pickStr(obj: any, keys: string[]): string | null {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (s) return s;
+  }
+  return null;
 }
 
 /**
@@ -231,6 +261,17 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
         isFinal,
       });
 
+      // Robust team field extraction (supports snake_case and other variants)
+      const teamACodeRaw =
+        pickStr(g, ["teamACode", "team_a_code", "teamA_code", "homeCode", "team0Code"]) ?? null;
+      const teamBCodeRaw =
+        pickStr(g, ["teamBCode", "team_b_code", "teamB_code", "awayCode", "team1Code"]) ?? null;
+
+      const teamANameRaw =
+        pickStr(g, ["teamAName", "team_a_name", "homeName", "team0Name"]) ?? null;
+      const teamBNameRaw =
+        pickStr(g, ["teamBName", "team_b_name", "awayName", "team1Name"]) ?? null;
+
       gamesById.set(gameId, {
         gameId,
         league,
@@ -240,10 +281,10 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
         winnerSide: normalized.winnerSide,
         winnerTeamCode: normalized.winnerTeamCode,
 
-        teamACode: g?.teamACode ?? null,
-        teamBCode: g?.teamBCode ?? null,
-        teamAName: g?.teamAName ?? null,
-        teamBName: g?.teamBName ?? null,
+        teamACode: cleanTeamCode(teamACodeRaw),
+        teamBCode: cleanTeamCode(teamBCodeRaw),
+        teamAName: cleanTeamName(teamANameRaw),
+        teamBName: cleanTeamName(teamBNameRaw),
       });
     }
   }
@@ -284,15 +325,17 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
           (game_id, league, lock_time, is_final, winner_side, winner_team_code, team_a_code, team_b_code, team_a_name, team_b_name)
         VALUES ${chunks.join(",")}
         ON CONFLICT (game_id) DO UPDATE SET
-          league = EXCLUDED.league,
-          lock_time = EXCLUDED.lock_time,
-          is_final = EXCLUDED.is_final,
-          winner_side = EXCLUDED.winner_side,
-          winner_team_code = EXCLUDED.winner_team_code,
-          team_a_code = EXCLUDED.team_a_code,
-          team_b_code = EXCLUDED.team_b_code,
-          team_a_name = EXCLUDED.team_a_name,
-          team_b_name = EXCLUDED.team_b_name
+          league = COALESCE(EXCLUDED.league, public.games.league),
+          lock_time = COALESCE(EXCLUDED.lock_time, public.games.lock_time),
+          is_final = COALESCE(EXCLUDED.is_final, public.games.is_final),
+
+          winner_side = COALESCE(EXCLUDED.winner_side, public.games.winner_side),
+          winner_team_code = COALESCE(EXCLUDED.winner_team_code, public.games.winner_team_code),
+
+          team_a_code = COALESCE(EXCLUDED.team_a_code, public.games.team_a_code),
+          team_b_code = COALESCE(EXCLUDED.team_b_code, public.games.team_b_code),
+          team_a_name = COALESCE(EXCLUDED.team_a_name, public.games.team_a_name),
+          team_b_name = COALESCE(EXCLUDED.team_b_name, public.games.team_b_name)
         `,
         values
       );
