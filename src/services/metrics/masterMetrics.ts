@@ -4,9 +4,6 @@ import { subgraphQuery } from "../../subgraph/client";
 import {
   type LeaderboardSort,
   Q_USER_BETS_WINDOW_PAGE,
-  Q_ACTIVE_USERS_FROM_TRADES_WINDOW,
-  Q_ACTIVE_USERS_FROM_BETS_WINDOW,
-  pickLeaderboardQuery,
 } from "../../subgraph/queries";
 
 /**
@@ -81,20 +78,20 @@ function cacheSet<T>(key: string, val: T, ttlMs: number) {
    API shapes
 ========================= */
 
-type LeaderboardRowApi = {
+export type LeaderboardRowApi = {
   id: string;
 
   // Total Traded (Profile-consistent): BUY gross only
   tradedGross: number;
 
   // ✅ Explicit Return fields (prevents UI binding mistakes)
-  returnAmount: number;     // SELL net_out + CLAIM net_out (canonical "Return")
-  claimReturn: number;      // CLAIM net_out only
-  sellReturn: number;       // SELL net_out only
+  returnAmount: number; // SELL net_out + CLAIM net_out (canonical "Return")
+  claimReturn: number; // CLAIM net_out only
+  sellReturn: number; // SELL net_out only
 
   // Legacy fields (keep for UI compat)
-  claimsFinal: number;      // currently used by some UI as "return"
-  wonFinal?: number;        // currently used by some UI as "return"
+  claimsFinal: number; // some UI uses as "return"
+  wonFinal?: number; // some UI uses as "return"
 
   // ROI = (return / totalBuy) - 1
   roiNet: number | null;
@@ -120,16 +117,10 @@ type DbAggRow = {
   user_id: string;
   buy_gross: string | number | null;
   claim_total: string | number | null;
-  sell_net_out: string | number | null; // <-- IMPORTANT: net_out for SELL (cash back)
-  trade_count: string | number | null; // BUY+SELL
+  sell_net_out: string | number | null; // net_out for SELL (cash back)
+  trade_count: string | number | null; // BUY+SELL event count
   games_touched: string | number | null;
   last_ts: string | number | null;
-};
-
-type DbLeagueRow = {
-  user_id: string;
-  league: string;
-  buy_gross: string | number | null;
 };
 
 async function getCandidateUsersFromDb(params: {
@@ -140,7 +131,7 @@ async function getCandidateUsersFromDb(params: {
 }) {
   const max = Math.max(1, Math.min(params.limit, 2000));
 
-  // candidate selection = users with most recent activity in window
+  // Candidate selection = users with most recent activity in window
   const sql = `
     SELECT
       LOWER(e.user_address) AS user_id,
@@ -192,9 +183,9 @@ async function fetchLeaderboardAggFromDb(params: {
     )
     SELECT
       user_id,
-      SUM(gross_in) FILTER (WHERE type = 'BUY')::numeric   AS buy_gross,
-      SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric AS claim_total,
-      SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric  AS sell_net_out,
+      SUM(gross_in) FILTER (WHERE type = 'BUY')::numeric    AS buy_gross,
+      SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric  AS claim_total,
+      SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric   AS sell_net_out,
       COUNT(*)      FILTER (WHERE type IN ('BUY','SELL'))::int AS trade_count,
       COUNT(DISTINCT game_id)::int AS games_touched,
       MAX(ts)::bigint AS last_ts
@@ -275,9 +266,9 @@ export async function getLeaderboardUsers(params: {
 
   const limit = Math.max(1, Math.min(params.limit || 250, 500));
 
-  // bump cache version
+  // bump cache version anytime you change output semantics/fields
   const key = cacheKey({
-    v: "lb_users_db_v2_profile_consistent_sell_net_out",
+    v: "lb_users_db_v3_profile_consistent_explicit_returns",
     league: params.league,
     range: params.range,
     sort: params.sort,
@@ -354,7 +345,7 @@ export async function getLeaderboardUsers(params: {
       claimReturn: claimTotal,
       sellReturn: sellNetOut,
 
-      // legacy fields (do not remove yet)
+      // legacy fields (keep for UI compat)
       claimsFinal: totalReturn,
       wonFinal: totalReturn,
 
@@ -373,6 +364,7 @@ export async function getLeaderboardUsers(params: {
 
       user: u,
     };
+  });
 
   // 4) Sort + limit final rows
   const sort = String(params.sort || "ROI").toUpperCase() as LeaderboardSort;
@@ -470,7 +462,13 @@ function normalizeWinnerSide(
     return null;
   }
 
-  if (!side || side === "0" || side === "NONE" || side === "NULL" || side === "UNSET") {
+  if (
+    !side ||
+    side === "0" ||
+    side === "NONE" ||
+    side === "NULL" ||
+    side === "UNSET"
+  ) {
     return null;
   }
 
@@ -565,7 +563,10 @@ export async function getUserRecent(params: {
       const sideRaw = String(b.side || "").toUpperCase();
       const side: "A" | "B" = sideRaw === "B" ? "B" : "A";
 
-      const winnerSide = normalizeWinnerSide((g as any).winnerSide, (g as any).winnerTeamCode);
+      const winnerSide = normalizeWinnerSide(
+        (g as any).winnerSide,
+        (g as any).winnerTeamCode
+      );
 
       return {
         id: b.id,
