@@ -2,12 +2,25 @@
 import { Router } from "express";
 import { pool } from "../db";
 
+type MarketType = "GAME" | "PROP";
+
 type TradeAggRow = {
   gameId: string;
 
   league: string;
   dateTs: number;
+
+  /**
+   * GAME markets: "SEA vs NE" etc
+   * PROP markets: default to question / short question (so leaderboard "GAME" field can show prop question)
+   */
   gameLabel: string;
+
+  // ✅ PROP metadata (optional)
+  marketType?: MarketType;
+  topic?: string;
+  marketQuestion?: string;
+  marketShort?: string;
 
   side: "A" | "B" | null;
   predictionCode: string;
@@ -65,6 +78,17 @@ function rangeToWindow(range: string) {
 function safeNum(v: any): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function safeStr(v: any): string {
+  return v == null ? "" : String(v);
+}
+
+function normMarketType(v: any): MarketType | undefined {
+  const s = safeStr(v).toUpperCase().trim();
+  if (s === "PROP") return "PROP";
+  if (s === "GAME") return "GAME";
+  return undefined;
 }
 
 export const tradeAggRoutes = Router();
@@ -275,7 +299,14 @@ async function handleTradeAgg(req: any, res: any) {
         g.team_a_code,
         g.team_b_code,
         g.team_a_name,
-        g.team_b_name
+        g.team_b_name,
+
+        -- ✅ PROP FIELDS (must exist in public.games; rename here if your columns differ)
+        g.market_type,
+        g.topic,
+        g.market_question,
+        g.market_short
+
       FROM unioned u
       JOIN public.games g ON g.game_id = u.game_id
       ORDER BY GREATEST(u.last_activity_ts, u.last_claim_ts) DESC
@@ -284,7 +315,7 @@ async function handleTradeAgg(req: any, res: any) {
 
     const out = await client.query(sql, params);
 
-    // We allocate claim per row here (winner side only, or pro-rata for tie)
+    // Allocate claim per row here (winner side only, or pro-rata for tie)
     const rows: TradeAggRow[] = (out.rows || []).map((r: any) => {
       const side: "A" | "B" | null =
         r.side === "B" ? "B" : r.side === "A" ? "A" : null;
@@ -293,6 +324,11 @@ async function handleTradeAgg(req: any, res: any) {
       const teamBCode = r.team_b_code ? String(r.team_b_code) : undefined;
       const teamAName = r.team_a_name ? String(r.team_a_name) : "";
       const teamBName = r.team_b_name ? String(r.team_b_name) : "";
+
+      const marketType = normMarketType(r.market_type);
+      const topic = safeStr(r.topic).trim() || undefined;
+      const marketQuestion = safeStr(r.market_question).trim() || undefined;
+      const marketShort = safeStr(r.market_short).trim() || undefined;
 
       const predictionCode =
         side === "A" ? teamACode || "A" : side === "B" ? teamBCode || "B" : "—";
@@ -354,12 +390,18 @@ async function handleTradeAgg(req: any, res: any) {
 
       const roi = buyGross > 0 ? (returnAmount - buyGross) / buyGross : null;
 
-      const gameLabel =
+      // ✅ GAME label: if PROP, prefer short/question; else teams
+      const defaultGameLabel =
         teamAName && teamBName
           ? `${teamAName} vs ${teamBName}`
           : teamACode && teamBCode
           ? `${teamACode} vs ${teamBCode}`
           : String(r.game_id);
+
+      const gameLabel =
+        marketType === "PROP"
+          ? (marketShort || marketQuestion || topic || defaultGameLabel)
+          : defaultGameLabel;
 
       // last activity: if claimAlloc is 0, don't let claim timestamp reorder losing side
       const lastActivityTsRaw = safeNum(r.last_activity_ts);
@@ -372,6 +414,12 @@ async function handleTradeAgg(req: any, res: any) {
         league: String(r.league || "—"),
         dateTs: Number(r.lock_time || lastActivityTs || 0),
         gameLabel,
+
+        // ✅ PROP fields
+        marketType,
+        topic,
+        marketQuestion,
+        marketShort,
 
         side,
         predictionCode,
