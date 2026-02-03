@@ -1,0 +1,61 @@
+{
+  "MLB": [
+  ],
+  "NFL": [
+    {"contractAddress":"0x2395E8e404954aA261aF1F8FBc64Cf25B10cF503","date":"2026-02-08","time":"6:30 PM","teamA":"SEA","teamB":"NE","teamAName":"Seattle Seahawks","teamBName":"New England Patriots","Location":"Santa Clara, CA"},
+    
+{"contractAddress":"0x9d7dAf735B140BD333Ec96Ba60dA5B1CF0a8a35d","league":"NFL","date":"2026-02-08","time":"6:30 PM","marketType":"PROP","topic":"NFL Super Bowl LX","marketQuestion":"TITI OR NOT: First Song Performed By Bad Bunny During Haltime Show - Titi Me Pregunto?","marketShort":"Titi Me Pregunto First Song?","teamACode":"YES","teamBCode":"NO","teamAName":"Yes","teamBName":"No","location":"Santa Clara, CA","lockTime":1770606000,"virtualLiquidityTotal":"600","initialPriceBpsTeamA":6300,"maxBetPerTx":"30"},
+
+{"contractAddress":"0xb7F167f803A5631ca1cebCA72878e740BAf5f427","league":"NFL","date":"2026-02-08","time":"6:30 PM","marketType":"PROP","topic":"NFL Super Bowl LX","marketQuestion":"CHAOS: Will There be a Turnover in the 4th Quarter?","marketShort":"Turnover in 4th Quarter?","teamACode":"YES","teamBCode":"NO","teamAName":"Yes","teamBName":"No","location":"Santa Clara, CA","lockTime":1770606000,"virtualLiquidityTotal":"600","initialPriceBpsTeamA":2000,"maxBetPerTx":"30"},
+    {"contractAddress":"0x87f5df877A54af7ae8295a9Fff4A30634c8dDa75","league":"NFL","date":"2026-02-08","time":"6:30 PM","marketType":"PROP","topic":"NFL Super Bowl LX","marketQuestion":"TRICK PLAY: Over 2.5 Players to Complete a Pass?","marketShort":"Over 2.5 Players to Complete Pass?","teamACode":"YES","teamBCode":"NO","teamAName":"Yes","teamBName":"No","location":"Santa Clara, CA","lockTime":1770606000,"virtualLiquidityTotal":"600","initialPriceBpsTeamA":3300,"maxBetPerTx":"30"}
+    
+  ],
+  "NBA": [
+    {"contractAddress":"0xEfcedC103cAceec28F370FcE6ebE782Db65909dc","date":"2026-01-31","time":"8:00 PM","teamA":"MIN","teamB":"MEM","teamAName":"Minnesota Timberwolves","teamBName":"Memphis Grizzlies"},
+    {"contractAddress":"0xef3C4D2439a457642b2933023Aa8D6096395C82c","date":"2026-01-31","time":"8:30 PM","teamA":"DAL","teamB":"HOU","teamAName":"Dallas Mavericks","teamBName":"Houston Rockets"},
+    {"contractAddress":"0xdF30f54166A9c4769f735406bf90B8908955F233","date":"2026-02-01","time":"3:30 PM","teamA":"MIL","teamB":"BOS","teamAName":"Milwaukee Bucks","teamBName":"Boston Celtics"},
+    {"contractAddress":"0x94700c7C94b56C4EC7a23e543f811c949457aCbb","date":"2026-02-01","time":"6:00 PM","teamA":"BKN","teamB":"DET","teamAName":"Brooklyn Nets","teamBName":"Detroit Pistons"},
+    {"contractAddress":"0x60e7b2268b6e25eDC473a8BBe6D0370c20571025","date":"2026-02-01","time":"6:00 PM","teamA":"CHI","teamB":"MIA","teamAName":"Chicago Bulls","teamBName":"Miami Heat"},
+    {"contractAddress":"0x75895688A67e34eDF1B970CB9fDcAd86352660F3","date":"2026-02-01","time":"6:00 PM","teamA":"UTA","teamB":"TOR","teamAName":"Utah Jazz","teamBName":"Toronto Raptors"},
+    {"contractAddress":"0x4F7307ed4c372b5443036B2A57A6b836E0de3C76","date":"2026-02-01","time":"6:00 PM","teamA":"SAC","teamB":"WAS","teamAName":"Sacramento Kings","teamBName":"Washington Wizards"},
+    {"contractAddress":"0x9EeEa8d6F157CDAb8b4EF869Cd4e3325b8DDAdb4","date":"2026-02-01","time":"7:00 PM","teamA":"ORL","teamB":"SAS","teamAName":"Orlando Magic","teamBName":"San Antonio Spurs"},
+    {"contractAddress":"0x4195c4a060a2341585059202b3b9180aF386c2Ba","date":"2026-02-01","time":"7:00 PM","teamA":"LAL","teamB":"NYK","teamAName":"Los Angeles Lakers","teamBName":"New York Knicks"},
+    {"contractAddress":"0x56808C0bd5cc6F27FC398Dee422FE59eb0ba5843","date":"2026-02-01","time":"8:00 PM","teamA":"LAC","teamB":"PHX","teamAName":"Los Angeles Clippers","teamBName":"Phoenix Suns"},
+    {"contractAddress":"0xA33A28F352E14F92802A9E916877316818aeBAc4","date":"2026-02-01","time":"9:00 PM","teamA":"CLE","teamB":"POR","teamAName":"Cleveland Cavaliers","teamBName":"Portland Trail Blazers"},
+    {"contractAddress":"0xeece7295855269C578f1887832cc41e62bc7f3E6","date":"2026-02-01","time":"9:30 PM","teamA":"OKC","teamB":"DEN","teamAName":"Oklahoma City Thunder","teamBName":"Denver Nuggets"},
+    {"contractAddress":"0x5F6A50D37123B88e938ba7a731b7B8247334f260","date":"2026-02-02","time":"7:00 PM","teamA":"NOP","teamB":"CHA","teamAName":"New Orleans Pelicans","teamBName":"Charlotte Hornets"},
+    {"contractAddress":"0x595da59B6399f2BDAD47154c47F9467780797106","date":"2026-02-02","time":"7:00 PM","teamA":"HOU","teamB":"IND","teamAName":"Houston Rockets","teamBName":"Indiana Pacers"},
+    {"contractAddress":"0x0cA5782e82477e4C8EE3E96C2462b68E62eeEd92","date":"2026-02-02","time":"7:30 PM","teamA":"MIN","teamB":"MEM","teamAName":"Minnesota Timberwolves","teamBName":"Memphis Grizzlies"},
+    {"contractAddress":"0xD84487732982A2a64b0ef4D14b3E5Ed90e2459a1","date":"2026-02-02","time":"10:00 PM","teamA":"PHI","teamB":"LAC","teamAName":"Philadelphia 76ers","teamBName":"Los Angeles Clippers"}
+  ],
+  "NHL": [
+    {"contractAddress":"0xddd6cD49bA19d28C557DccbC0D10c2BDf38c600B","date":"2026-01-31","time":"4:00 PM","teamA":"WPG","teamB":"FLA","teamAName":"Winnipeg Jets","teamBName":"Florida Panthers"},
+    {"contractAddress":"0x4402f7B919D8049A1462E15801c19029a2f531b4","date":"2026-01-31","time":"9:00 PM","teamA":"DAL","teamB":"UTA","teamAName":"Dallas Stars","teamBName":"Utah Mammoth"},
+    {"contractAddress":"0x1a4D147451352E44eb022D76fAcBB6985A0627c8","date":"2026-01-31","time":"10:00 PM","teamA":"MIN","teamB":"EDM","teamAName":"Minnesota Wild","teamBName":"Edmonton Oilers"},
+    {"contractAddress":"0x8F934118F13d262EA4744C2303EcD7d5073ce36E","date":"2026-01-31","time":"10:00 PM","teamA":"SEA","teamB":"VGK","teamAName":"Seattle Kraken","teamBName":"Vegas Golden Knights"},
+    {"contractAddress":"0x0Eb72ae3b818eA97C1eed48A1D85077a216DEee8","date":"2026-02-01","time":"3:00 PM","teamA":"LAK","teamB":"CAR","teamAName":"Los Angeles Kings","teamBName":"Carolina Hurricanes"},
+    {"contractAddress":"0x9959FC9E62183f8e84949907cB69473d67741e22","date":"2026-02-01","time":"6:30 PM","teamA":"BOS","teamB":"TBL","teamAName":"Boston Bruins","teamBName":"Tampa Bay Lightning"},
+    {"contractAddress":"0xE61A21D12A10CE4B226b8d1D2b97B8A8cC8941e2","date":"2026-02-01","time":"9:30 PM","teamA":"VGK","teamB":"ANA","teamAName":"Vegas Golden Knights","teamBName":"Anaheim Ducks"},
+    {"contractAddress":"0xd35D3c2D984Dd9FdAE4BCE15Cc9B0e1a1565157c","date":"2026-02-02","time":"7:00 PM","teamA":"BUF","teamB":"FLA","teamAName":"Buffalo Sabres","teamBName":"Florida Panthers"},
+    {"contractAddress":"0xFdfc847BF588ff64DBECED4D42F9b09Cad305379","date":"2026-02-02","time":"7:00 PM","teamA":"OTT","teamB":"PIT","teamAName":"Ottawa Senators","teamBName":"Pittsburgh Penguins"},
+    {"contractAddress":"0xbb4034cd9013cae05B6728667D2fE570E7cBD078","date":"2026-02-02","time":"7:00 PM","teamA":"NYI","teamB":"WSH","teamAName":"New York Islanders","teamBName":"Washington Capitals"},
+    {"contractAddress":"0x79Ae243071182a6cC68B8aE68820C69703ed8448","date":"2026-02-02","time":"7:30 PM","teamA":"MTL","teamB":"MIN","teamAName":"Montreal Canadiens","teamBName":"Minnesota Wild"},
+    {"contractAddress":"0x6Dd36e19b076AB609fB07FcA2af3E1F45e45683f","date":"2026-02-02","time":"8:00 PM","teamA":"STL","teamB":"NSH","teamAName":"St. Louis Blues","teamBName":"Nashville Predators"},
+    {"contractAddress":"0xB49F1ca3588514211d451267f5452A3E49670f11","date":"2026-02-02","time":"8:30 PM","teamA":"SJS","teamB":"CHI","teamAName":"San Jose Sharks","teamBName":"Chicago Blackhawks"},
+    {"contractAddress":"0xd357Fb92C8fA1aE0AB5006561D461C7c440d52AF","date":"2026-02-02","time":"8:30 PM","teamA":"WPG","teamB":"DAL","teamAName":"Winnipeg Jets","teamBName":"Dallas Stars"},
+    {"contractAddress":"0x0BED1361C332606329E6DD87624eF6DfBf1a4F6F","date":"2026-02-02","time":"9:00 PM","teamA":"DET","teamB":"COL","teamAName":"Detroit Red Wings","teamBName":"Colorado Avalanche"},
+    {"contractAddress":"0x564ECd1F590bc85606A133CC364E2eE9B94ef373","date":"2026-02-02","time":"9:30 PM","teamA":"VAN","teamB":"UTA","teamAName":"Vancouver Canucks","teamBName":"Utah Mammoth"},
+    {"contractAddress":"0xD523Ef89294b099231A16ca1CCaB57949FeCE6E4","date":"2026-02-02","time":"10:00 PM","teamA":"TOR","teamB":"CGY","teamAName":"Toronto Maple Leafs","teamBName":"Calgary Flames"}
+  ],
+  "EPL": [
+    {"contractAddress":"0x4d7dbf0a758e3be652f9D9dD3b937236f23635BC","date":"2026-01-31","time":"10:00 AM","teamA":"ARS","teamB":"LEE","teamAName":"Arsenal","teamBName":"Leeds"},
+    {"contractAddress":"0xeC9b4e1efE1aFC6f7b29755D2366F23bc2265D73","date":"2026-01-31","time":"3:00 PM","teamA":"NEW","teamB":"LIV","teamAName":"Newcastle","teamBName":"Liverpool"},
+    {"contractAddress":"0xc1c9E08D774A0C66A6173b4913bEBcb3c9bfc977","date":"2026-02-01","time":"9:00 AM","teamA":"BRE","teamB":"AVL","teamAName":"Brentford","teamBName":"Aston Villa"},
+    {"contractAddress":"0x0338d2cd4b6a09C4113342C782F0d213D50DDEdD","date":"2026-02-01","time":"9:00 AM","teamA":"FUL","teamB":"MUN","teamAName":"Fulham","teamBName":"Manchester Utd"},
+    {"contractAddress":"0xfb051B907fF675c3AfB3E627f404Ad3B2f3C6cE8","date":"2026-02-01","time":"9:00 AM","teamA":"CRY","teamB":"NFO","teamAName":"Crystal Palace","teamBName":"Nottingham"},
+    {"contractAddress":"0xa4Fc0c1Ba285A39aC79e93AE6afc9724775bE139","date":"2026-02-01","time":"11:30 AM","teamA":"MCI","teamB":"TOT","teamAName":"Manchester City","teamBName":"Tottenham"},
+    {"contractAddress":"0xCEBEB40d1714bd8a0f5ae4c2FBC4E3Da6f08Fa79","date":"2026-02-02","time":"3:00 PM","teamA":"BUR","teamB":"SUN","teamAName":"Burnley","teamBName":"Sunderland"}
+  ],
+  "UCL": [
+  ]
+}

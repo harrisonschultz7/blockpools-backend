@@ -1,13 +1,21 @@
 // src/workers/backfillTrades.ts
 import { ENV } from "../config/env";
 import { subgraphQuery } from "../subgraph/client";
-import { upsertUserTradesAndGames } from "../services/persistTrades";
+import { upsertUserTradesAndGames, type GameMetaInput } from "../services/persistTrades";
+
+// ✅ Update this path if needed
+import gamesJson from "../data/games.json";
 
 /**
  * One-time backfill:
  * - Discover all distinct user addresses from the subgraph (trades + bets + claims).
  * - For each user, page through ALL trades + bets + claims (window=ALL by default).
  * - Normalize + dedupe (bets+trades only), then UPSERT into Postgres tables.
+ *
+ * NEW (PROP META BACKFILL):
+ * - Load deploy metadata from src/data/games.json
+ * - Inject market_type/topic/market_question/market_short into row.game BEFORE persisting,
+ *   so persistTrades can upsert it into public.games.
  *
  * Run (after build):
  *   node dist/workers/backfillTrades.js
@@ -47,7 +55,7 @@ query UsersFromBets($leagues:[String!]!, $start:BigInt!, $end:BigInt!, $first:In
 }
 `;
 
-// ✅ NEW: include users that only have claims
+// ✅ include users that only have claims
 const Q_USERS_FROM_CLAIMS = `
 query UsersFromClaims($leagues:[String!]!, $start:BigInt!, $end:BigInt!, $first:Int!, $skip:Int!) {
   claims(
@@ -61,6 +69,7 @@ query UsersFromClaims($leagues:[String!]!, $start:BigInt!, $end:BigInt!, $first:
 `;
 
 // Same activity query you already use (trades+bets), paged.
+// NOTE: We don't request prop fields from subgraph; we inject them from games.json.
 const Q_USER_ACTIVITY_PAGE_PAGED = `
 query UserActivityPagePaged(
   $user: String!
@@ -98,7 +107,7 @@ query UserActivityPagePaged(
 }
 `;
 
-// ✅ NEW: claims paged
+// ✅ claims paged
 const Q_USER_CLAIMS_PAGED = `
 query UserClaimsPaged(
   $user: String!
@@ -196,6 +205,75 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Your games.json shape (based on what you pasted):
+ * {
+ *   "NFL": [ {contractAddress, ...}, ... ],
+ *   "NBA": [ ... ],
+ *   ...
+ * }
+ *
+ * We normalize it into a map keyed by lowercased contractAddress.
+ */
+function buildGameMetaByAddr(json: any): Record<string, GameMetaInput> {
+  const out: Record<string, GameMetaInput> = {};
+  const root = json && typeof json === "object" ? json : {};
+
+  for (const leagueKey of Object.keys(root)) {
+    const arr = Array.isArray(root[leagueKey]) ? root[leagueKey] : [];
+    for (const g of arr) {
+      const addr = String(g?.contractAddress || "").toLowerCase().trim();
+      if (!addr) continue;
+
+      // handle mixed key casing / naming
+      const teamACode = g?.teamACode ?? g?.teamA ?? null;
+      const teamBCode = g?.teamBCode ?? g?.teamB ?? null;
+
+      out[addr] = {
+        league: (g?.league ?? leagueKey) ? String(g?.league ?? leagueKey) : undefined,
+        lockTime: g?.lockTime != null ? toNum(g.lockTime) : undefined,
+
+        teamACode: teamACode != null ? String(teamACode) : undefined,
+        teamBCode: teamBCode != null ? String(teamBCode) : undefined,
+        teamAName: g?.teamAName != null ? String(g.teamAName) : undefined,
+        teamBName: g?.teamBName != null ? String(g.teamBName) : undefined,
+
+        marketType: g?.marketType != null ? String(g.marketType) : undefined,
+        topic: g?.topic != null ? String(g.topic) : undefined,
+        marketQuestion: g?.marketQuestion != null ? String(g.marketQuestion) : undefined,
+        marketShort: g?.marketShort != null ? String(g.marketShort) : undefined,
+      };
+    }
+  }
+
+  return out;
+}
+
+function attachMetaToGame(game: any, metaByAddr: Record<string, GameMetaInput>) {
+  const id = String(game?.id || "").toLowerCase().trim();
+  if (!id) return game;
+
+  const meta = metaByAddr[id];
+  if (!meta) return game;
+
+  // Only fill missing fields; never stomp subgraph values.
+  return {
+    ...game,
+    league: game?.league ?? meta.league,
+    lockTime: game?.lockTime ?? meta.lockTime,
+
+    teamACode: game?.teamACode ?? meta.teamACode,
+    teamBCode: game?.teamBCode ?? meta.teamBCode,
+    teamAName: game?.teamAName ?? meta.teamAName,
+    teamBName: game?.teamBName ?? meta.teamBName,
+
+    marketType: game?.marketType ?? meta.marketType,
+    topic: game?.topic ?? meta.topic,
+    marketQuestion: game?.marketQuestion ?? meta.marketQuestion,
+    marketShort: game?.marketShort ?? meta.marketShort,
+  };
+}
+
 async function discoverUsers(leagues: string[], start: number, end: number) {
   const first = 1000;
   const users = new Set<string>();
@@ -242,6 +320,7 @@ async function backfillUser(opts: {
   end: number;
   pageSize: number;
   sleepMs: number;
+  metaByAddr: Record<string, GameMetaInput>;
 }) {
   const user = opts.user.toLowerCase();
   const first = Math.min(Math.max(1, opts.pageSize), 1000);
@@ -272,9 +351,10 @@ async function backfillUser(opts: {
     const bets = Array.isArray(data?.bets) ? data.bets : [];
 
     const betAsTrades = bets.map((b: any) => {
-      const g = b?.game ?? {};
-      const ts = toNum(b?.timestamp);
+      const g0 = b?.game ?? {};
+      const g = attachMetaToGame(g0, opts.metaByAddr);
 
+      const ts = toNum(b?.timestamp);
       const priceBps = b?.priceBps ?? b?.spotPriceBps ?? b?.avgPriceBps ?? null;
       const sharesOutDec = b?.sharesOutDec ?? b?.sharesOut ?? null;
 
@@ -305,12 +385,18 @@ async function backfillUser(opts: {
       };
     });
 
-    const tradeRows = trades.map((t: any) => ({
-      ...t,
-      id: `trade-${t.id}`,
-      timestamp: toNum(t?.timestamp),
-      __source: "trade",
-    }));
+    const tradeRows = trades.map((t: any) => {
+      const g0 = t?.game ?? {};
+      const g = attachMetaToGame(g0, opts.metaByAddr);
+
+      return {
+        ...t,
+        id: `trade-${t.id}`,
+        timestamp: toNum(t?.timestamp),
+        game: g,
+        __source: "trade",
+      };
+    });
 
     const mergedSorted = [...tradeRows, ...betAsTrades].sort((a, b) => {
       const dt = toNum(b?.timestamp) - toNum(a?.timestamp);
@@ -322,7 +408,11 @@ async function backfillUser(opts: {
     totalDroppedDupes += deduped.dropped;
 
     if (deduped.rows.length) {
-      await upsertUserTradesAndGames({ user, tradeRows: deduped.rows });
+      await upsertUserTradesAndGames({
+        user,
+        tradeRows: deduped.rows,
+        gameMetaById: undefined, // we already injected into game; keep undefined to avoid confusion
+      });
       totalPersistedRows += deduped.rows.length;
     }
 
@@ -350,16 +440,19 @@ async function backfillUser(opts: {
     const claims = Array.isArray(data?.claims) ? data.claims : [];
 
     const claimRows = claims.map((c: any) => {
-      const g = c?.game ?? {};
+      const g0 = c?.game ?? {};
+      const g = attachMetaToGame(g0, opts.metaByAddr);
+
       const ts = toNum(c?.timestamp);
       const amt = c?.amountDec ?? "0";
 
-return {
-  id: `claim-${c.id}`,
-  type: "CLAIM",
-  side: "C", // ✅ must not be null (DB side is NOT NULL)
-  timestamp: ts,
-  txHash: c?.txHash ?? null,
+      return {
+        id: `claim-${c.id}`,
+        type: "CLAIM",
+        side: "C", // ✅ must not be null (DB side is NOT NULL)
+        timestamp: ts,
+        txHash: c?.txHash ?? null,
+
         spotPriceBps: null,
         avgPriceBps: null,
 
@@ -378,7 +471,11 @@ return {
     });
 
     if (claimRows.length) {
-      await upsertUserTradesAndGames({ user, tradeRows: claimRows });
+      await upsertUserTradesAndGames({
+        user,
+        tradeRows: claimRows,
+        gameMetaById: undefined,
+      });
       totalPersistedRows += claimRows.length;
     }
 
@@ -407,6 +504,9 @@ async function run() {
   const sleepMs = Math.max(0, Number(process.env.BACKFILL_SLEEP_MS || 150));
   const maxUsers = Math.max(0, Number(process.env.BACKFILL_MAX_USERS || 0));
   const startIndex = Math.max(0, Number(process.env.BACKFILL_START_INDEX || 0));
+
+  const metaByAddr = buildGameMetaByAddr(gamesJson);
+  console.log(`[backfill] loaded deploy metadata for ${Object.keys(metaByAddr).length} pools`);
 
   console.log(
     `[backfill] start: leagues=${leagues.join(",")} range=${range} concurrency=${concurrency} sleepMs=${sleepMs}`
@@ -438,6 +538,7 @@ async function run() {
             end,
             pageSize: 1000,
             sleepMs,
+            metaByAddr,
           });
           ok++;
           console.log(
