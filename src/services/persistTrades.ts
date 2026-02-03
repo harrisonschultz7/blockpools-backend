@@ -11,8 +11,14 @@ import { pool } from "../db";
  *     winner_team_code in (TIE, DRAW) => winner_side='C' and winner_team_code='TIE'
  *
  * IMPORTANT FIX:
- * - On games upsert, NEVER overwrite existing non-null team codes/names with NULL.
+ * - On games upsert, NEVER overwrite existing non-null fields with NULL.
  *   (Use COALESCE(EXCLUDED.col, public.games.col))
+ *
+ * PROP SUPPORT:
+ * - Persist market_type/topic/market_question/market_short into public.games when present
+ *
+ * NEW (OPTIONAL):
+ * - Accept gameMetaById keyed by gameId/address. If provided, we merge it to fill missing fields.
  */
 
 type TradeType = "BUY" | "SELL" | "CLAIM";
@@ -48,7 +54,7 @@ type PersistGameRow = {
   lockTime: number | null;
   isFinal: boolean | null;
 
-  // IMPORTANT: winnerSide can now be 'A' | 'B' | 'C' | null
+  // winnerSide can be 'A' | 'B' | 'C' | null
   winnerSide: string | null;
   winnerTeamCode: string | null;
 
@@ -56,7 +62,28 @@ type PersistGameRow = {
   teamBCode: string | null;
   teamAName: string | null;
   teamBName: string | null;
+
+  // ✅ PROP metadata
+  marketType: string | null; // "PROP" | "GAME" (stored as text)
+  topic: string | null;
+  marketQuestion: string | null;
+  marketShort: string | null;
 };
+
+export type GameMetaInput = Partial<{
+  league: string;
+  lockTime: number;
+
+  teamACode: string;
+  teamBCode: string;
+  teamAName: string;
+  teamBName: string;
+
+  marketType: string; // "PROP" | "GAME"
+  topic: string;
+  marketQuestion: string;
+  marketShort: string;
+}>;
 
 /* =========================
    Small helpers
@@ -118,6 +145,17 @@ function cleanTeamName(v: any): string | null {
   return s ? s : null;
 }
 
+function cleanText(v: any): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
+function cleanUpper(v: any): string | null {
+  const s = cleanText(v);
+  return s ? s.toUpperCase() : null;
+}
+
 /**
  * Pick the first non-empty string among keys on an object.
  * Lets us support multiple shapes coming from different ingesters/subgraph versions.
@@ -132,15 +170,6 @@ function pickStr(obj: any, keys: string[]): string | null {
   return null;
 }
 
-/**
- * Normalize winner_side + winner_team_code into a consistent encoding.
- *
- * Desired behavior:
- * - If winner_team_code indicates a tie => winner_side = 'C' and winner_team_code='TIE'
- * - Else winner_side = 'A' | 'B' (or null)
- *
- * Note: If the game is not final, do not force anything (store what we have if valid).
- */
 function normalizeWinnerSide(opts: {
   winnerSide: any;
   winnerTeamCode: any;
@@ -156,12 +185,10 @@ function normalizeWinnerSide(opts: {
     return { winnerSide: ws, winnerTeamCode: wtc };
   }
 
-  // Final game: tie/draw => C + TIE
   if (wtc === "TIE" || wtc === "DRAW") {
     return { winnerSide: "C", winnerTeamCode: "TIE" };
   }
 
-  // Otherwise winnerSide must be A/B to be valid
   const wsRaw =
     opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
   const ws = wsRaw === "A" || wsRaw === "B" ? wsRaw : null;
@@ -169,12 +196,36 @@ function normalizeWinnerSide(opts: {
   return { winnerSide: ws, winnerTeamCode: wtc };
 }
 
-export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: any[] }) {
+function mergeGameMeta(base: PersistGameRow, meta?: GameMetaInput): PersistGameRow {
+  if (!meta) return base;
+
+  return {
+    ...base,
+    league: base.league ?? (meta.league ? String(meta.league) : null),
+    lockTime: base.lockTime ?? (meta.lockTime != null ? toInt(meta.lockTime) : null),
+
+    teamACode: base.teamACode ?? (meta.teamACode ? cleanTeamCode(meta.teamACode) : null),
+    teamBCode: base.teamBCode ?? (meta.teamBCode ? cleanTeamCode(meta.teamBCode) : null),
+    teamAName: base.teamAName ?? (meta.teamAName ? cleanTeamName(meta.teamAName) : null),
+    teamBName: base.teamBName ?? (meta.teamBName ? cleanTeamName(meta.teamBName) : null),
+
+    marketType: base.marketType ?? (meta.marketType ? cleanUpper(meta.marketType) : null),
+    topic: base.topic ?? (meta.topic ? cleanText(meta.topic) : null),
+    marketQuestion: base.marketQuestion ?? (meta.marketQuestion ? cleanText(meta.marketQuestion) : null),
+    marketShort: base.marketShort ?? (meta.marketShort ? cleanText(meta.marketShort) : null),
+  };
+}
+
+export async function upsertUserTradesAndGames(opts: {
+  user: string;
+  tradeRows: any[];
+  // Optional: if a caller wants to provide meta directly instead of injecting into row.game
+  gameMetaById?: Record<string, GameMetaInput | undefined>;
+}) {
   const user = String(opts.user || "").toLowerCase();
+  const gameMetaById = opts.gameMetaById || {};
 
   // ---- map trade rows -> DB shape (strict rules)
-  // - CLAIM => side='C' always
-  // - BUY/SELL => side must be 'A' or 'B' else drop the row
   const trades: PersistTradeRow[] = (opts.tradeRows || [])
     .map((r: any) => {
       const g = r?.game ?? {};
@@ -182,12 +233,8 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
       const tType: TradeType = toTradeType(r?.type);
 
       let side: Side | null = null;
-      if (tType === "CLAIM") {
-        side = "C";
-      } else {
-        const ab = toABSide(r?.side);
-        side = ab; // A/B or null
-      }
+      if (tType === "CLAIM") side = "C";
+      else side = toABSide(r?.side);
 
       const gameId = String(g?.id || r?.gameId || "");
       const league =
@@ -213,7 +260,6 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
         id: String(r?.id || ""),
         user,
         type: tType,
-        // TEMP: side can be null here, we filter below; cast after filtering
         side: (side as any) as Side,
         timestamp: toInt(r?.timestamp),
         txHash: r?.txHash ? String(r.txHash) : null,
@@ -237,14 +283,13 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
     .filter((t: any) => {
       if (!t.id || !t.gameId || t.timestamp <= 0) return false;
       if (t.type === "CLAIM") return true;
-      // BUY/SELL must be A/B only
       return t.side === "A" || t.side === "B";
     })
-    // now the type is truly PersistTradeRow (side guaranteed non-null)
     .map((t: any) => t as PersistTradeRow);
 
   // ---- map games (dedupe by gameId)
   const gamesById = new Map<string, PersistGameRow>();
+
   for (const r of opts.tradeRows || []) {
     const g = r?.game ?? {};
     const gameId = String(g?.id || "");
@@ -261,7 +306,6 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
         isFinal,
       });
 
-      // Robust team field extraction (supports snake_case and other variants)
       const teamACodeRaw =
         pickStr(g, ["teamACode", "team_a_code", "teamA_code", "homeCode", "team0Code"]) ?? null;
       const teamBCodeRaw =
@@ -272,7 +316,14 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
       const teamBNameRaw =
         pickStr(g, ["teamBName", "team_b_name", "awayName", "team1Name"]) ?? null;
 
-      gamesById.set(gameId, {
+      // ✅ PROP fields (support multiple shapes)
+      const marketTypeRaw = pickStr(g, ["marketType", "market_type", "type", "market"]) ?? null;
+      const topicRaw = pickStr(g, ["topic", "marketTopic", "market_topic"]) ?? null;
+      const marketQuestionRaw =
+        pickStr(g, ["marketQuestion", "market_question", "question"]) ?? null;
+      const marketShortRaw = pickStr(g, ["marketShort", "market_short", "short"]) ?? null;
+
+      let row: PersistGameRow = {
         gameId,
         league,
         lockTime,
@@ -285,9 +336,52 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
         teamBCode: cleanTeamCode(teamBCodeRaw),
         teamAName: cleanTeamName(teamANameRaw),
         teamBName: cleanTeamName(teamBNameRaw),
-      });
+
+        marketType: cleanUpper(marketTypeRaw),
+        topic: cleanText(topicRaw),
+        marketQuestion: cleanText(marketQuestionRaw),
+        marketShort: cleanText(marketShortRaw),
+      };
+
+      // Optional merge from caller-provided meta map
+      const meta = gameMetaById[gameId];
+      row = mergeGameMeta(row, meta);
+
+      gamesById.set(gameId, row);
     }
   }
+
+  // Also seed games if we have meta for a gameId referenced in trades but no row.game
+  for (const t of trades) {
+    const gameId = String(t.gameId || "");
+    if (!gameId || gamesById.has(gameId)) continue;
+
+    const meta = gameMetaById[gameId];
+    if (!meta) continue;
+
+    const seed: PersistGameRow = mergeGameMeta(
+      {
+        gameId,
+        league: t.league ?? null,
+        lockTime: null,
+        isFinal: null,
+        winnerSide: null,
+        winnerTeamCode: null,
+        teamACode: null,
+        teamBCode: null,
+        teamAName: null,
+        teamBName: null,
+        marketType: null,
+        topic: null,
+        marketQuestion: null,
+        marketShort: null,
+      },
+      meta
+    );
+
+    gamesById.set(gameId, seed);
+  }
+
   const games = [...gamesById.values()];
 
   if (!trades.length && !games.length) return { tradesUpserted: 0, gamesUpserted: 0 };
@@ -300,29 +394,36 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
     if (games.length) {
       const values: any[] = [];
       const chunks: string[] = [];
+
       games.forEach((g, i) => {
-        const base = i * 10;
+        const base = i * 14;
         chunks.push(
-          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10})`
+          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14})`
         );
         values.push(
           g.gameId,
           g.league,
           g.lockTime,
           g.isFinal,
-          g.winnerSide, // can be 'C'
-          g.winnerTeamCode, // 'TIE'
+          g.winnerSide,
+          g.winnerTeamCode,
           g.teamACode,
           g.teamBCode,
           g.teamAName,
-          g.teamBName
+          g.teamBName,
+          g.marketType,
+          g.topic,
+          g.marketQuestion,
+          g.marketShort
         );
       });
 
       await client.query(
         `
         INSERT INTO public.games
-          (game_id, league, lock_time, is_final, winner_side, winner_team_code, team_a_code, team_b_code, team_a_name, team_b_name)
+          (game_id, league, lock_time, is_final, winner_side, winner_team_code,
+           team_a_code, team_b_code, team_a_name, team_b_name,
+           market_type, topic, market_question, market_short)
         VALUES ${chunks.join(",")}
         ON CONFLICT (game_id) DO UPDATE SET
           league = COALESCE(EXCLUDED.league, public.games.league),
@@ -335,16 +436,22 @@ export async function upsertUserTradesAndGames(opts: { user: string; tradeRows: 
           team_a_code = COALESCE(EXCLUDED.team_a_code, public.games.team_a_code),
           team_b_code = COALESCE(EXCLUDED.team_b_code, public.games.team_b_code),
           team_a_name = COALESCE(EXCLUDED.team_a_name, public.games.team_a_name),
-          team_b_name = COALESCE(EXCLUDED.team_b_name, public.games.team_b_name)
+          team_b_name = COALESCE(EXCLUDED.team_b_name, public.games.team_b_name),
+
+          market_type = COALESCE(EXCLUDED.market_type, public.games.market_type),
+          topic = COALESCE(EXCLUDED.topic, public.games.topic),
+          market_question = COALESCE(EXCLUDED.market_question, public.games.market_question),
+          market_short = COALESCE(EXCLUDED.market_short, public.games.market_short)
         `,
         values
       );
     }
 
-    // Upsert trade ledger (BUY/SELL/CLAIM)
+    // Upsert trade ledger
     if (trades.length) {
       const values: any[] = [];
       const chunks: string[] = [];
+
       trades.forEach((t, i) => {
         const base = i * 17;
         chunks.push(
