@@ -23,24 +23,6 @@ function parseSort(x: any): LeaderboardSort {
   return (allowed.has(v) ? v : "ROI") as LeaderboardSort;
 }
 
-// GET /api/leaderboard/users?league=ALL&range=D30&sort=ROI&limit=250&anchorTs=...
-r.get("/leaderboard/users", async (req, res, next) => {
-  try {
-    const league = parseLeague(req.query.league);
-    const range = parseRange(req.query.range);
-    const sort = parseSort(req.query.sort);
-
-    const limit = Math.max(1, Math.min(Number(req.query.limit || 250), 500));
-    const anchorTs =
-      req.query.anchorTs != null ? Math.floor(Number(req.query.anchorTs)) : undefined;
-
-    const out = await getLeaderboardUsers({ league, range, sort, limit, anchorTs });
-    res.json({ league, range, sort, limit, anchorTs: anchorTs ?? null, ...out });
-  } catch (e) {
-    next(e);
-  }
-});
-
 // GET /api/leaderboard/users?league=ALL&range=D30&sort=ROI&limit=250&anchorTs=...&user=0xabc...
 r.get("/leaderboard/users", async (req, res, next) => {
   try {
@@ -51,7 +33,7 @@ r.get("/leaderboard/users", async (req, res, next) => {
     const anchorTs =
       req.query.anchorTs != null ? Math.floor(Number(req.query.anchorTs)) : undefined;
     
-    // ✅ NEW: Optional user filter for Profile page single-user stats
+    // ✅ Optional user filter for Profile page single-user stats
     const userFilter = req.query.user
       ? String(req.query.user).toLowerCase().trim()
       : undefined;
@@ -62,7 +44,7 @@ r.get("/leaderboard/users", async (req, res, next) => {
       sort,
       limit,
       anchorTs,
-      userFilter, // ✅ Pass to service
+      userFilter,
     });
 
     res.json({
@@ -71,31 +53,32 @@ r.get("/leaderboard/users", async (req, res, next) => {
       sort,
       limit,
       anchorTs: anchorTs ?? null,
-      userFilter: userFilter ?? null, // ✅ Include in response
+      userFilter: userFilter ?? null,
       ...out
     });
   } catch (e) {
     next(e);
   }
 });
+
 // GET /api/leaderboard/users/:address/recent?league=ALL&limit=5&range=ALL&anchorTs=...&includeLegacy=1
 r.get("/leaderboard/users/:address/recent", async (req, res, next) => {
   try {
     const user = String(req.params.address || "").toLowerCase();
     const league = parseLeague(req.query.league);
     const limit = Math.max(1, Math.min(Number(req.query.limit || 5), 20));
-
     const range = parseRange(req.query.range);
     const anchorTs =
       req.query.anchorTs != null ? Math.floor(Number(req.query.anchorTs)) : undefined;
-
-    // ✅ NEW: allow frontend to force legacy inclusion (and backend will also fallback automatically)
+    
+    // ✅ Optional: allow frontend to force legacy inclusion
     const includeLegacy =
       req.query.includeLegacy != null
         ? Number(req.query.includeLegacy) === 1
         : false;
 
     const out = await getUserRecent({ user, league, limit, range, anchorTs, includeLegacy });
+    
     res.json({ league, range, limit, anchorTs: anchorTs ?? null, includeLegacy, ...out });
   } catch (e) {
     next(e);
