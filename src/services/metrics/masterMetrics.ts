@@ -259,6 +259,7 @@ export async function getLeaderboardUsers(params: {
   sort: LeaderboardSort;
   limit: number;
   anchorTs?: number;
+  userFilter?: string; // ✅ NEW: optional single-user filter
 }): Promise<{ asOf: string; rows: LeaderboardRowApi[] }> {
   const anchorTs = params.anchorTs ?? Math.floor(Date.now() / 1000);
   const { start, end } = computeWindow(params.range, anchorTs);
@@ -267,6 +268,7 @@ export async function getLeaderboardUsers(params: {
   const limit = Math.max(1, Math.min(params.limit || 250, 500));
 
   // bump cache version anytime you change output semantics/fields
+// bump cache version anytime you change output semantics/fields
   const key = cacheKey({
     v: "lb_users_db_v3_profile_consistent_explicit_returns",
     league: params.league,
@@ -274,26 +276,34 @@ export async function getLeaderboardUsers(params: {
     sort: params.sort,
     limit,
     anchorTs,
+    userFilter: params.userFilter ?? "none", // ✅ NEW: include in cache key
   });
 
-  const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
+const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
   if (cached) return cached;
 
-  // 1) Candidate users FROM DB (canonical)
-  const candidateUsers = await getCandidateUsersFromDb({
-    leagues,
-    start,
-    end,
-    limit: Math.min(2000, Math.max(limit * 6, limit)),
-  });
+  // ✅ 1) Candidate users: if userFilter provided, use it directly; otherwise get top candidates
+  let users: string[];
+  
+  if (params.userFilter) {
+    // Single-user mode for Profile page: skip candidate selection
+    users = [params.userFilter.toLowerCase()];
+  } else {
+    // Normal leaderboard mode: get top candidates by recent activity
+    const candidateUsers = await getCandidateUsersFromDb({
+      leagues,
+      start,
+      end,
+      limit: Math.min(2000, Math.max(limit * 6, limit)),
+    });
+    users = candidateUsers.slice(0, Math.min(candidateUsers.length, 2000));
+  }
 
-  const users = candidateUsers.slice(0, Math.min(candidateUsers.length, 2000));
   if (!users.length) {
     const out = { asOf: new Date().toISOString(), rows: [] as LeaderboardRowApi[] };
     cacheSet(key, out, 60_000);
     return out;
   }
-
   // 2) Aggregate FROM DB (canonical)
   const { byUser, buyByUserLeague } = await fetchLeaderboardAggFromDb({
     users,
@@ -334,6 +344,8 @@ export async function getLeaderboardUsers(params: {
         fav = lg;
       }
     }
+
+
 
     return {
       id: u,

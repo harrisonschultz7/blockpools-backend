@@ -41,6 +41,43 @@ r.get("/leaderboard/users", async (req, res, next) => {
   }
 });
 
+// GET /api/leaderboard/users?league=ALL&range=D30&sort=ROI&limit=250&anchorTs=...&user=0xabc...
+r.get("/leaderboard/users", async (req, res, next) => {
+  try {
+    const league = parseLeague(req.query.league);
+    const range = parseRange(req.query.range);
+    const sort = parseSort(req.query.sort);
+    const limit = Math.max(1, Math.min(Number(req.query.limit || 250), 500));
+    const anchorTs =
+      req.query.anchorTs != null ? Math.floor(Number(req.query.anchorTs)) : undefined;
+    
+    // ✅ NEW: Optional user filter for Profile page single-user stats
+    const userFilter = req.query.user
+      ? String(req.query.user).toLowerCase().trim()
+      : undefined;
+
+    const out = await getLeaderboardUsers({
+      league,
+      range,
+      sort,
+      limit,
+      anchorTs,
+      userFilter, // ✅ Pass to service
+    });
+
+    res.json({
+      league,
+      range,
+      sort,
+      limit,
+      anchorTs: anchorTs ?? null,
+      userFilter: userFilter ?? null, // ✅ Include in response
+      ...out
+    });
+  } catch (e) {
+    next(e);
+  }
+});
 // GET /api/leaderboard/users/:address/recent?league=ALL&limit=5&range=ALL&anchorTs=...&includeLegacy=1
 r.get("/leaderboard/users/:address/recent", async (req, res, next) => {
   try {
