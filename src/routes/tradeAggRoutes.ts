@@ -11,7 +11,7 @@ type TradeAggRow = {
 
   /**
    * GAME markets: "SEA vs NE" etc
-   * PROP markets: default to question / short question (so leaderboard "GAME" field can show prop question)
+   * PROP markets: default to question / short question
    */
   gameLabel: string;
 
@@ -105,20 +105,6 @@ function normMarketType(v: any): MarketType | undefined {
 
 export const tradeAggRoutes = Router();
 
-/**
- * Goal (POSITION-BASED):
- * - Return 1 row per (user, game_id, outcomeIndex) for Trade History.
- *   - If user buys multiple outcomes (MULTI), they get one row per outcomeIndex.
- *   - If user buys both sides in BINARY, they get 2 rows: outcomeIndex 0/1.
- * - Aggregate per outcome:
- *   buyGross + allInPriceBps (weighted by gross) for that outcome
- *   sellAmount for that outcome
- * - CLAIM rows are game-level in DB (side='C'). We allocate claimAmount:
- *   - MULTI final: claimAmount goes to winningOutcomeIndex only
- *   - BINARY final winner A/B: claimAmount goes to winning side only
- *   - BINARY final TIE: claimAmount is split pro-rata across A/B rows by buyGross (legacy behavior)
- *   - If a game has claim but no position rows: return one row with outcomeIndex=null (defensive)
- */
 async function handleTradeAgg(req: any, res: any) {
   const address = normAddr(String(req.query.user || req.params.address || ""));
   if (!assertAddr(address)) {
@@ -139,7 +125,6 @@ async function handleTradeAgg(req: any, res: any) {
 
   const client = await pool.connect();
   try {
-    // Count distinct (game_id, outcomeIndex) rows + claim-only rows (outcomeIndex null) inside window
     const countSql = `
       WITH pos AS (
         SELECT
@@ -169,7 +154,7 @@ async function handleTradeAgg(req: any, res: any) {
           AND e.type IN ('BUY','SELL')
           AND (
             e.outcome_index IS NOT NULL
-            OR e.side IN ('A','B') -- legacy binary fallback
+            OR e.side IN ('A','B')
           )
         GROUP BY
           e.game_id,
@@ -336,7 +321,6 @@ async function handleTradeAgg(req: any, res: any) {
 
         UNION ALL
 
-        -- claim-only row (no positions)
         SELECT
           cg.game_id,
           NULL::int AS outcome_index,
@@ -372,16 +356,15 @@ async function handleTradeAgg(req: any, res: any) {
         g.winner_side,
         g.winner_team_code,
 
-        -- ✅ multi winner fields
+        -- ✅ multi winner index (code column does NOT exist in games)
         g.winning_outcome_index,
-        g.winning_outcome_code,
 
         g.team_a_code,
         g.team_b_code,
         g.team_a_name,
         g.team_b_name,
 
-        -- ✅ PROP FIELDS (must exist in public.games; rename here if your columns differ)
+        -- ✅ PROP FIELDS
         g.market_type,
         g.topic,
         g.market_question,
@@ -406,7 +389,6 @@ async function handleTradeAgg(req: any, res: any) {
       const marketQuestion = safeStr(r.market_question).trim() || undefined;
       const marketShort = safeStr(r.market_short).trim() || undefined;
 
-      // ✅ outcome identity (multi first, binary fallback)
       const outcomeIndex =
         r.outcome_index != null
           ? Number(r.outcome_index)
@@ -425,7 +407,6 @@ async function handleTradeAgg(req: any, res: any) {
               ? teamBCode ?? null
               : null;
 
-      // ✅ legacy side preserved for old UIs (only meaningful for 0/1)
       const side: "A" | "B" | null =
         outcomeIndex === 0 ? "A" : outcomeIndex === 1 ? "B" : null;
 
@@ -433,11 +414,18 @@ async function handleTradeAgg(req: any, res: any) {
 
       const isFinal = r.is_final == null ? undefined : Boolean(r.is_final);
 
-      // ✅ multi winner
+      // ✅ multi winner (index only; code inferred for 0/1)
       const winningOutcomeIndex =
         r.winning_outcome_index == null ? null : Number(r.winning_outcome_index);
+
       const winningOutcomeCode =
-        r.winning_outcome_code == null ? null : String(r.winning_outcome_code);
+        winningOutcomeIndex == null
+          ? null
+          : winningOutcomeIndex === 0
+            ? (teamACode ?? null)
+            : winningOutcomeIndex === 1
+              ? (teamBCode ?? null)
+              : null;
 
       // legacy binary winner
       let winnerSide: "A" | "B" | "TIE" | null = null;
@@ -448,7 +436,6 @@ async function handleTradeAgg(req: any, res: any) {
           ? ""
           : String(r.winner_team_code).toUpperCase().trim();
 
-      // Only treat as legacy winnerSide when game is binary-ish (no winningOutcomeIndex)
       if (isFinal && winningOutcomeIndex == null) {
         if (wtc === "TIE" || wtc === "DRAW" || ws === "C") winnerSide = "TIE";
         else if (ws === "A" || ws === "B") winnerSide = ws as any;
@@ -464,25 +451,20 @@ async function handleTradeAgg(req: any, res: any) {
       const claimGame = safeNum(r.claim_amount);
       const totalBuyGrossGame = safeNum(r.total_buy_gross_game);
 
-      // Allocate claim to this row to avoid double-counting:
       let claimAlloc = 0;
 
       if (claimGame > 0 && isFinal) {
         if (winningOutcomeIndex != null) {
-          // MULTI: claim only to winning outcome index
           claimAlloc = outcomeIndex === winningOutcomeIndex ? claimGame : 0;
         } else if (winnerSide === "A" || winnerSide === "B") {
-          // BINARY legacy
           claimAlloc = side === winnerSide ? claimGame : 0;
         } else if (winnerSide === "TIE") {
-          // BINARY legacy tie: split pro-rata across A/B rows by buyGross
           claimAlloc =
             totalBuyGrossGame > 0 ? (claimGame * buyGross) / totalBuyGrossGame : 0;
         } else {
           claimAlloc = 0;
         }
       } else if (claimGame > 0 && outcomeIndex == null) {
-        // claim-only defensive row
         claimAlloc = claimGame;
       }
 
@@ -491,10 +473,9 @@ async function handleTradeAgg(req: any, res: any) {
       let action: TradeAggRow["action"] = "Pending";
       if (sellAmount > 0) action = "Sold";
       else if (isFinal && winningOutcomeIndex != null) {
-        // MULTI final
         if (outcomeIndex != null && outcomeIndex === winningOutcomeIndex) action = "Won";
         else if (outcomeIndex != null) action = "Lost";
-        else action = "Won"; // claim-only defensive row
+        else action = "Won";
       } else if (isFinal && winnerSide === "TIE") action = "Tie";
       else if (isFinal && side && (winnerSide === "A" || winnerSide === "B")) {
         action = winnerSide === side ? "Won" : "Lost";
@@ -516,7 +497,6 @@ async function handleTradeAgg(req: any, res: any) {
           ? (marketShort || marketQuestion || topic || defaultGameLabel)
           : defaultGameLabel;
 
-      // last activity: if claimAlloc is 0, don't let claim timestamp reorder losing outcome
       const lastActivityTsRaw = safeNum(r.last_activity_ts);
       const lastClaimTsRaw = safeNum(r.last_claim_ts);
       const lastActivityTs =
