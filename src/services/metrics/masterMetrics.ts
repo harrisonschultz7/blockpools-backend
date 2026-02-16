@@ -17,7 +17,10 @@ import {
  * - Total Return (cash back) = SUM(net_out_dec) WHERE type IN ('SELL','CLAIM')
  * - ROI = (TotalReturn / TotalTraded) - 1
  *
- * This avoids subgraph BET/TRADE double-representation issues.
+ * KEY FIX (multi-outcome + upcoming games compatibility):
+ * - Range windows MUST be applied to the TRADE EVENT timestamp (e.timestamp),
+ *   not the game lock time. Filtering by g.lock_time incorrectly excludes
+ *   trades on games that haven't locked yet (common for EPL/UCL three-way).
  */
 
 type RangeKey = "ALL" | "D30" | "D90";
@@ -120,7 +123,7 @@ type DbAggRow = {
   sell_net_out: string | number | null; // net_out for SELL (cash back)
   trade_count: string | number | null; // BUY+SELL event count
   games_touched: string | number | null;
-  last_ts: string | number | null;
+  last_ts: string | number | null; // last TRADE EVENT ts (not lock_time)
 };
 
 async function getCandidateUsersFromDb(params: {
@@ -131,15 +134,16 @@ async function getCandidateUsersFromDb(params: {
 }) {
   const max = Math.max(1, Math.min(params.limit, 2000));
 
-  // Candidate selection = users with most recent activity in window
+  // ✅ Candidate selection = users with most recent TRADE EVENT in window
+  // (NOT game lock_time)
   const sql = `
     SELECT
       LOWER(e.user_address) AS user_id,
       MAX(e.timestamp)::bigint AS last_ts
     FROM public.user_trade_events e
     JOIN public.games g ON g.game_id = e.game_id
-    WHERE g.lock_time >= $1
-      AND g.lock_time <= $2
+    WHERE e.timestamp >= $1
+      AND e.timestamp <= $2
       AND g.league = ANY($3::text[])
     GROUP BY LOWER(e.user_address)
     ORDER BY last_ts DESC
@@ -163,7 +167,7 @@ async function fetchLeaderboardAggFromDb(params: {
     return { byUser: new Map(), buyByUserLeague: new Map() };
   }
 
-  // Main per-user rollup (canonical)
+  // ✅ Main per-user rollup (canonical) — window by e.timestamp
   const sqlAgg = `
     WITH filtered AS (
       SELECT
@@ -176,19 +180,19 @@ async function fetchLeaderboardAggFromDb(params: {
         e.timestamp::bigint AS ts
       FROM public.user_trade_events e
       JOIN public.games g ON g.game_id = e.game_id
-      WHERE g.lock_time >= $1
-        AND g.lock_time <= $2
+      WHERE e.timestamp >= $1
+        AND e.timestamp <= $2
         AND g.league = ANY($3::text[])
         AND LOWER(e.user_address) = ANY($4::text[])
     )
     SELECT
       user_id,
-      SUM(gross_in) FILTER (WHERE type = 'BUY')::numeric    AS buy_gross,
-      SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric  AS claim_total,
-      SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric   AS sell_net_out,
+      SUM(gross_in) FILTER (WHERE type = 'BUY')::numeric       AS buy_gross,
+      SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric     AS claim_total,
+      SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric      AS sell_net_out,
       COUNT(*)      FILTER (WHERE type IN ('BUY','SELL'))::int AS trade_count,
-      COUNT(DISTINCT game_id)::int AS games_touched,
-      MAX(ts)::bigint AS last_ts
+      COUNT(DISTINCT game_id)::int                             AS games_touched,
+      MAX(ts)::bigint                                          AS last_ts
     FROM filtered
     GROUP BY user_id
   `;
@@ -207,7 +211,7 @@ async function fetchLeaderboardAggFromDb(params: {
     byUser.set(u, r as DbAggRow);
   }
 
-  // Buy volume by (user,league) for favoriteLeague
+  // ✅ Buy volume by (user,league) for favoriteLeague — window by e.timestamp
   const sqlLeague = `
     WITH filtered AS (
       SELECT
@@ -217,8 +221,8 @@ async function fetchLeaderboardAggFromDb(params: {
         (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in
       FROM public.user_trade_events e
       JOIN public.games g ON g.game_id = e.game_id
-      WHERE g.lock_time >= $1
-        AND g.lock_time <= $2
+      WHERE e.timestamp >= $1
+        AND e.timestamp <= $2
         AND g.league = ANY($3::text[])
         AND LOWER(e.user_address) = ANY($4::text[])
     )
@@ -259,7 +263,7 @@ export async function getLeaderboardUsers(params: {
   sort: LeaderboardSort;
   limit: number;
   anchorTs?: number;
-  userFilter?: string; // ✅ NEW: optional single-user filter
+  userFilter?: string; // ✅ optional single-user filter
 }): Promise<{ asOf: string; rows: LeaderboardRowApi[] }> {
   const anchorTs = params.anchorTs ?? Math.floor(Date.now() / 1000);
   const { start, end } = computeWindow(params.range, anchorTs);
@@ -267,29 +271,26 @@ export async function getLeaderboardUsers(params: {
 
   const limit = Math.max(1, Math.min(params.limit || 250, 500));
 
-  // bump cache version anytime you change output semantics/fields
-// bump cache version anytime you change output semantics/fields
+  // ✅ bump cache version (window semantics changed: lock_time -> timestamp)
   const key = cacheKey({
-    v: "lb_users_db_v3_profile_consistent_explicit_returns",
+    v: "lb_users_db_v4_event_timestamp_window_explicit_returns",
     league: params.league,
     range: params.range,
     sort: params.sort,
     limit,
     anchorTs,
-    userFilter: params.userFilter ?? "none", // ✅ NEW: include in cache key
+    userFilter: params.userFilter ?? "none",
   });
 
-const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
+  const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
   if (cached) return cached;
 
   // ✅ 1) Candidate users: if userFilter provided, use it directly; otherwise get top candidates
   let users: string[];
-  
+
   if (params.userFilter) {
-    // Single-user mode for Profile page: skip candidate selection
     users = [params.userFilter.toLowerCase()];
   } else {
-    // Normal leaderboard mode: get top candidates by recent activity
     const candidateUsers = await getCandidateUsersFromDb({
       leagues,
       start,
@@ -304,7 +305,8 @@ const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
     cacheSet(key, out, 60_000);
     return out;
   }
-  // 2) Aggregate FROM DB (canonical)
+
+  // ✅ 2) Aggregate FROM DB (canonical)
   const { byUser, buyByUserLeague } = await fetchLeaderboardAggFromDb({
     users,
     leagues,
@@ -312,7 +314,7 @@ const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
     end,
   });
 
-  // 3) Build API rows
+  // ✅ 3) Build API rows
   const rows: LeaderboardRowApi[] = users.map((u) => {
     const r =
       byUser.get(u) ||
@@ -345,8 +347,6 @@ const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
       }
     }
 
-
-
     return {
       id: u,
 
@@ -378,7 +378,7 @@ const cached = cacheGet<{ asOf: string; rows: LeaderboardRowApi[] }>(key);
     };
   });
 
-  // 4) Sort + limit final rows
+  // ✅ 4) Sort + limit final rows
   const sort = String(params.sort || "ROI").toUpperCase() as LeaderboardSort;
 
   rows.sort((a, b) => {
