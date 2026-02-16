@@ -15,7 +15,7 @@ type PersistTradeRow = {
   // Legacy side (optional for BUY/SELL, forced 'C' for CLAIM)
   side: Side | null;
 
-  // ✅ Canonical outcome identifiers (MULTI + BINARY)
+  // ✅ Canonical outcome identifiers (MULTI + BINARY + 3-way)
   outcomeIndex: number | null;
   outcomeCode: string | null;
 
@@ -190,12 +190,10 @@ function mergeGameMeta(base: PersistGameRow, meta?: GameMetaInput): PersistGameR
     teamBName: base.teamBName ?? (meta.teamBName ? cleanText(meta.teamBName) : null),
 
     marketType: base.marketType ?? (meta.marketType ? cleanUpper(meta.marketType) : null),
-    outcomesCount:
-      base.outcomesCount ?? (meta.outcomesCount != null ? toInt(meta.outcomesCount) : null),
+    outcomesCount: base.outcomesCount ?? (meta.outcomesCount != null ? toInt(meta.outcomesCount) : null),
     resolutionType: base.resolutionType ?? (meta.resolutionType ? cleanUpper(meta.resolutionType) : null),
     winningOutcomeIndex:
-      base.winningOutcomeIndex ??
-      (meta.winningOutcomeIndex != null ? toInt(meta.winningOutcomeIndex) : null),
+      base.winningOutcomeIndex ?? (meta.winningOutcomeIndex != null ? toInt(meta.winningOutcomeIndex) : null),
 
     topic: base.topic ?? (meta.topic ? cleanText(meta.topic) : null),
     marketQuestion: base.marketQuestion ?? (meta.marketQuestion ? cleanText(meta.marketQuestion) : null),
@@ -221,24 +219,28 @@ export async function upsertUserTradesAndGames(opts: {
 
       const tType: TradeType = toTradeType(r?.type);
 
+      const rawSide = String(r?.side ?? "").toUpperCase().trim();
+
       // legacy side:
       // - CLAIM rows are always side='C'
-      // - BUY/SELL keep side ONLY for old binary semantics; MULTI should be null and rely on outcomeIndex/outcomeCode.
+      // - BUY/SELL keep side ONLY for old binary semantics; MULTI/3-way should be null and rely on outcomeIndex/outcomeCode.
       let side: Side | null = null;
       if (tType === "CLAIM") side = "C";
-      else side = toABSide(r?.side); // may be null for MULTI and that is OK
+      else side = toABSide(rawSide); // NOTE: does NOT return 'C'
 
       const outcomeIndexRaw = toNumOrNull(r?.outcomeIndex ?? r?.outcome_index);
-      const outcomeIndex = outcomeIndexRaw == null ? null : Math.trunc(outcomeIndexRaw);
 
-      const outcomeCode = normalizeOutcomeCode(
-        outcomeIndex,
-        r?.outcomeCode ?? r?.outcome_code
-      );
+      // ✅ IMPORTANT: some historical 3-way pipelines emit DRAW as side='C' on BUY/SELL (legacy)
+      // If it's NOT a CLAIM and outcomeIndex is missing, infer draw outcomeIndex=2.
+      const inferredOutcomeIndex =
+        tType !== "CLAIM" && rawSide === "C" && outcomeIndexRaw == null ? 2 : outcomeIndexRaw;
+
+      const outcomeIndex = inferredOutcomeIndex == null ? null : Math.trunc(inferredOutcomeIndex);
+
+      const outcomeCode = normalizeOutcomeCode(outcomeIndex, r?.outcomeCode ?? r?.outcome_code);
 
       const gameId = String(g?.id || r?.gameId || r?.game_id || "");
-      const league =
-        g?.league != null ? String(g.league) : r?.league != null ? String(r.league) : null;
+      const league = g?.league != null ? String(g.league) : r?.league != null ? String(r.league) : null;
 
       const spotPriceBps = toNumOrNull(r?.spotPriceBps ?? r?.spot_price_bps ?? r?.spotPrice);
       const avgPriceBps = toNumOrNull(r?.avgPriceBps ?? r?.avg_price_bps ?? r?.avgPrice);
@@ -286,7 +288,7 @@ export async function upsertUserTradesAndGames(opts: {
       // ✅ CLAIM rows are allowed without outcomeIndex/outcomeCode.
       if (t.type === "CLAIM") return true;
 
-      // ✅ BUY/SELL must have outcomeIndex (canonical). (outcomeCode is recommended but not required)
+      // ✅ BUY/SELL must have outcomeIndex (canonical). outcomeCode is recommended but not required.
       if (t.outcomeIndex == null) return false;
 
       return true;
