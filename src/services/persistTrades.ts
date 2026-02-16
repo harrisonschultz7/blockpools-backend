@@ -4,6 +4,7 @@ import { pool } from "../db";
 type TradeType = "BUY" | "SELL" | "CLAIM";
 
 // Keep side only for legacy semantics (CLAIM bucket / old UI)
+// IMPORTANT: 'C' is RESERVED for CLAIM. Do NOT use 'C' to represent DRAW.
 type Side = "A" | "B" | "C";
 
 type PersistTradeRow = {
@@ -14,7 +15,7 @@ type PersistTradeRow = {
   // Legacy side (optional for BUY/SELL, forced 'C' for CLAIM)
   side: Side | null;
 
-  // ✅ NEW canonical outcome identifiers
+  // ✅ Canonical outcome identifiers (MULTI + BINARY)
   outcomeIndex: number | null;
   outcomeCode: string | null;
 
@@ -43,13 +44,13 @@ type PersistGameRow = {
   lockTime: number | null;
   isFinal: boolean | null;
 
-  winnerSide: string | null;        // legacy
-  winnerTeamCode: string | null;    // legacy-ish, still useful
+  winnerSide: string | null; // legacy (A/B only)
+  winnerTeamCode: string | null; // legacy-ish, still useful
 
   // ✅ multi fields
-  marketType: string | null;        // "BINARY" | "MULTI" | "PROP" etc
+  marketType: string | null; // "BINARY" | "MULTI" | "PROP" etc
   outcomesCount: number | null;
-  resolutionType: string | null;    // "UNRESOLVED" | "RESOLVED" ...
+  resolutionType: string | null; // "UNRESOLVED" | "RESOLVED" ...
   winningOutcomeIndex: number | null;
 
   teamACode: string | null;
@@ -159,6 +160,22 @@ function pickNum(obj: any, keys: string[]): number | null {
   return null;
 }
 
+/**
+ * Canonical outcomeCode normalization.
+ * - If outcomeCode is present -> uppercase it (team code / "DRAW" / etc)
+ * - If missing AND outcomeIndex indicates a draw (commonly 2) -> set "DRAW"
+ *   (Adjust if your protocol uses a different index for draw.)
+ */
+function normalizeOutcomeCode(outcomeIndex: number | null, rawOutcomeCode: any): string | null {
+  const cleaned = cleanTeamCode(rawOutcomeCode);
+  if (cleaned) return cleaned;
+
+  // ✅ common 3-way convention: index 2 = DRAW
+  if (outcomeIndex === 2) return "DRAW";
+
+  return null;
+}
+
 function mergeGameMeta(base: PersistGameRow, meta?: GameMetaInput): PersistGameRow {
   if (!meta) return base;
 
@@ -173,10 +190,12 @@ function mergeGameMeta(base: PersistGameRow, meta?: GameMetaInput): PersistGameR
     teamBName: base.teamBName ?? (meta.teamBName ? cleanText(meta.teamBName) : null),
 
     marketType: base.marketType ?? (meta.marketType ? cleanUpper(meta.marketType) : null),
-    outcomesCount: base.outcomesCount ?? (meta.outcomesCount != null ? toInt(meta.outcomesCount) : null),
+    outcomesCount:
+      base.outcomesCount ?? (meta.outcomesCount != null ? toInt(meta.outcomesCount) : null),
     resolutionType: base.resolutionType ?? (meta.resolutionType ? cleanUpper(meta.resolutionType) : null),
     winningOutcomeIndex:
-      base.winningOutcomeIndex ?? (meta.winningOutcomeIndex != null ? toInt(meta.winningOutcomeIndex) : null),
+      base.winningOutcomeIndex ??
+      (meta.winningOutcomeIndex != null ? toInt(meta.winningOutcomeIndex) : null),
 
     topic: base.topic ?? (meta.topic ? cleanText(meta.topic) : null),
     marketQuestion: base.marketQuestion ?? (meta.marketQuestion ? cleanText(meta.marketQuestion) : null),
@@ -192,20 +211,30 @@ export async function upsertUserTradesAndGames(opts: {
   const user = String(opts.user || "").toLowerCase();
   const gameMetaById = opts.gameMetaById || {};
 
-  // ---- map trade rows -> DB shape
+  /* =========================
+     Map trade rows -> DB shape
+  ========================= */
+
   const trades: PersistTradeRow[] = (opts.tradeRows || [])
     .map((r: any) => {
       const g = r?.game ?? {};
 
       const tType: TradeType = toTradeType(r?.type);
 
-      // legacy side
+      // legacy side:
+      // - CLAIM rows are always side='C'
+      // - BUY/SELL keep side ONLY for old binary semantics; MULTI should be null and rely on outcomeIndex/outcomeCode.
       let side: Side | null = null;
       if (tType === "CLAIM") side = "C";
       else side = toABSide(r?.side); // may be null for MULTI and that is OK
 
-      const outcomeIndex = toNumOrNull(r?.outcomeIndex ?? r?.outcome_index);
-      const outcomeCode = cleanTeamCode(r?.outcomeCode ?? r?.outcome_code);
+      const outcomeIndexRaw = toNumOrNull(r?.outcomeIndex ?? r?.outcome_index);
+      const outcomeIndex = outcomeIndexRaw == null ? null : Math.trunc(outcomeIndexRaw);
+
+      const outcomeCode = normalizeOutcomeCode(
+        outcomeIndex,
+        r?.outcomeCode ?? r?.outcome_code
+      );
 
       const gameId = String(g?.id || r?.gameId || r?.game_id || "");
       const league =
@@ -229,7 +258,7 @@ export async function upsertUserTradesAndGames(opts: {
         type: tType,
         side,
 
-        outcomeIndex: outcomeIndex == null ? null : Math.trunc(outcomeIndex),
+        outcomeIndex,
         outcomeCode,
 
         timestamp: toInt(r?.timestamp),
@@ -254,16 +283,19 @@ export async function upsertUserTradesAndGames(opts: {
     .filter((t: PersistTradeRow) => {
       if (!t.id || !t.gameId || t.timestamp <= 0) return false;
 
-      // CLAIM rows are allowed without outcomeIndex/outcomeCode.
+      // ✅ CLAIM rows are allowed without outcomeIndex/outcomeCode.
       if (t.type === "CLAIM") return true;
 
-      // BUY/SELL must have outcomeIndex (and ideally outcomeCode)
+      // ✅ BUY/SELL must have outcomeIndex (canonical). (outcomeCode is recommended but not required)
       if (t.outcomeIndex == null) return false;
 
       return true;
     });
 
-  // ---- map games (dedupe by gameId)
+  /* =========================
+     Map games (dedupe by gameId)
+  ========================= */
+
   const gamesById = new Map<string, PersistGameRow>();
 
   for (const r of opts.tradeRows || []) {
@@ -288,8 +320,11 @@ export async function upsertUserTradesAndGames(opts: {
     const teamAName = cleanText(pickStr(g, ["teamAName", "team_a_name"]) ?? null);
     const teamBName = cleanText(pickStr(g, ["teamBName", "team_b_name"]) ?? null);
 
+    // ✅ Legacy winnerSide is A/B ONLY. Do NOT accept 'C' here.
     const winnerSideRaw = pickStr(g, ["winnerSide", "winner_side"]) ?? null;
-    const winnerSide = winnerSideRaw ? String(winnerSideRaw).toUpperCase().trim() : null;
+    const winnerSideCandidate = winnerSideRaw ? String(winnerSideRaw).toUpperCase().trim() : null;
+    const winnerSide = winnerSideCandidate === "A" || winnerSideCandidate === "B" ? winnerSideCandidate : null;
+
     const winnerTeamCode = cleanTeamCode(pickStr(g, ["winnerTeamCode", "winner_team_code"]) ?? null);
 
     const topic = cleanText(pickStr(g, ["topic", "marketTopic", "market_topic"]) ?? null);
@@ -302,7 +337,7 @@ export async function upsertUserTradesAndGames(opts: {
       lockTime,
       isFinal,
 
-      winnerSide: winnerSide === "A" || winnerSide === "B" || winnerSide === "C" ? winnerSide : null,
+      winnerSide,
       winnerTeamCode,
 
       marketType,
@@ -365,7 +400,7 @@ export async function upsertUserTradesAndGames(opts: {
           g.marketQuestion,
           g.marketShort,
 
-          null // reserved (keeps placeholder if you later add something; safe to remove if you want)
+          null // reserved placeholder
         );
       });
 
@@ -409,7 +444,7 @@ export async function upsertUserTradesAndGames(opts: {
       const values: any[] = [];
       const chunks: string[] = [];
 
-      // 19 columns now
+      // 19 columns
       trades.forEach((t, i) => {
         const base = i * 19;
         chunks.push(
