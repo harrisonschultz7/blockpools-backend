@@ -6,7 +6,6 @@ type MarketType = "GAME" | "PROP";
 
 type TradeAggRow = {
   gameId: string;
-
   league: string;
   dateTs: number;
 
@@ -16,13 +15,19 @@ type TradeAggRow = {
    */
   gameLabel: string;
 
-  // ✅ PROP metadata (optional)
-  marketType?: MarketType;
+  // ✅ metadata (optional)
+  marketType?: MarketType; // "GAME" | "PROP"
   topic?: string;
   marketQuestion?: string;
   marketShort?: string;
 
+  // ✅ canonical key for MULTI (and BINARY via fallback)
+  outcomeIndex: number | null;
+  outcomeCode: string | null;
+
+  // ✅ keep legacy side for older consumers (derived: 0->A, 1->B else null)
   side: "A" | "B" | null;
+
   predictionCode: string;
   predictionColor: string;
 
@@ -33,10 +38,17 @@ type TradeAggRow = {
   claimAmount?: number;
   sellAmount?: number;
 
+  // legacy team fields (still useful for BINARY display)
   teamACode?: string;
   teamBCode?: string;
 
   isFinal?: boolean;
+
+  // ✅ multi winner (optional)
+  winningOutcomeIndex?: number | null;
+  winningOutcomeCode?: string | null;
+
+  // legacy winnerSide for old UI (BINARY only; null for MULTI)
   winnerSide?: "A" | "B" | "TIE" | null;
 
   roi: number | null;
@@ -95,15 +107,17 @@ export const tradeAggRoutes = Router();
 
 /**
  * Goal (POSITION-BASED):
- * - Return 1 row per (user, game_id, side) for Trade History.
- *   - If user buys BOTH sides of a game, they will see 2 rows: one for A, one for B.
- * - Aggregate per side:
- *   buyGross + allInPriceBps (weighted by gross) for that side
- *   sellAmount for that side
+ * - Return 1 row per (user, game_id, outcomeIndex) for Trade History.
+ *   - If user buys multiple outcomes (MULTI), they get one row per outcomeIndex.
+ *   - If user buys both sides in BINARY, they get 2 rows: outcomeIndex 0/1.
+ * - Aggregate per outcome:
+ *   buyGross + allInPriceBps (weighted by gross) for that outcome
+ *   sellAmount for that outcome
  * - CLAIM rows are game-level in DB (side='C'). We allocate claimAmount:
- *   - Final winner A/B: claimAmount goes to winning side only
- *   - Final TIE: claimAmount is split pro-rata across A/B rows by buyGross
- *   - If a game has claim but no A/B position rows: return one row with side=null (defensive)
+ *   - MULTI final: claimAmount goes to winningOutcomeIndex only
+ *   - BINARY final winner A/B: claimAmount goes to winning side only
+ *   - BINARY final TIE: claimAmount is split pro-rata across A/B rows by buyGross (legacy behavior)
+ *   - If a game has claim but no position rows: return one row with outcomeIndex=null (defensive)
  */
 async function handleTradeAgg(req: any, res: any) {
   const address = normAddr(String(req.query.user || req.params.address || ""));
@@ -125,12 +139,25 @@ async function handleTradeAgg(req: any, res: any) {
 
   const client = await pool.connect();
   try {
-    // Count distinct (game_id, side) rows + claim-only rows (side null) inside window
+    // Count distinct (game_id, outcomeIndex) rows + claim-only rows (outcomeIndex null) inside window
     const countSql = `
       WITH pos AS (
         SELECT
           e.game_id,
-          e.side,
+
+          COALESCE(e.outcome_index,
+            CASE WHEN e.side='A' THEN 0 WHEN e.side='B' THEN 1 ELSE NULL END
+          ) AS outcome_index,
+
+          COALESCE(e.outcome_code,
+            CASE
+              WHEN e.outcome_index IS NOT NULL THEN e.outcome_code
+              WHEN e.side='A' THEN g.team_a_code
+              WHEN e.side='B' THEN g.team_b_code
+              ELSE NULL
+            END
+          ) AS outcome_code,
+
           COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type='BUY'), 0)::numeric AS buy_gross,
           COALESCE(SUM(e.net_out_dec::numeric) FILTER (WHERE e.type='SELL'), 0)::numeric AS sell_amount,
           MAX(e.timestamp)::bigint AS last_activity_ts
@@ -139,9 +166,24 @@ async function handleTradeAgg(req: any, res: any) {
         WHERE lower(e.user_address) = lower($1)
           AND g.lock_time >= $2 AND g.lock_time <= $3
           AND ($4 = 'ALL' OR g.league = $4)
-          AND e.side IN ('A','B')
           AND e.type IN ('BUY','SELL')
-        GROUP BY e.game_id, e.side
+          AND (
+            e.outcome_index IS NOT NULL
+            OR e.side IN ('A','B') -- legacy binary fallback
+          )
+        GROUP BY
+          e.game_id,
+          COALESCE(e.outcome_index,
+            CASE WHEN e.side='A' THEN 0 WHEN e.side='B' THEN 1 ELSE NULL END
+          ),
+          COALESCE(e.outcome_code,
+            CASE
+              WHEN e.outcome_index IS NOT NULL THEN e.outcome_code
+              WHEN e.side='A' THEN g.team_a_code
+              WHEN e.side='B' THEN g.team_b_code
+              ELSE NULL
+            END
+          )
       ),
       claims AS (
         SELECT
@@ -164,9 +206,9 @@ async function handleTradeAgg(req: any, res: any) {
       )
       SELECT COUNT(*)::int AS cnt
       FROM (
-        SELECT game_id, side FROM pos
+        SELECT game_id, outcome_index FROM pos
         UNION ALL
-        SELECT game_id, NULL::text AS side FROM claim_only_games
+        SELECT game_id, NULL::int AS outcome_index FROM claim_only_games
       ) x
     `;
     const countRes = await client.query(countSql, params.slice(0, 4));
@@ -176,7 +218,19 @@ async function handleTradeAgg(req: any, res: any) {
       WITH pos AS (
         SELECT
           e.game_id,
-          e.side,
+
+          COALESCE(e.outcome_index,
+            CASE WHEN e.side='A' THEN 0 WHEN e.side='B' THEN 1 ELSE NULL END
+          ) AS outcome_index,
+
+          COALESCE(e.outcome_code,
+            CASE
+              WHEN e.outcome_index IS NOT NULL THEN e.outcome_code
+              WHEN e.side='A' THEN g.team_a_code
+              WHEN e.side='B' THEN g.team_b_code
+              ELSE NULL
+            END
+          ) AS outcome_code,
 
           COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type='BUY'), 0)::numeric AS buy_gross,
 
@@ -201,9 +255,24 @@ async function handleTradeAgg(req: any, res: any) {
         WHERE lower(e.user_address) = lower($1)
           AND g.lock_time >= $2 AND g.lock_time <= $3
           AND ($4 = 'ALL' OR g.league = $4)
-          AND e.side IN ('A','B')
           AND e.type IN ('BUY','SELL')
-        GROUP BY e.game_id, e.side
+          AND (
+            e.outcome_index IS NOT NULL
+            OR e.side IN ('A','B')
+          )
+        GROUP BY
+          e.game_id,
+          COALESCE(e.outcome_index,
+            CASE WHEN e.side='A' THEN 0 WHEN e.side='B' THEN 1 ELSE NULL END
+          ),
+          COALESCE(e.outcome_code,
+            CASE
+              WHEN e.outcome_index IS NOT NULL THEN e.outcome_code
+              WHEN e.side='A' THEN g.team_a_code
+              WHEN e.side='B' THEN g.team_b_code
+              ELSE NULL
+            END
+          )
       ),
 
       per_game AS (
@@ -238,7 +307,8 @@ async function handleTradeAgg(req: any, res: any) {
       joined_pos AS (
         SELECT
           p.game_id,
-          p.side,
+          p.outcome_index,
+          p.outcome_code,
           p.buy_gross,
           p.all_in_price_bps,
           p.sell_amount,
@@ -253,7 +323,8 @@ async function handleTradeAgg(req: any, res: any) {
       unioned AS (
         SELECT
           jp.game_id,
-          jp.side,
+          jp.outcome_index,
+          jp.outcome_code,
           jp.buy_gross,
           jp.all_in_price_bps,
           jp.sell_amount,
@@ -265,10 +336,11 @@ async function handleTradeAgg(req: any, res: any) {
 
         UNION ALL
 
-        -- claim-only row (no A/B positions)
+        -- claim-only row (no positions)
         SELECT
           cg.game_id,
-          NULL::text AS side,
+          NULL::int AS outcome_index,
+          NULL::text AS outcome_code,
           0::numeric AS buy_gross,
           NULL::numeric AS all_in_price_bps,
           0::numeric AS sell_amount,
@@ -281,7 +353,8 @@ async function handleTradeAgg(req: any, res: any) {
 
       SELECT
         u.game_id,
-        u.side,
+        u.outcome_index,
+        u.outcome_code,
         u.buy_gross,
         u.all_in_price_bps,
         u.sell_amount,
@@ -294,8 +367,15 @@ async function handleTradeAgg(req: any, res: any) {
         g.league,
         g.lock_time,
         g.is_final,
+
+        -- legacy binary winner fields
         g.winner_side,
         g.winner_team_code,
+
+        -- ✅ multi winner fields
+        g.winning_outcome_index,
+        g.winning_outcome_code,
+
         g.team_a_code,
         g.team_b_code,
         g.team_a_name,
@@ -315,11 +395,7 @@ async function handleTradeAgg(req: any, res: any) {
 
     const out = await client.query(sql, params);
 
-    // Allocate claim per row here (winner side only, or pro-rata for tie)
     const rows: TradeAggRow[] = (out.rows || []).map((r: any) => {
-      const side: "A" | "B" | null =
-        r.side === "B" ? "B" : r.side === "A" ? "A" : null;
-
       const teamACode = r.team_a_code ? String(r.team_a_code) : undefined;
       const teamBCode = r.team_b_code ? String(r.team_b_code) : undefined;
       const teamAName = r.team_a_name ? String(r.team_a_name) : "";
@@ -330,12 +406,40 @@ async function handleTradeAgg(req: any, res: any) {
       const marketQuestion = safeStr(r.market_question).trim() || undefined;
       const marketShort = safeStr(r.market_short).trim() || undefined;
 
-      const predictionCode =
-        side === "A" ? teamACode || "A" : side === "B" ? teamBCode || "B" : "—";
+      // ✅ outcome identity (multi first, binary fallback)
+      const outcomeIndex =
+        r.outcome_index != null
+          ? Number(r.outcome_index)
+          : r.side === "A"
+            ? 0
+            : r.side === "B"
+              ? 1
+              : null;
+
+      const outcomeCode =
+        r.outcome_code != null
+          ? String(r.outcome_code)
+          : outcomeIndex === 0
+            ? teamACode ?? null
+            : outcomeIndex === 1
+              ? teamBCode ?? null
+              : null;
+
+      // ✅ legacy side preserved for old UIs (only meaningful for 0/1)
+      const side: "A" | "B" | null =
+        outcomeIndex === 0 ? "A" : outcomeIndex === 1 ? "B" : null;
+
+      const predictionCode = outcomeCode || side || "—";
 
       const isFinal = r.is_final == null ? undefined : Boolean(r.is_final);
 
-      // Winner mapping (same as before)
+      // ✅ multi winner
+      const winningOutcomeIndex =
+        r.winning_outcome_index == null ? null : Number(r.winning_outcome_index);
+      const winningOutcomeCode =
+        r.winning_outcome_code == null ? null : String(r.winning_outcome_code);
+
+      // legacy binary winner
       let winnerSide: "A" | "B" | "TIE" | null = null;
       const ws =
         r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
@@ -344,7 +448,8 @@ async function handleTradeAgg(req: any, res: any) {
           ? ""
           : String(r.winner_team_code).toUpperCase().trim();
 
-      if (isFinal) {
+      // Only treat as legacy winnerSide when game is binary-ish (no winningOutcomeIndex)
+      if (isFinal && winningOutcomeIndex == null) {
         if (wtc === "TIE" || wtc === "DRAW" || ws === "C") winnerSide = "TIE";
         else if (ws === "A" || ws === "B") winnerSide = ws as any;
         else winnerSide = "TIE";
@@ -363,16 +468,20 @@ async function handleTradeAgg(req: any, res: any) {
       let claimAlloc = 0;
 
       if (claimGame > 0 && isFinal) {
-        if (winnerSide === "A" || winnerSide === "B") {
+        if (winningOutcomeIndex != null) {
+          // MULTI: claim only to winning outcome index
+          claimAlloc = outcomeIndex === winningOutcomeIndex ? claimGame : 0;
+        } else if (winnerSide === "A" || winnerSide === "B") {
+          // BINARY legacy
           claimAlloc = side === winnerSide ? claimGame : 0;
         } else if (winnerSide === "TIE") {
-          // tie: split pro-rata across A/B rows by buyGross
+          // BINARY legacy tie: split pro-rata across A/B rows by buyGross
           claimAlloc =
             totalBuyGrossGame > 0 ? (claimGame * buyGross) / totalBuyGrossGame : 0;
         } else {
           claimAlloc = 0;
         }
-      } else if (claimGame > 0 && side == null) {
+      } else if (claimGame > 0 && outcomeIndex == null) {
         // claim-only defensive row
         claimAlloc = claimGame;
       }
@@ -381,29 +490,33 @@ async function handleTradeAgg(req: any, res: any) {
 
       let action: TradeAggRow["action"] = "Pending";
       if (sellAmount > 0) action = "Sold";
-      else if (isFinal && winnerSide === "TIE") action = "Tie";
+      else if (isFinal && winningOutcomeIndex != null) {
+        // MULTI final
+        if (outcomeIndex != null && outcomeIndex === winningOutcomeIndex) action = "Won";
+        else if (outcomeIndex != null) action = "Lost";
+        else action = "Won"; // claim-only defensive row
+      } else if (isFinal && winnerSide === "TIE") action = "Tie";
       else if (isFinal && side && (winnerSide === "A" || winnerSide === "B")) {
         action = winnerSide === side ? "Won" : "Lost";
-      } else if (claimAlloc > 0 && (buyGross > 0 || side == null)) {
+      } else if (claimAlloc > 0 && (buyGross > 0 || outcomeIndex == null)) {
         action = "Won";
       }
 
       const roi = buyGross > 0 ? (returnAmount - buyGross) / buyGross : null;
 
-      // ✅ GAME label: if PROP, prefer short/question; else teams
       const defaultGameLabel =
         teamAName && teamBName
           ? `${teamAName} vs ${teamBName}`
           : teamACode && teamBCode
-          ? `${teamACode} vs ${teamBCode}`
-          : String(r.game_id);
+            ? `${teamACode} vs ${teamBCode}`
+            : String(r.game_id);
 
       const gameLabel =
         marketType === "PROP"
           ? (marketShort || marketQuestion || topic || defaultGameLabel)
           : defaultGameLabel;
 
-      // last activity: if claimAlloc is 0, don't let claim timestamp reorder losing side
+      // last activity: if claimAlloc is 0, don't let claim timestamp reorder losing outcome
       const lastActivityTsRaw = safeNum(r.last_activity_ts);
       const lastClaimTsRaw = safeNum(r.last_claim_ts);
       const lastActivityTs =
@@ -415,11 +528,13 @@ async function handleTradeAgg(req: any, res: any) {
         dateTs: Number(r.lock_time || lastActivityTs || 0),
         gameLabel,
 
-        // ✅ PROP fields
         marketType,
         topic,
         marketQuestion,
         marketShort,
+
+        outcomeIndex: outcomeIndex == null ? null : outcomeIndex,
+        outcomeCode: outcomeCode,
 
         side,
         predictionCode,
@@ -436,6 +551,10 @@ async function handleTradeAgg(req: any, res: any) {
         teamBCode,
 
         isFinal,
+
+        winningOutcomeIndex,
+        winningOutcomeCode,
+
         winnerSide,
 
         roi,

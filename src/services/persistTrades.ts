@@ -1,34 +1,23 @@
 // src/services/persistTrades.ts
 import { pool } from "../db";
 
-/**
- * Goal:
- * - Persist BUY/SELL/CLAIM rows into public.user_trade_events
- * - Persist game metadata into public.games
- * - Ensure CLAIM rows always have side='C'
- * - Ensure BUY/SELL rows NEVER persist with side='C' or null (drop them if malformed)
- * - Normalize tie encoding for games:
- *     winner_team_code in (TIE, DRAW) => winner_side='C' and winner_team_code='TIE'
- *
- * IMPORTANT FIX:
- * - On games upsert, NEVER overwrite existing non-null fields with NULL.
- *   (Use COALESCE(EXCLUDED.col, public.games.col))
- *
- * PROP SUPPORT:
- * - Persist market_type/topic/market_question/market_short into public.games when present
- *
- * NEW (OPTIONAL):
- * - Accept gameMetaById keyed by gameId/address. If provided, we merge it to fill missing fields.
- */
-
 type TradeType = "BUY" | "SELL" | "CLAIM";
-type Side = "A" | "B" | "C"; // DB encoding: C = tie/claim bucket
+
+// Keep side only for legacy semantics (CLAIM bucket / old UI)
+type Side = "A" | "B" | "C";
 
 type PersistTradeRow = {
   id: string;
   user: string;
   type: TradeType;
-  side: Side; // never null by the time we insert
+
+  // Legacy side (optional for BUY/SELL, forced 'C' for CLAIM)
+  side: Side | null;
+
+  // ✅ NEW canonical outcome identifiers
+  outcomeIndex: number | null;
+  outcomeCode: string | null;
+
   timestamp: number;
   txHash: string | null;
 
@@ -54,17 +43,21 @@ type PersistGameRow = {
   lockTime: number | null;
   isFinal: boolean | null;
 
-  // winnerSide can be 'A' | 'B' | 'C' | null
-  winnerSide: string | null;
-  winnerTeamCode: string | null;
+  winnerSide: string | null;        // legacy
+  winnerTeamCode: string | null;    // legacy-ish, still useful
+
+  // ✅ multi fields
+  marketType: string | null;        // "BINARY" | "MULTI" | "PROP" etc
+  outcomesCount: number | null;
+  resolutionType: string | null;    // "UNRESOLVED" | "RESOLVED" ...
+  winningOutcomeIndex: number | null;
 
   teamACode: string | null;
   teamBCode: string | null;
   teamAName: string | null;
   teamBName: string | null;
 
-  // ✅ PROP metadata
-  marketType: string | null; // "PROP" | "GAME" (stored as text)
+  // props (keep)
   topic: string | null;
   marketQuestion: string | null;
   marketShort: string | null;
@@ -79,14 +72,18 @@ export type GameMetaInput = Partial<{
   teamAName: string;
   teamBName: string;
 
-  marketType: string; // "PROP" | "GAME"
+  marketType: string;
+  outcomesCount: number;
+  resolutionType: string;
+  winningOutcomeIndex: number;
+
   topic: string;
   marketQuestion: string;
   marketShort: string;
 }>;
 
 /* =========================
-   Small helpers
+   Helpers
 ========================= */
 
 function toStr(v: any, fallback = "0"): string {
@@ -118,7 +115,6 @@ function toTradeType(v: any): TradeType {
   return "BUY";
 }
 
-// BUY/SELL side parser (A/B only). We do NOT default to C here.
 function toABSide(v: any): "A" | "B" | null {
   const s = String(v || "").toUpperCase().trim();
   if (s === "A") return "A";
@@ -126,23 +122,10 @@ function toABSide(v: any): "A" | "B" | null {
   return null;
 }
 
-function normWinnerTeamCode(v: any): string | null {
-  if (v == null) return null;
-  const s = String(v).toUpperCase().trim();
-  return s ? s : null;
-}
-
 function cleanTeamCode(v: any): string | null {
   if (v == null) return null;
   const s = String(v).trim();
-  if (!s) return null;
-  return s.toUpperCase();
-}
-
-function cleanTeamName(v: any): string | null {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s ? s : null;
+  return s ? s.toUpperCase() : null;
 }
 
 function cleanText(v: any): string | null {
@@ -156,10 +139,6 @@ function cleanUpper(v: any): string | null {
   return s ? s.toUpperCase() : null;
 }
 
-/**
- * Pick the first non-empty string among keys on an object.
- * Lets us support multiple shapes coming from different ingesters/subgraph versions.
- */
 function pickStr(obj: any, keys: string[]): string | null {
   for (const k of keys) {
     const v = obj?.[k];
@@ -170,30 +149,14 @@ function pickStr(obj: any, keys: string[]): string | null {
   return null;
 }
 
-function normalizeWinnerSide(opts: {
-  winnerSide: any;
-  winnerTeamCode: any;
-  isFinal: any;
-}): { winnerSide: string | null; winnerTeamCode: string | null } {
-  const isFinal = opts.isFinal == null ? null : Boolean(opts.isFinal);
-  const wtc = normWinnerTeamCode(opts.winnerTeamCode);
-
-  if (!isFinal) {
-    const wsRaw =
-      opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
-    const ws = wsRaw === "A" || wsRaw === "B" || wsRaw === "C" ? wsRaw : null;
-    return { winnerSide: ws, winnerTeamCode: wtc };
+function pickNum(obj: any, keys: string[]): number | null {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v == null || v === "") continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
   }
-
-  if (wtc === "TIE" || wtc === "DRAW") {
-    return { winnerSide: "C", winnerTeamCode: "TIE" };
-  }
-
-  const wsRaw =
-    opts.winnerSide == null ? null : String(opts.winnerSide).toUpperCase().trim();
-  const ws = wsRaw === "A" || wsRaw === "B" ? wsRaw : null;
-
-  return { winnerSide: ws, winnerTeamCode: wtc };
+  return null;
 }
 
 function mergeGameMeta(base: PersistGameRow, meta?: GameMetaInput): PersistGameRow {
@@ -206,10 +169,15 @@ function mergeGameMeta(base: PersistGameRow, meta?: GameMetaInput): PersistGameR
 
     teamACode: base.teamACode ?? (meta.teamACode ? cleanTeamCode(meta.teamACode) : null),
     teamBCode: base.teamBCode ?? (meta.teamBCode ? cleanTeamCode(meta.teamBCode) : null),
-    teamAName: base.teamAName ?? (meta.teamAName ? cleanTeamName(meta.teamAName) : null),
-    teamBName: base.teamBName ?? (meta.teamBName ? cleanTeamName(meta.teamBName) : null),
+    teamAName: base.teamAName ?? (meta.teamAName ? cleanText(meta.teamAName) : null),
+    teamBName: base.teamBName ?? (meta.teamBName ? cleanText(meta.teamBName) : null),
 
     marketType: base.marketType ?? (meta.marketType ? cleanUpper(meta.marketType) : null),
+    outcomesCount: base.outcomesCount ?? (meta.outcomesCount != null ? toInt(meta.outcomesCount) : null),
+    resolutionType: base.resolutionType ?? (meta.resolutionType ? cleanUpper(meta.resolutionType) : null),
+    winningOutcomeIndex:
+      base.winningOutcomeIndex ?? (meta.winningOutcomeIndex != null ? toInt(meta.winningOutcomeIndex) : null),
+
     topic: base.topic ?? (meta.topic ? cleanText(meta.topic) : null),
     marketQuestion: base.marketQuestion ?? (meta.marketQuestion ? cleanText(meta.marketQuestion) : null),
     marketShort: base.marketShort ?? (meta.marketShort ? cleanText(meta.marketShort) : null),
@@ -219,38 +187,37 @@ function mergeGameMeta(base: PersistGameRow, meta?: GameMetaInput): PersistGameR
 export async function upsertUserTradesAndGames(opts: {
   user: string;
   tradeRows: any[];
-  // Optional: if a caller wants to provide meta directly instead of injecting into row.game
   gameMetaById?: Record<string, GameMetaInput | undefined>;
 }) {
   const user = String(opts.user || "").toLowerCase();
   const gameMetaById = opts.gameMetaById || {};
 
-  // ---- map trade rows -> DB shape (strict rules)
+  // ---- map trade rows -> DB shape
   const trades: PersistTradeRow[] = (opts.tradeRows || [])
     .map((r: any) => {
       const g = r?.game ?? {};
 
       const tType: TradeType = toTradeType(r?.type);
 
+      // legacy side
       let side: Side | null = null;
       if (tType === "CLAIM") side = "C";
-      else side = toABSide(r?.side);
+      else side = toABSide(r?.side); // may be null for MULTI and that is OK
 
-      const gameId = String(g?.id || r?.gameId || "");
+      const outcomeIndex = toNumOrNull(r?.outcomeIndex ?? r?.outcome_index);
+      const outcomeCode = cleanTeamCode(r?.outcomeCode ?? r?.outcome_code);
+
+      const gameId = String(g?.id || r?.gameId || r?.game_id || "");
       const league =
         g?.league != null ? String(g.league) : r?.league != null ? String(r.league) : null;
 
-      const spotPriceBps = toNumOrNull(
-        r?.spotPriceBps ?? r?.priceBps ?? r?.spot_price_bps ?? r?.spotPrice
-      );
-      const avgPriceBps = toNumOrNull(
-        r?.avgPriceBps ?? r?.priceBps ?? r?.avg_price_bps ?? r?.avgPrice
-      );
+      const spotPriceBps = toNumOrNull(r?.spotPriceBps ?? r?.spot_price_bps ?? r?.spotPrice);
+      const avgPriceBps = toNumOrNull(r?.avgPriceBps ?? r?.avg_price_bps ?? r?.avgPrice);
 
-      const grossInDec = toStr(r?.grossInDec ?? r?.grossAmount ?? r?.gross_in_dec, "0");
+      const grossInDec = toStr(r?.grossInDec ?? r?.gross_in_dec ?? r?.grossAmount, "0");
       const grossOutDec = toStr(r?.grossOutDec ?? r?.gross_out_dec, "0");
-      const feeDec = toStr(r?.feeDec ?? r?.fee ?? r?.fee_dec, "0");
-      const netStakeDec = toStr(r?.netStakeDec ?? r?.amountDec ?? r?.net_stake_dec, "0");
+      const feeDec = toStr(r?.feeDec ?? r?.fee_dec ?? r?.fee, "0");
+      const netStakeDec = toStr(r?.netStakeDec ?? r?.net_stake_dec ?? r?.amountDec, "0");
       const netOutDec = toStr(r?.netOutDec ?? r?.net_out_dec, "0");
 
       const costBasisClosedDec = toStr(r?.costBasisClosedDec ?? r?.cost_basis_closed_dec, "0");
@@ -260,7 +227,11 @@ export async function upsertUserTradesAndGames(opts: {
         id: String(r?.id || ""),
         user,
         type: tType,
-        side: (side as any) as Side,
+        side,
+
+        outcomeIndex: outcomeIndex == null ? null : Math.trunc(outcomeIndex),
+        outcomeCode,
+
         timestamp: toInt(r?.timestamp),
         txHash: r?.txHash ? String(r.txHash) : null,
 
@@ -280,12 +251,17 @@ export async function upsertUserTradesAndGames(opts: {
         league,
       };
     })
-    .filter((t: any) => {
+    .filter((t: PersistTradeRow) => {
       if (!t.id || !t.gameId || t.timestamp <= 0) return false;
+
+      // CLAIM rows are allowed without outcomeIndex/outcomeCode.
       if (t.type === "CLAIM") return true;
-      return t.side === "A" || t.side === "B";
-    })
-    .map((t: any) => t as PersistTradeRow);
+
+      // BUY/SELL must have outcomeIndex (and ideally outcomeCode)
+      if (t.outcomeIndex == null) return false;
+
+      return true;
+    });
 
   // ---- map games (dedupe by gameId)
   const gamesById = new Map<string, PersistGameRow>();
@@ -295,91 +271,57 @@ export async function upsertUserTradesAndGames(opts: {
     const gameId = String(g?.id || "");
     if (!gameId) continue;
 
-    if (!gamesById.has(gameId)) {
-      const league = g?.league ?? null;
-      const lockTime = g?.lockTime == null ? null : toInt(g.lockTime);
-      const isFinal = toBoolOrNull(g?.isFinal);
+    if (gamesById.has(gameId)) continue;
 
-      const normalized = normalizeWinnerSide({
-        winnerSide: g?.winnerSide ?? null,
-        winnerTeamCode: g?.winnerTeamCode ?? null,
-        isFinal,
-      });
+    const league = g?.league ?? null;
+    const lockTime = g?.lockTime == null ? null : toInt(g.lockTime);
+    const isFinal = toBoolOrNull(g?.isFinal);
 
-      const teamACodeRaw =
-        pickStr(g, ["teamACode", "team_a_code", "teamA_code", "homeCode", "team0Code"]) ?? null;
-      const teamBCodeRaw =
-        pickStr(g, ["teamBCode", "team_b_code", "teamB_code", "awayCode", "team1Code"]) ?? null;
+    const marketType = cleanUpper(pickStr(g, ["marketType", "market_type", "type"]) ?? null);
+    const outcomesCount = pickNum(g, ["outcomesCount", "outcomes_count"]) ?? null;
+    const resolutionType = cleanUpper(pickStr(g, ["resolutionType", "resolution_type"]) ?? null);
+    const winningOutcomeIndex = pickNum(g, ["winningOutcomeIndex", "winning_outcome_index"]) ?? null;
 
-      const teamANameRaw =
-        pickStr(g, ["teamAName", "team_a_name", "homeName", "team0Name"]) ?? null;
-      const teamBNameRaw =
-        pickStr(g, ["teamBName", "team_b_name", "awayName", "team1Name"]) ?? null;
+    // legacy team fields still exist for BINARY and are useful for UI fallbacks
+    const teamACode = cleanTeamCode(pickStr(g, ["teamACode", "team_a_code"]) ?? null);
+    const teamBCode = cleanTeamCode(pickStr(g, ["teamBCode", "team_b_code"]) ?? null);
+    const teamAName = cleanText(pickStr(g, ["teamAName", "team_a_name"]) ?? null);
+    const teamBName = cleanText(pickStr(g, ["teamBName", "team_b_name"]) ?? null);
 
-      // ✅ PROP fields (support multiple shapes)
-      const marketTypeRaw = pickStr(g, ["marketType", "market_type", "type", "market"]) ?? null;
-      const topicRaw = pickStr(g, ["topic", "marketTopic", "market_topic"]) ?? null;
-      const marketQuestionRaw =
-        pickStr(g, ["marketQuestion", "market_question", "question"]) ?? null;
-      const marketShortRaw = pickStr(g, ["marketShort", "market_short", "short"]) ?? null;
+    const winnerSideRaw = pickStr(g, ["winnerSide", "winner_side"]) ?? null;
+    const winnerSide = winnerSideRaw ? String(winnerSideRaw).toUpperCase().trim() : null;
+    const winnerTeamCode = cleanTeamCode(pickStr(g, ["winnerTeamCode", "winner_team_code"]) ?? null);
 
-      let row: PersistGameRow = {
-        gameId,
-        league,
-        lockTime,
-        isFinal,
+    const topic = cleanText(pickStr(g, ["topic", "marketTopic", "market_topic"]) ?? null);
+    const marketQuestion = cleanText(pickStr(g, ["marketQuestion", "market_question", "question"]) ?? null);
+    const marketShort = cleanText(pickStr(g, ["marketShort", "market_short", "short"]) ?? null);
 
-        winnerSide: normalized.winnerSide,
-        winnerTeamCode: normalized.winnerTeamCode,
+    let row: PersistGameRow = {
+      gameId,
+      league,
+      lockTime,
+      isFinal,
 
-        teamACode: cleanTeamCode(teamACodeRaw),
-        teamBCode: cleanTeamCode(teamBCodeRaw),
-        teamAName: cleanTeamName(teamANameRaw),
-        teamBName: cleanTeamName(teamBNameRaw),
+      winnerSide: winnerSide === "A" || winnerSide === "B" || winnerSide === "C" ? winnerSide : null,
+      winnerTeamCode,
 
-        marketType: cleanUpper(marketTypeRaw),
-        topic: cleanText(topicRaw),
-        marketQuestion: cleanText(marketQuestionRaw),
-        marketShort: cleanText(marketShortRaw),
-      };
+      marketType,
+      outcomesCount: outcomesCount == null ? null : Math.trunc(outcomesCount),
+      resolutionType,
+      winningOutcomeIndex: winningOutcomeIndex == null ? null : Math.trunc(winningOutcomeIndex),
 
-      // Optional merge from caller-provided meta map
-      const meta = gameMetaById[gameId];
-      row = mergeGameMeta(row, meta);
+      teamACode,
+      teamBCode,
+      teamAName,
+      teamBName,
 
-      gamesById.set(gameId, row);
-    }
-  }
+      topic,
+      marketQuestion,
+      marketShort,
+    };
 
-  // Also seed games if we have meta for a gameId referenced in trades but no row.game
-  for (const t of trades) {
-    const gameId = String(t.gameId || "");
-    if (!gameId || gamesById.has(gameId)) continue;
-
-    const meta = gameMetaById[gameId];
-    if (!meta) continue;
-
-    const seed: PersistGameRow = mergeGameMeta(
-      {
-        gameId,
-        league: t.league ?? null,
-        lockTime: null,
-        isFinal: null,
-        winnerSide: null,
-        winnerTeamCode: null,
-        teamACode: null,
-        teamBCode: null,
-        teamAName: null,
-        teamBName: null,
-        marketType: null,
-        topic: null,
-        marketQuestion: null,
-        marketShort: null,
-      },
-      meta
-    );
-
-    gamesById.set(gameId, seed);
+    row = mergeGameMeta(row, gameMetaById[gameId]);
+    gamesById.set(gameId, row);
   }
 
   const games = [...gamesById.values()];
@@ -395,10 +337,11 @@ export async function upsertUserTradesAndGames(opts: {
       const values: any[] = [];
       const chunks: string[] = [];
 
+      // 18 columns
       games.forEach((g, i) => {
-        const base = i * 14;
+        const base = i * 18;
         chunks.push(
-          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14})`
+          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18})`
         );
         values.push(
           g.gameId,
@@ -407,14 +350,22 @@ export async function upsertUserTradesAndGames(opts: {
           g.isFinal,
           g.winnerSide,
           g.winnerTeamCode,
+
+          g.marketType,
+          g.outcomesCount,
+          g.resolutionType,
+          g.winningOutcomeIndex,
+
           g.teamACode,
           g.teamBCode,
           g.teamAName,
           g.teamBName,
-          g.marketType,
+
           g.topic,
           g.marketQuestion,
-          g.marketShort
+          g.marketShort,
+
+          null // reserved (keeps placeholder if you later add something; safe to remove if you want)
         );
       });
 
@@ -422,8 +373,10 @@ export async function upsertUserTradesAndGames(opts: {
         `
         INSERT INTO public.games
           (game_id, league, lock_time, is_final, winner_side, winner_team_code,
+           market_type, outcomes_count, resolution_type, winning_outcome_index,
            team_a_code, team_b_code, team_a_name, team_b_name,
-           market_type, topic, market_question, market_short)
+           topic, market_question, market_short,
+           _reserved)
         VALUES ${chunks.join(",")}
         ON CONFLICT (game_id) DO UPDATE SET
           league = COALESCE(EXCLUDED.league, public.games.league),
@@ -433,12 +386,16 @@ export async function upsertUserTradesAndGames(opts: {
           winner_side = COALESCE(EXCLUDED.winner_side, public.games.winner_side),
           winner_team_code = COALESCE(EXCLUDED.winner_team_code, public.games.winner_team_code),
 
+          market_type = COALESCE(EXCLUDED.market_type, public.games.market_type),
+          outcomes_count = COALESCE(EXCLUDED.outcomes_count, public.games.outcomes_count),
+          resolution_type = COALESCE(EXCLUDED.resolution_type, public.games.resolution_type),
+          winning_outcome_index = COALESCE(EXCLUDED.winning_outcome_index, public.games.winning_outcome_index),
+
           team_a_code = COALESCE(EXCLUDED.team_a_code, public.games.team_a_code),
           team_b_code = COALESCE(EXCLUDED.team_b_code, public.games.team_b_code),
           team_a_name = COALESCE(EXCLUDED.team_a_name, public.games.team_a_name),
           team_b_name = COALESCE(EXCLUDED.team_b_name, public.games.team_b_name),
 
-          market_type = COALESCE(EXCLUDED.market_type, public.games.market_type),
           topic = COALESCE(EXCLUDED.topic, public.games.topic),
           market_question = COALESCE(EXCLUDED.market_question, public.games.market_question),
           market_short = COALESCE(EXCLUDED.market_short, public.games.market_short)
@@ -452,16 +409,19 @@ export async function upsertUserTradesAndGames(opts: {
       const values: any[] = [];
       const chunks: string[] = [];
 
+      // 19 columns now
       trades.forEach((t, i) => {
-        const base = i * 17;
+        const base = i * 19;
         chunks.push(
-          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17})`
+          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18},$${base + 19})`
         );
         values.push(
           t.id,
           t.user,
           t.type,
           t.side,
+          t.outcomeIndex,
+          t.outcomeCode,
           t.timestamp,
           t.txHash,
           t.spotPriceBps,
@@ -481,7 +441,7 @@ export async function upsertUserTradesAndGames(opts: {
       await client.query(
         `
         INSERT INTO public.user_trade_events
-          (id, user_address, type, side, timestamp, tx_hash,
+          (id, user_address, type, side, outcome_index, outcome_code, timestamp, tx_hash,
            spot_price_bps, avg_price_bps,
            gross_in_dec, gross_out_dec, fee_dec, net_stake_dec, net_out_dec,
            cost_basis_closed_dec, realized_pnl_dec,
@@ -491,6 +451,8 @@ export async function upsertUserTradesAndGames(opts: {
           user_address = EXCLUDED.user_address,
           type = EXCLUDED.type,
           side = EXCLUDED.side,
+          outcome_index = EXCLUDED.outcome_index,
+          outcome_code = EXCLUDED.outcome_code,
           timestamp = EXCLUDED.timestamp,
           tx_hash = EXCLUDED.tx_hash,
           spot_price_bps = EXCLUDED.spot_price_bps,

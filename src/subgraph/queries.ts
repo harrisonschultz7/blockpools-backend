@@ -1,16 +1,4 @@
 // src/subgraph/queries.ts
-//
-// Queries aligned to your schema.graphql.
-//
-// Entities you actively use for leaderboard accuracy (range-aware):
-// - trades (BUY/SELL)
-// - claims
-// - userGameStats
-//
-// Notes:
-// - TheGraph enforces `first` <= 1000.
-// - For D30/D90 correctness, shortlist users from *activity* (trades) within the window.
-// - userLeagueStats is useful for ALL-time / coarse ranking, but it is NOT range-aware.
 
 export const Q_META_ONLY = `
 query MetaOnly {
@@ -19,15 +7,8 @@ query MetaOnly {
 `;
 
 // -----------------------------
-// Activity-based shortlist (recommended)
+// Activity-based shortlist (TRADES) - range-aware
 // -----------------------------
-//
-// These queries are used to obtain a candidate set of users who were active within a window.
-// They are range-aware via game.lockTime filters (anchor window applied server-side).
-//
-// Typical server strategy:
-// - Pull pages until you collect ~limit unique users (or a cap).
-// - Then compute per-user metrics from bulk trades/claims/stats.
 
 export const Q_ACTIVE_USERS_FROM_TRADES_WINDOW = `
 query ActiveUsersFromTradesWindow(
@@ -51,34 +32,9 @@ query ActiveUsersFromTradesWindow(
 }
 `;
 
-export const Q_ACTIVE_USERS_FROM_BETS_WINDOW = `
-query ActiveUsersFromBetsWindow(
-  $leagues: [String!]!
-  $start: BigInt!
-  $end: BigInt!
-  $first: Int!
-  $skip: Int!
-) {
-  bets(
-    first: $first
-    skip: $skip
-    where: {
-      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
-    }
-    orderBy: timestamp
-    orderDirection: desc
-  ) {
-    user { id }
-  }
-}
-`;
-
-
-// Optional: if you want to ensure users who only CLAIM (but have no trades in window)
-// are included, you can union in candidates from claims.
-// Many products skip this because "trader leaderboard" should reflect trading activity,
-// but this is here if you want completeness.
-
+// -----------------------------
+// Optional: active users from claims (range-aware)
+// -----------------------------
 export const Q_ACTIVE_USERS_FROM_CLAIMS_WINDOW = `
 query ActiveUsersFromClaimsWindow(
   $leagues: [String!]!
@@ -102,11 +58,8 @@ query ActiveUsersFromClaimsWindow(
 `;
 
 // -----------------------------
-// Leaderboard (UserLeagueStat) - range-agnostic
+// Leaderboard (UserLeagueStat) - range-agnostic (unchanged)
 // -----------------------------
-//
-// We keep these because they can still be useful for ALL-time or as a fallback.
-// Your server can select which query string to use based on req.query.sort.
 
 export const Q_LEADERBOARD_BY_ROI = `
 query LeaderboardByRoi($leagues: [String!], $skip: Int!, $first: Int!) {
@@ -213,38 +166,50 @@ query LeaderboardByLastUpdated($leagues: [String!], $skip: Int!, $first: Int!) {
 `;
 
 // -----------------------------
-// User summary (legacy: bets + claims + stats)
+// User summary (legacy) - keep if you still use it
 // -----------------------------
-//
-// Keep this for any pages still using bets-based history.
-// Your new leaderboard dropdown should use the trades-based recent endpoint instead.
-
 export const Q_USER_SUMMARY = `
-query UserSummary($user: String!, $betsFirst: Int!, $claimsFirst: Int!, $statsFirst: Int!) {
+query UserSummary($user: String!, $tradesFirst: Int!, $claimsFirst: Int!, $statsFirst: Int!) {
   _meta { block { number } }
 
-  bets(
-    first: $betsFirst
+  trades(
+    first: $tradesFirst
     orderBy: timestamp
     orderDirection: desc
     where: { user: $user }
   ) {
     id
-    amountDec
-    grossAmount
-    fee
+    type
     timestamp
-    side
+    txHash
+
+    outcomeIndex
+    outcomeCode
+
+    spotPriceBps
+    avgPriceBps
+    grossInDec
+    grossOutDec
+    feeDec
+    netStakeDec
+    netOutDec
+    costBasisClosedDec
+    realizedPnlDec
+
     game {
       id
       league
+      lockTime
+      isFinal
+      marketType
+      outcomesCount
+      resolutionType
+      winningOutcomeIndex
+      winnerTeamCode
       teamACode
       teamBCode
       teamAName
       teamBName
-      lockTime
-      winnerSide
-      isFinal
     }
   }
 
@@ -262,7 +227,9 @@ query UserSummary($user: String!, $betsFirst: Int!, $claimsFirst: Int!, $statsFi
       league
       lockTime
       isFinal
-      winnerSide
+      resolutionType
+      winnerTeamCode
+      winningOutcomeIndex
     }
   }
 
@@ -279,7 +246,10 @@ query UserSummary($user: String!, $betsFirst: Int!, $claimsFirst: Int!, $statsFi
       league
       lockTime
       isFinal
-      winnerSide
+      marketType
+      outcomesCount
+      resolutionType
+      winningOutcomeIndex
       winnerTeamCode
       teamACode
       teamBCode
@@ -291,12 +261,8 @@ query UserSummary($user: String!, $betsFirst: Int!, $claimsFirst: Int!, $statsFi
 `;
 
 // -----------------------------
-// User trades (paged) - new
+// User activity page - TRADES ONLY (canonical)
 // -----------------------------
-//
-// If you want a generic trades page query (outside of masterMetrics.ts),
-// this is a clean canonical version.
-
 export const Q_USER_ACTIVITY_PAGE = `
 query UserActivityPage(
   $user: String!
@@ -305,7 +271,6 @@ query UserActivityPage(
   $end: BigInt!
   $first: Int!
   $skipTrades: Int!
-  $skipBets: Int!
 ) {
   _meta { block { number } }
 
@@ -321,9 +286,12 @@ query UserActivityPage(
   ) {
     id
     type
-    side
     timestamp
     txHash
+
+    outcomeIndex
+    outcomeCode
+
     spotPriceBps
     avgPriceBps
     grossInDec
@@ -333,182 +301,16 @@ query UserActivityPage(
     netOutDec
     costBasisClosedDec
     realizedPnlDec
-    game { id league lockTime isFinal winnerSide winnerTeamCode teamACode teamBCode teamAName teamBName }
-  }
 
-  bets(
-    first: $first
-    skip: $skipBets
-    where: {
-      user: $user
-      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
-    }
-    orderBy: timestamp
-    orderDirection: desc
-  ) {
-    id
-    timestamp
-    side
-    amountDec
-    grossAmount
-    fee
-    priceBps
-    sharesOutDec
-    game { id league lockTime isFinal winnerSide winnerTeamCode teamACode teamBCode teamAName teamBName }
-  }
-}
-`;
-
-export const Q_USER_BETS_WINDOW_PAGE = `
-query UserBetsWindowPage(
-  $user: String!
-  $leagues: [String!]!
-  $start: BigInt!
-  $end: BigInt!
-  $first: Int!
-  $skip: Int!
-) {
-  _meta { block { number } }
-
-  bets(
-    first: $first
-    skip: $skip
-    where: {
-      user: $user
-      game_: { league_in: $leagues, lockTime_gte: $start, lockTime_lte: $end }
-    }
-    orderBy: timestamp
-    orderDirection: desc
-  ) {
-    id
-    amountDec
-    grossAmount
-    fee
-    timestamp
-    side
-    priceBps
-    sharesOut
-    sharesOutDec
-    game {
-      id
-      league
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
-      lockTime
-      winnerSide
-      isFinal
-    }
-  }
-}
-`;
-
-
-// -----------------------------
-// User bets (paged) - legacy
-// -----------------------------
-export const Q_USER_BETS_PAGE = `
-query UserBetsPage($user: String!, $first: Int!, $skip: Int!) {
-  _meta { block { number } }
-
-  bets(
-    first: $first
-    skip: $skip
-    orderBy: timestamp
-    orderDirection: desc
-    where: { user: $user }
-  ) {
-    id
-    amountDec
-    grossAmount
-    fee
-    timestamp
-    side
-    priceBps
-    sharesOut
-    sharesOutDec
-    game {
-      id
-      league
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
-      lockTime
-      winnerSide
-      isFinal
-    }
-  }
-}
-`;
-
-// -----------------------------
-// User claims + stats (legacy)
-// -----------------------------
-export const Q_USER_CLAIMS_AND_STATS = `
-query UserClaimsAndStats($user: String!, $claimsFirst: Int!, $statsFirst: Int!) {
-  _meta { block { number } }
-
-  claims(
-    first: $claimsFirst
-    orderBy: timestamp
-    orderDirection: desc
-    where: { user: $user }
-  ) {
-    id
-    amountDec
-    timestamp
     game {
       id
       league
       lockTime
       isFinal
-      winnerSide
-    }
-  }
-
-  userGameStats(
-    first: $statsFirst
-    orderBy: game__lockTime
-    orderDirection: desc
-    where: { user: $user }
-  ) {
-    stakedDec
-    withdrawnDec
-    game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-    }
-  }
-}
-`;
-
-// -----------------------------
-// Bulk net (multiple users) - legacy bets-based v1/v2
-// -----------------------------
-export const Q_USERS_NET_BULK = `
-query UsersNetBulk($users: [String!]!, $first: Int!) {
-  _meta { block { number } }
-
-  userGameStats(
-    first: $first
-    where: { user_in: $users }
-    orderBy: game__lockTime
-    orderDirection: desc
-  ) {
-    user { id }
-    stakedDec
-    withdrawnDec
-    game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
+      marketType
+      outcomesCount
+      resolutionType
+      winningOutcomeIndex
       winnerTeamCode
       teamACode
       teamBCode
@@ -516,133 +318,8 @@ query UsersNetBulk($users: [String!]!, $first: Int!) {
       teamBName
     }
   }
-
-  claims(
-    first: $first
-    where: { user_in: $users }
-    orderBy: timestamp
-    orderDirection: desc
-  ) {
-    user { id }
-    amountDec
-    timestamp
-    game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
-    }
-  }
-
-  bets(
-    first: $first
-    where: { user_in: $users }
-    orderBy: timestamp
-    orderDirection: desc
-  ) {
-    user { id }
-    amountDec
-    grossAmount
-    fee
-    timestamp
-    side
-    game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
-    }
-  }
 }
 `;
-
-export const Q_USERS_NET_BULK_V2 = `
-query UsersNetBulkV2($users: [String!]!, $statsFirst: Int!, $claimsFirst: Int!, $betsFirst: Int!) {
-  _meta { block { number } }
-
-  userGameStats(
-    first: $statsFirst
-    where: { user_in: $users }
-    orderBy: game__lockTime
-    orderDirection: desc
-  ) {
-    user { id }
-    stakedDec
-    withdrawnDec
-    game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      winnerTeamCode
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
-    }
-  }
-
-  claims(
-    first: $claimsFirst
-    where: { user_in: $users }
-    orderBy: timestamp
-    orderDirection: desc
-  ) {
-    user { id }
-    amountDec
-    timestamp
-    game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
-    }
-  }
-
-  bets(
-    first: $betsFirst
-    where: { user_in: $users }
-    orderBy: timestamp
-    orderDirection: desc
-  ) {
-    user { id }
-    amountDec
-    grossAmount
-    fee
-    timestamp
-    side
-    game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
-    }
-  }
-}
-`;
-
-
 
 // -----------------------------
 // Helper: pick leaderboard query by sort
