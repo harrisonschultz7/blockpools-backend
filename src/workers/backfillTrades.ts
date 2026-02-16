@@ -10,11 +10,11 @@ import gamesJson from "../data/games.json";
  * One-time backfill:
  * - Discover all distinct user addresses from the subgraph (trades + bets + claims).
  * - For each user, page through ALL trades + bets + claims (window=ALL by default).
- * - Normalize + dedupe (bets+trades only), then UPSERT into Postgres tables.
+ * - Normalize + dedupe (trades+bets only), then UPSERT into Postgres tables.
  *
- * IMPORTANT (MULTI / 3-WAY):
- * - The draw/3-way outcome is represented by `trades.outcomeIndex/outcomeCode` on the subgraph.
- * - If we don't request outcomeIndex/outcomeCode, Supabase will store NULL and UI can't show DRAW.
+ * CRITICAL FIX:
+ * - Pull outcomeIndex/outcomeCode from `trades` (MULTI canonical)
+ * - When converting legacy `bets` -> tradeRows, DERIVE outcomeIndex/outcomeCode from side + team codes.
  *
  * Run (after build):
  *   node dist/workers/backfillTrades.js
@@ -68,14 +68,9 @@ query UsersFromClaims($leagues:[String!]!, $start:BigInt!, $end:BigInt!, $first:
 `;
 
 /**
- * Same activity query you already use (trades+bets), paged.
- *
- * ✅ CRITICAL FIX:
- * Include outcomeIndex/outcomeCode on `trades` so MULTI/3-way (DRAW) persists to Supabase.
- *
- * NOTE:
- * - `bets` in your legacy schema do not have outcomeIndex/outcomeCode (they only have `side`).
- * - For 3-way markets you should rely on `trades` for canonical outcomes.
+ * CRITICAL:
+ * - `trades` are canonical for MULTI and include outcomeIndex/outcomeCode.
+ * - `bets` are legacy binary and only have side; we convert them.
  */
 const Q_USER_ACTIVITY_PAGE_PAGED = `
 query UserActivityPagePaged(
@@ -96,10 +91,10 @@ query UserActivityPagePaged(
   ) {
     id
     type
-    side
     timestamp
     txHash
 
+    side
     outcomeIndex
     outcomeCode
 
@@ -114,20 +109,9 @@ query UserActivityPagePaged(
     realizedPnlDec
 
     game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      winnerTeamCode
-      winningOutcomeIndex
-      marketType
-      outcomesCount
-      resolutionType
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
+      id league lockTime isFinal winnerSide winnerTeamCode
+      marketType outcomesCount resolutionType winningOutcomeIndex
+      teamACode teamBCode teamAName teamBName
     }
   }
 
@@ -146,21 +130,11 @@ query UserActivityPagePaged(
     fee
     priceBps
     sharesOutDec
+
     game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      winnerTeamCode
-      winningOutcomeIndex
-      marketType
-      outcomesCount
-      resolutionType
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
+      id league lockTime isFinal winnerSide winnerTeamCode
+      marketType outcomesCount resolutionType winningOutcomeIndex
+      teamACode teamBCode teamAName teamBName
     }
   }
 }
@@ -188,20 +162,9 @@ query UserClaimsPaged(
     timestamp
     txHash
     game {
-      id
-      league
-      lockTime
-      isFinal
-      winnerSide
-      winnerTeamCode
-      winningOutcomeIndex
-      marketType
-      outcomesCount
-      resolutionType
-      teamACode
-      teamBCode
-      teamAName
-      teamBName
+      id league lockTime isFinal winnerSide winnerTeamCode
+      marketType outcomesCount resolutionType winningOutcomeIndex
+      teamACode teamBCode teamAName teamBName
     }
   }
 }
@@ -281,26 +244,20 @@ function sleep(ms: number) {
 }
 
 /**
- * Your games.json shape:
- * {
- *   "NFL": [ {contractAddress, ...}, ... ],
- *   "NBA": [ ... ],
- *   ...
- * }
- *
- * Normalize into a map keyed by lowercased contractAddress.
+ * games.json shape:
+ * { "NFL": [ {contractAddress, ...} ], "EPL": [ ... ], ... }
+ * We normalize into a map keyed by lowercased contractAddress.
  */
 function buildGameMetaByAddr(json: any): Record<string, GameMetaInput> {
   const out: Record<string, GameMetaInput> = {};
   const root = json && typeof json === "object" ? json : {};
 
   for (const leagueKey of Object.keys(root)) {
-    const arr = Array.isArray((root as any)[leagueKey]) ? (root as any)[leagueKey] : [];
+    const arr = Array.isArray(root[leagueKey]) ? root[leagueKey] : [];
     for (const g of arr) {
       const addr = String(g?.contractAddress || "").toLowerCase().trim();
       if (!addr) continue;
 
-      // handle mixed key casing / naming
       const teamACode = g?.teamACode ?? g?.teamA ?? null;
       const teamBCode = g?.teamBCode ?? g?.teamB ?? null;
 
@@ -313,7 +270,6 @@ function buildGameMetaByAddr(json: any): Record<string, GameMetaInput> {
         teamAName: g?.teamAName != null ? String(g.teamAName) : undefined,
         teamBName: g?.teamBName != null ? String(g.teamBName) : undefined,
 
-        // carry optional market meta (props / multi)
         marketType: g?.marketType != null ? String(g.marketType) : undefined,
         outcomesCount: g?.outcomesCount != null ? toNum(g.outcomesCount) : undefined,
         resolutionType: g?.resolutionType != null ? String(g.resolutionType) : undefined,
@@ -356,6 +312,16 @@ function attachMetaToGame(game: any, metaByAddr: Record<string, GameMetaInput>) 
     marketQuestion: game?.marketQuestion ?? meta.marketQuestion,
     marketShort: game?.marketShort ?? meta.marketShort,
   };
+}
+
+function deriveOutcomeFromSide(side: any, game: any): { outcomeIndex: number | null; outcomeCode: string | null } {
+  const s = String(side || "").toUpperCase().trim();
+  const a = game?.teamACode ? String(game.teamACode).toUpperCase().trim() : null;
+  const b = game?.teamBCode ? String(game.teamBCode).toUpperCase().trim() : null;
+
+  if (s === "A") return { outcomeIndex: 0, outcomeCode: a };
+  if (s === "B") return { outcomeIndex: 1, outcomeCode: b };
+  return { outcomeIndex: null, outcomeCode: null };
 }
 
 async function discoverUsers(leagues: string[], start: number, end: number) {
@@ -434,35 +400,27 @@ async function backfillUser(opts: {
     const trades = Array.isArray(data?.trades) ? data.trades : [];
     const bets = Array.isArray(data?.bets) ? data.bets : [];
 
-    // Bets -> persisted as BUY rows (legacy). These DO NOT carry multi outcomeIndex/outcomeCode.
+    // ✅ Convert legacy bets to tradeRows with DERIVED outcomeIndex/outcomeCode
     const betAsTrades = bets.map((b: any) => {
       const g0 = b?.game ?? {};
       const g = attachMetaToGame(g0, opts.metaByAddr);
 
       const ts = toNum(b?.timestamp);
-      const priceBps = b?.priceBps ?? b?.spotPriceBps ?? b?.avgPriceBps ?? null;
-      const sharesOutDec = b?.sharesOutDec ?? b?.sharesOut ?? null;
+      const priceBps = b?.priceBps ?? null;
 
-      // Legacy: outcomeIndex derived from side for A/B only (keeps older pools working)
-      const side = (b?.side ?? "A") as string;
-      const outcomeIndex =
-        String(side).toUpperCase() === "A" ? 0 : String(side).toUpperCase() === "B" ? 1 : null;
+      const { outcomeIndex, outcomeCode } = deriveOutcomeFromSide(b?.side, g);
 
       return {
         id: `bet-${b.id}`,
         type: "BUY",
-        side: side, // keep A/B for legacy
-        outcomeIndex, // ✅ helps binary pools; will be null for anything else
-        outcomeCode: null, // bets do not provide this in legacy schema
+        side: b?.side ?? null,
+        outcomeIndex,
+        outcomeCode,
         timestamp: ts,
         txHash: b?.txHash ?? null,
 
         spotPriceBps: priceBps,
         avgPriceBps: priceBps,
-
-        priceBps,
-        sharesOutDec,
-        sharesOut: b?.sharesOut ?? null,
 
         grossInDec: b?.grossAmount ?? "0",
         grossOutDec: "0",
@@ -472,12 +430,14 @@ async function backfillUser(opts: {
         costBasisClosedDec: "0",
         realizedPnlDec: "0",
 
+        sharesOutDec: b?.sharesOutDec ?? null,
+
         game: g,
         __source: "bet",
       };
     });
 
-    // Trades are canonical for MULTI (3-way). outcomeIndex/outcomeCode must be present.
+    // ✅ Trades are canonical for MULTI — keep outcomeIndex/outcomeCode from subgraph
     const tradeRows = trades.map((t: any) => {
       const g0 = t?.game ?? {};
       const g = attachMetaToGame(g0, opts.metaByAddr);
@@ -486,11 +446,8 @@ async function backfillUser(opts: {
         ...t,
         id: `trade-${t.id}`,
         timestamp: toNum(t?.timestamp),
-
-        // ✅ preserve multi fields from subgraph (critical)
-        outcomeIndex: t?.outcomeIndex ?? t?.outcome_index ?? null,
-        outcomeCode: t?.outcomeCode ?? t?.outcome_code ?? null,
-
+        outcomeIndex: t?.outcomeIndex ?? null,
+        outcomeCode: t?.outcomeCode ?? null,
         game: g,
         __source: "trade",
       };
@@ -509,7 +466,7 @@ async function backfillUser(opts: {
       await upsertUserTradesAndGames({
         user,
         tradeRows: deduped.rows,
-        gameMetaById: undefined, // we already injected into game; keep undefined
+        gameMetaById: undefined,
       });
       totalPersistedRows += deduped.rows.length;
     }
@@ -547,9 +504,7 @@ async function backfillUser(opts: {
       return {
         id: `claim-${c.id}`,
         type: "CLAIM",
-        side: "C", // ✅ reserved for CLAIM
-        outcomeIndex: null,
-        outcomeCode: null,
+        side: "C",
         timestamp: ts,
         txHash: c?.txHash ?? null,
 
