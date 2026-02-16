@@ -9,23 +9,17 @@ type TradeAggRow = {
   league: string;
   dateTs: number;
 
-  /**
-   * GAME markets: "SEA vs NE" etc
-   * PROP markets: default to question / short question
-   */
   gameLabel: string;
 
-  // ✅ metadata (optional)
-  marketType?: MarketType; // "GAME" | "PROP"
+  marketType?: MarketType;
   topic?: string;
   marketQuestion?: string;
   marketShort?: string;
 
-  // ✅ canonical key for MULTI (and BINARY via fallback)
   outcomeIndex: number | null;
   outcomeCode: string | null;
 
-  // ✅ keep legacy side for older consumers (derived: 0->A, 1->B else null)
+  // legacy side (binary-only consumers)
   side: "A" | "B" | null;
 
   predictionCode: string;
@@ -38,17 +32,14 @@ type TradeAggRow = {
   claimAmount?: number;
   sellAmount?: number;
 
-  // legacy team fields (still useful for BINARY display)
   teamACode?: string;
   teamBCode?: string;
 
   isFinal?: boolean;
 
-  // ✅ multi winner (optional)
   winningOutcomeIndex?: number | null;
   winningOutcomeCode?: string | null;
 
-  // legacy winnerSide for old UI (BINARY only; null for MULTI)
   winnerSide?: "A" | "B" | "TIE" | null;
 
   roi: number | null;
@@ -59,9 +50,7 @@ type TradeAggRow = {
 
 function clampPageSize(v: any) {
   const n = parseInt(String(v || "10"), 10);
-  const min = 1;
-  const max = 50;
-  return Math.max(min, Math.min(max, n));
+  return Math.max(1, Math.min(50, n));
 }
 
 function clampPage(v: any) {
@@ -125,6 +114,16 @@ async function handleTradeAgg(req: any, res: any) {
 
   const client = await pool.connect();
   try {
+    /**
+     * ✅ Canonical outcome index convention:
+     *  - 0 = Team A
+     *  - 1 = DRAW (soccer 3-way)
+     *  - 2 = Team B
+     *
+     * ✅ Legacy side mapping:
+     *  - For EPL/UCL: A->0, C->1, B->2
+     *  - Else:        A->0, B->1, C->2 (legacy tie)
+     */
     const countSql = `
       WITH pos AS (
         SELECT
@@ -133,20 +132,85 @@ async function handleTradeAgg(req: any, res: any) {
           COALESCE(
             e.outcome_index,
             CASE
-              WHEN e.side='A' THEN 0
-              WHEN e.side='B' THEN 1
-              WHEN e.side='C' THEN 2 -- ✅ DRAW legacy (BUY/SELL only; CLAIM is filtered out)
-              ELSE NULL
+              WHEN g.league IN ('EPL','UCL') THEN
+                CASE
+                  WHEN e.side='A' THEN 0
+                  WHEN e.side='C' THEN 1  -- DRAW
+                  WHEN e.side='B' THEN 2  -- away
+                  ELSE NULL
+                END
+              ELSE
+                CASE
+                  WHEN e.side='A' THEN 0
+                  WHEN e.side='B' THEN 1
+                  WHEN e.side='C' THEN 2
+                  ELSE NULL
+                END
             END
           ) AS outcome_index,
 
           COALESCE(
             e.outcome_code,
             CASE
-              WHEN e.outcome_index IS NOT NULL THEN e.outcome_code
-              WHEN e.side='A' THEN g.team_a_code
-              WHEN e.side='B' THEN g.team_b_code
-              WHEN e.side='C' THEN 'DRAW'
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 0 THEN g.team_a_code
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 1 THEN
+                CASE WHEN g.league IN ('EPL','UCL') THEN 'DRAW' ELSE g.team_b_code END
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 2 THEN
+                CASE WHEN g.league IN ('EPL','UCL') THEN g.team_b_code ELSE 'TIE' END
               ELSE NULL
             END
           ) AS outcome_code,
@@ -162,26 +226,91 @@ async function handleTradeAgg(req: any, res: any) {
           AND e.type IN ('BUY','SELL')
           AND (
             e.outcome_index IS NOT NULL
-            OR e.side IN ('A','B','C') -- ✅ include legacy DRAW in positions
+            OR e.side IN ('A','B','C')
           )
         GROUP BY
           e.game_id,
           COALESCE(
             e.outcome_index,
             CASE
-              WHEN e.side='A' THEN 0
-              WHEN e.side='B' THEN 1
-              WHEN e.side='C' THEN 2
-              ELSE NULL
+              WHEN g.league IN ('EPL','UCL') THEN
+                CASE
+                  WHEN e.side='A' THEN 0
+                  WHEN e.side='C' THEN 1
+                  WHEN e.side='B' THEN 2
+                  ELSE NULL
+                END
+              ELSE
+                CASE
+                  WHEN e.side='A' THEN 0
+                  WHEN e.side='B' THEN 1
+                  WHEN e.side='C' THEN 2
+                  ELSE NULL
+                END
             END
           ),
           COALESCE(
             e.outcome_code,
             CASE
-              WHEN e.outcome_index IS NOT NULL THEN e.outcome_code
-              WHEN e.side='A' THEN g.team_a_code
-              WHEN e.side='B' THEN g.team_b_code
-              WHEN e.side='C' THEN 'DRAW'
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 0 THEN g.team_a_code
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 1 THEN
+                CASE WHEN g.league IN ('EPL','UCL') THEN 'DRAW' ELSE g.team_b_code END
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 2 THEN
+                CASE WHEN g.league IN ('EPL','UCL') THEN g.team_b_code ELSE 'TIE' END
               ELSE NULL
             END
           )
@@ -212,6 +341,7 @@ async function handleTradeAgg(req: any, res: any) {
         SELECT game_id, NULL::int AS outcome_index FROM claim_only_games
       ) x
     `;
+
     const countRes = await client.query(countSql, params.slice(0, 4));
     const totalRows = Number(countRes.rows?.[0]?.cnt || 0);
 
@@ -223,20 +353,85 @@ async function handleTradeAgg(req: any, res: any) {
           COALESCE(
             e.outcome_index,
             CASE
-              WHEN e.side='A' THEN 0
-              WHEN e.side='B' THEN 1
-              WHEN e.side='C' THEN 2 -- ✅ DRAW legacy (BUY/SELL only)
-              ELSE NULL
+              WHEN g.league IN ('EPL','UCL') THEN
+                CASE
+                  WHEN e.side='A' THEN 0
+                  WHEN e.side='C' THEN 1  -- DRAW
+                  WHEN e.side='B' THEN 2  -- away
+                  ELSE NULL
+                END
+              ELSE
+                CASE
+                  WHEN e.side='A' THEN 0
+                  WHEN e.side='B' THEN 1
+                  WHEN e.side='C' THEN 2
+                  ELSE NULL
+                END
             END
           ) AS outcome_index,
 
           COALESCE(
             e.outcome_code,
             CASE
-              WHEN e.outcome_index IS NOT NULL THEN e.outcome_code
-              WHEN e.side='A' THEN g.team_a_code
-              WHEN e.side='B' THEN g.team_b_code
-              WHEN e.side='C' THEN 'DRAW'
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 0 THEN g.team_a_code
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 1 THEN
+                CASE WHEN g.league IN ('EPL','UCL') THEN 'DRAW' ELSE g.team_b_code END
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 2 THEN
+                CASE WHEN g.league IN ('EPL','UCL') THEN g.team_b_code ELSE 'TIE' END
               ELSE NULL
             END
           ) AS outcome_code,
@@ -257,7 +452,6 @@ async function handleTradeAgg(req: any, res: any) {
           END AS all_in_price_bps,
 
           COALESCE(SUM(e.net_out_dec::numeric) FILTER (WHERE e.type='SELL'), 0)::numeric AS sell_amount,
-
           MAX(e.timestamp)::bigint AS last_activity_ts
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
@@ -267,26 +461,91 @@ async function handleTradeAgg(req: any, res: any) {
           AND e.type IN ('BUY','SELL')
           AND (
             e.outcome_index IS NOT NULL
-            OR e.side IN ('A','B','C') -- ✅ include legacy DRAW in positions
+            OR e.side IN ('A','B','C')
           )
         GROUP BY
           e.game_id,
           COALESCE(
             e.outcome_index,
             CASE
-              WHEN e.side='A' THEN 0
-              WHEN e.side='B' THEN 1
-              WHEN e.side='C' THEN 2
-              ELSE NULL
+              WHEN g.league IN ('EPL','UCL') THEN
+                CASE
+                  WHEN e.side='A' THEN 0
+                  WHEN e.side='C' THEN 1
+                  WHEN e.side='B' THEN 2
+                  ELSE NULL
+                END
+              ELSE
+                CASE
+                  WHEN e.side='A' THEN 0
+                  WHEN e.side='B' THEN 1
+                  WHEN e.side='C' THEN 2
+                  ELSE NULL
+                END
             END
           ),
           COALESCE(
             e.outcome_code,
             CASE
-              WHEN e.outcome_index IS NOT NULL THEN e.outcome_code
-              WHEN e.side='A' THEN g.team_a_code
-              WHEN e.side='B' THEN g.team_b_code
-              WHEN e.side='C' THEN 'DRAW'
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 0 THEN g.team_a_code
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 1 THEN
+                CASE WHEN g.league IN ('EPL','UCL') THEN 'DRAW' ELSE g.team_b_code END
+              WHEN COALESCE(
+                e.outcome_index,
+                CASE
+                  WHEN g.league IN ('EPL','UCL') THEN
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='C' THEN 1
+                      WHEN e.side='B' THEN 2
+                      ELSE NULL
+                    END
+                  ELSE
+                    CASE
+                      WHEN e.side='A' THEN 0
+                      WHEN e.side='B' THEN 1
+                      WHEN e.side='C' THEN 2
+                      ELSE NULL
+                    END
+                END
+              ) = 2 THEN
+                CASE WHEN g.league IN ('EPL','UCL') THEN g.team_b_code ELSE 'TIE' END
               ELSE NULL
             END
           )
@@ -384,11 +643,9 @@ async function handleTradeAgg(req: any, res: any) {
         g.lock_time,
         g.is_final,
 
-        -- legacy binary winner fields
         g.winner_side,
         g.winner_team_code,
 
-        -- ✅ multi winner index (games has index; NOT necessarily a code column)
         g.winning_outcome_index,
 
         g.team_a_code,
@@ -396,7 +653,6 @@ async function handleTradeAgg(req: any, res: any) {
         g.team_a_name,
         g.team_b_name,
 
-        -- ✅ PROP FIELDS
         g.market_type,
         g.topic,
         g.market_question,
@@ -421,35 +677,28 @@ async function handleTradeAgg(req: any, res: any) {
       const marketQuestion = safeStr(r.market_question).trim() || undefined;
       const marketShort = safeStr(r.market_short).trim() || undefined;
 
-      const outcomeIndex =
-        r.outcome_index != null
-          ? Number(r.outcome_index)
-          : r.side === "A"
-            ? 0
-            : r.side === "B"
-              ? 1
-              : r.side === "C"
-                ? 2
-                : null;
+      const outcomeIndex = r.outcome_index != null ? Number(r.outcome_index) : null;
 
+      // ✅ Correct 3-way inference: 0=A, 1=DRAW, 2=B
       const outcomeCode =
         r.outcome_code != null
           ? String(r.outcome_code)
           : outcomeIndex === 0
             ? teamACode ?? null
             : outcomeIndex === 1
-              ? teamBCode ?? null
+              ? "DRAW"
               : outcomeIndex === 2
-                ? "DRAW"
+                ? teamBCode ?? null
                 : null;
 
-      const side: "A" | "B" | null = outcomeIndex === 0 ? "A" : outcomeIndex === 1 ? "B" : null;
+      // ✅ legacy binary side: only map 0->A, 2->B (NOT 1)
+      // (so DRAW doesn't pretend to be "B")
+      const side: "A" | "B" | null =
+        outcomeIndex === 0 ? "A" : outcomeIndex === 2 ? "B" : null;
 
-      const predictionCode = outcomeCode || side || "—";
-
+      const predictionCode = outcomeCode || "—";
       const isFinal = r.is_final == null ? undefined : Boolean(r.is_final);
 
-      // ✅ multi winner (index only; code inferred for 0/1/2)
       const winningOutcomeIndex =
         r.winning_outcome_index == null ? null : Number(r.winning_outcome_index);
 
@@ -459,12 +708,12 @@ async function handleTradeAgg(req: any, res: any) {
           : winningOutcomeIndex === 0
             ? (teamACode ?? null)
             : winningOutcomeIndex === 1
-              ? (teamBCode ?? null)
+              ? "DRAW"
               : winningOutcomeIndex === 2
-                ? "DRAW"
+                ? (teamBCode ?? null)
                 : null;
 
-      // legacy binary winner
+      // legacy binary winnerSide (only if no winningOutcomeIndex)
       let winnerSide: "A" | "B" | "TIE" | null = null;
       const ws = r.winner_side == null ? "" : String(r.winner_side).toUpperCase().trim();
       const wtc = r.winner_team_code == null ? "" : String(r.winner_team_code).toUpperCase().trim();
@@ -477,7 +726,6 @@ async function handleTradeAgg(req: any, res: any) {
 
       const buyGross = safeNum(r.buy_gross);
       const sellAmount = safeNum(r.sell_amount);
-
       const allInPriceBps = r.all_in_price_bps == null ? null : Math.round(Number(r.all_in_price_bps));
 
       const claimGame = safeNum(r.claim_amount);
@@ -487,16 +735,14 @@ async function handleTradeAgg(req: any, res: any) {
 
       if (claimGame > 0 && isFinal) {
         if (winningOutcomeIndex != null) {
-          // MULTI/3-way: claim only to winning outcome index
+          // MULTI: claim only to winning outcome index
           claimAlloc = outcomeIndex === winningOutcomeIndex ? claimGame : 0;
         } else if (winnerSide === "A" || winnerSide === "B") {
-          // BINARY legacy
+          // legacy binary
           claimAlloc = side === winnerSide ? claimGame : 0;
         } else if (winnerSide === "TIE") {
-          // BINARY legacy tie: split pro-rata across A/B rows by buyGross
+          // legacy tie: split pro-rata across A/B rows by buyGross
           claimAlloc = totalBuyGrossGame > 0 ? (claimGame * buyGross) / totalBuyGrossGame : 0;
-        } else {
-          claimAlloc = 0;
         }
       } else if (claimGame > 0 && outcomeIndex == null) {
         // claim-only defensive row
@@ -528,7 +774,9 @@ async function handleTradeAgg(req: any, res: any) {
             : String(r.game_id);
 
       const gameLabel =
-        marketType === "PROP" ? (marketShort || marketQuestion || topic || defaultGameLabel) : defaultGameLabel;
+        marketType === "PROP"
+          ? (marketShort || marketQuestion || topic || defaultGameLabel)
+          : defaultGameLabel;
 
       const lastActivityTsRaw = safeNum(r.last_activity_ts);
       const lastClaimTsRaw = safeNum(r.last_claim_ts);
@@ -545,8 +793,8 @@ async function handleTradeAgg(req: any, res: any) {
         marketQuestion,
         marketShort,
 
-        outcomeIndex: outcomeIndex == null ? null : outcomeIndex,
-        outcomeCode: outcomeCode,
+        outcomeIndex,
+        outcomeCode,
 
         side,
         predictionCode,
