@@ -230,8 +230,8 @@ export async function upsertUserTradesAndGames(opts: {
 
       const outcomeIndexRaw = toNumOrNull(r?.outcomeIndex ?? r?.outcome_index);
 
-      // ✅ IMPORTANT: some historical 3-way pipelines emit DRAW as side='C' on BUY/SELL (legacy)
-      // If it's NOT a CLAIM and outcomeIndex is missing, infer draw outcomeIndex=2.
+      // ✅ In case any legacy pipeline ever encoded DRAW as side='C' on BUY/SELL:
+      // infer outcomeIndex=2 if not CLAIM and outcomeIndex is missing.
       const inferredOutcomeIndex =
         tType !== "CLAIM" && rawSide === "C" && outcomeIndexRaw == null ? 2 : outcomeIndexRaw;
 
@@ -369,17 +369,22 @@ export async function upsertUserTradesAndGames(opts: {
   try {
     await client.query("BEGIN");
 
-    // Upsert games
+    // =========================
+    // Upsert games (✅ no _reserved column)
+    // =========================
     if (games.length) {
       const values: any[] = [];
       const chunks: string[] = [];
 
-      // 18 columns
+      // ✅ 17 columns
       games.forEach((g, i) => {
-        const base = i * 18;
+        const base = i * 17;
         chunks.push(
-          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17},$${base + 18})`
+          `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},` +
+            `$${base + 7},$${base + 8},$${base + 9},$${base + 10},$${base + 11},$${base + 12},` +
+            `$${base + 13},$${base + 14},$${base + 15},$${base + 16},$${base + 17})`
         );
+
         values.push(
           g.gameId,
           g.league,
@@ -400,9 +405,7 @@ export async function upsertUserTradesAndGames(opts: {
 
           g.topic,
           g.marketQuestion,
-          g.marketShort,
-
-          null // reserved placeholder
+          g.marketShort
         );
       });
 
@@ -412,8 +415,7 @@ export async function upsertUserTradesAndGames(opts: {
           (game_id, league, lock_time, is_final, winner_side, winner_team_code,
            market_type, outcomes_count, resolution_type, winning_outcome_index,
            team_a_code, team_b_code, team_a_name, team_b_name,
-           topic, market_question, market_short,
-           _reserved)
+           topic, market_question, market_short)
         VALUES ${chunks.join(",")}
         ON CONFLICT (game_id) DO UPDATE SET
           league = COALESCE(EXCLUDED.league, public.games.league),
@@ -441,7 +443,9 @@ export async function upsertUserTradesAndGames(opts: {
       );
     }
 
+    // =========================
     // Upsert trade ledger
+    // =========================
     if (trades.length) {
       const values: any[] = [];
       const chunks: string[] = [];
