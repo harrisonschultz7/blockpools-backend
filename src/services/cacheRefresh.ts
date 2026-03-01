@@ -179,6 +179,27 @@ export async function serveWithStaleWhileRevalidate(opts: {
   };
 }
 
+// -------------------- cache bust --------------------
+
+/**
+ * Wipes all in-memory cache entries for a given user address.
+ * Call this immediately after a claim/trade tx confirms so the next
+ * request fetches fresh data instead of serving stale cache.
+ */
+export function bustUserCache(address: string): number {
+  const addr = address.toLowerCase();
+  let count = 0;
+  for (const key of mem.keys()) {
+    if (key.includes(addr)) {
+      mem.delete(key);
+      lastRevalidateAt.delete(key);
+      count++;
+    }
+  }
+  console.log(`[bustUserCache] cleared ${count} entries for ${addr}`);
+  return count;
+}
+
 // -------------------- helpers --------------------
 
 function normalizeLeagues(leagues: string[] | undefined) {

@@ -6,7 +6,6 @@ import {
   keyUserBetsPage,
   keyUserClaimsAndStats,
   keyUserSummary,
-  // NEW
   keyUserTradesPage,
 } from "../cache/cacheKeys";
 import {
@@ -15,8 +14,8 @@ import {
   refreshUserBetsPage,
   refreshUserClaimsAndStats,
   refreshUserSummary,
-  // NEW
   refreshUserTradesPage,
+  bustUserCache,
 } from "../services/cacheRefresh";
 
 function clampPageSize(v: any) {
@@ -40,6 +39,18 @@ export const cacheRoutes = Router();
 
 cacheRoutes.get("/meta", async (_req, res) => {
   res.json({ ok: true, now: new Date().toISOString() });
+});
+
+// ------------------------------------------------------------
+// Cache bust — call immediately after a claim/trade tx confirms
+// POST /cache/user/:address/bust
+// ------------------------------------------------------------
+cacheRoutes.post("/user/:address/bust", async (req, res) => {
+  const address = normAddr(String(req.params.address));
+  if (!assertAddr(address)) return res.status(400).json({ error: "Invalid address" });
+
+  const cleared = bustUserCache(address);
+  res.json({ ok: true, busted: address, cleared });
 });
 
 // ------------------------------------------------------------
@@ -77,7 +88,7 @@ cacheRoutes.get("/leaderboard", async (req, res) => {
 // User dropdown summary (bets + claims + userGameStats)
 // GET /cache/user/:address/summary?first=20
 //
-// NOTE: This is legacy “summary”, not a trade ledger.
+// NOTE: This is legacy "summary", not a trade ledger.
 // It will never include SELL.
 // ------------------------------------------------------------
 cacheRoutes.get("/user/:address/summary", async (req, res) => {
@@ -108,11 +119,8 @@ cacheRoutes.get("/user/:address/summary", async (req, res) => {
 });
 
 // ------------------------------------------------------------
-// User trade ledger (BUY + SELL) - NEW
+// User trade ledger (BUY + SELL)
 // GET /cache/user/:address/trades?page=1&pageSize=25&league=ALL&range=ALL
-//
-// This is the endpoint your frontend should use for “trade history”
-// if you want SELL rows to appear as their own entries.
 // ------------------------------------------------------------
 cacheRoutes.get("/user/:address/trades", async (req, res) => {
   const address = normAddr(String(req.params.address));
@@ -139,17 +147,13 @@ cacheRoutes.get("/user/:address/trades", async (req, res) => {
     scope: "user",
   });
 
-  // Trades change a bit less frequently; same caching policy is fine
   res.setHeader("Cache-Control", "public, max-age=2, stale-while-revalidate=15");
-  // payload should be { meta, rows } where rows include `type: BUY|SELL`
   res.json({ ok: true, ...out.payload, cache: out.meta });
 });
 
 // ------------------------------------------------------------
 // User trade history (paginated bets) - LEGACY
 // GET /cache/user/:address/bets?page=1&pageSize=10
-//
-// This is buy-only (bets entity). KEEP for backward compatibility.
 // ------------------------------------------------------------
 cacheRoutes.get("/user/:address/bets", async (req, res) => {
   const address = normAddr(String(req.params.address));
