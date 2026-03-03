@@ -187,7 +187,7 @@ async function fetchLeaderboardAggFromDb(params: {
     )
     SELECT
       user_id,
-      SUM(gross_in) FILTER (WHERE type = 'BUY')::numeric       AS buy_gross,
+      SUM(gross_in) FILTER (WHERE type = 'BUY' AND g.is_final = true AND g.resolution_type = 'NORMAL')::numeric AS buy_gross,
       SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric     AS claim_total,
       SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric      AS sell_net_out,
       COUNT(*)      FILTER (WHERE type IN ('BUY','SELL'))::int AS trade_count,
@@ -229,7 +229,7 @@ async function fetchLeaderboardAggFromDb(params: {
     SELECT
       user_id,
       league,
-      SUM(gross_in) FILTER (WHERE type='BUY')::numeric AS buy_gross
+      SUM(gross_in) FILTER (WHERE type='BUY' AND g.is_final = true AND g.resolution_type = 'NORMAL')::numeric AS buy_gross
     FROM filtered
     GROUP BY user_id, league
   `;
