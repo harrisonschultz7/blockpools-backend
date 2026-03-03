@@ -175,6 +175,8 @@ async function fetchLeaderboardAggFromDb(params: {
         g.league AS league,
         e.game_id,
         e.type,
+        g.is_final,
+        g.resolution_type,
         (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in,
         (CASE WHEN e.net_out_dec  IS NULL THEN 0 ELSE e.net_out_dec::numeric  END) AS net_out,
         e.timestamp::bigint AS ts
@@ -187,7 +189,7 @@ async function fetchLeaderboardAggFromDb(params: {
     )
     SELECT
       user_id,
-      SUM(gross_in) FILTER (WHERE type = 'BUY' AND g.is_final = true AND g.resolution_type = 'NORMAL')::numeric AS buy_gross,
+      SUM(gross_in) FILTER (WHERE type = 'BUY' AND is_final = true AND resolution_type = 'NORMAL')::numeric AS buy_gross,
       SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric     AS claim_total,
       SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric      AS sell_net_out,
       COUNT(*)      FILTER (WHERE type IN ('BUY','SELL'))::int AS trade_count,
@@ -218,6 +220,8 @@ async function fetchLeaderboardAggFromDb(params: {
         LOWER(e.user_address) AS user_id,
         g.league AS league,
         e.type,
+        g.is_final,
+        g.resolution_type,
         (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in
       FROM public.user_trade_events e
       JOIN public.games g ON g.game_id = e.game_id
@@ -229,7 +233,7 @@ async function fetchLeaderboardAggFromDb(params: {
     SELECT
       user_id,
       league,
-      SUM(gross_in) FILTER (WHERE type='BUY' AND g.is_final = true AND g.resolution_type = 'NORMAL')::numeric AS buy_gross
+      SUM(gross_in) FILTER (WHERE type='BUY' AND is_final = true AND resolution_type = 'NORMAL')::numeric AS buy_gross
     FROM filtered
     GROUP BY user_id, league
   `;
