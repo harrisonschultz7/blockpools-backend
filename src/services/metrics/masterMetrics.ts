@@ -179,6 +179,8 @@ async function fetchLeaderboardAggFromDb(params: {
         g.resolution_type,
         (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in,
         (CASE WHEN e.net_out_dec  IS NULL THEN 0 ELSE e.net_out_dec::numeric  END) AS net_out,
+        -- cost_basis_closed_dec = original buy amount for positions that were sold
+        (CASE WHEN e.cost_basis_closed_dec IS NULL THEN 0 ELSE e.cost_basis_closed_dec::numeric END) AS cost_basis_closed,
         e.timestamp::bigint AS ts
       FROM public.user_trade_events e
       JOIN public.games g ON g.game_id = e.game_id
@@ -189,7 +191,12 @@ async function fetchLeaderboardAggFromDb(params: {
     )
     SELECT
       user_id,
-      SUM(gross_in) FILTER (WHERE type = 'BUY' AND is_final = true AND resolution_type = 'NORMAL')::numeric AS buy_gross,
+      -- Realized buy gross = BUY on finalized games + cost_basis_closed on SELL rows (sold positions)
+      -- Excludes open/pending positions that have not yet settled
+      (
+        COALESCE(SUM(gross_in) FILTER (WHERE type = 'BUY' AND is_final = true AND resolution_type = 'NORMAL'), 0)
+        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL'), 0)
+      )::numeric AS buy_gross,
       SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric     AS claim_total,
       SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric      AS sell_net_out,
       COUNT(*)      FILTER (WHERE type IN ('BUY','SELL'))::int AS trade_count,
@@ -222,7 +229,8 @@ async function fetchLeaderboardAggFromDb(params: {
         e.type,
         g.is_final,
         g.resolution_type,
-        (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in
+        (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in,
+        (CASE WHEN e.cost_basis_closed_dec IS NULL THEN 0 ELSE e.cost_basis_closed_dec::numeric END) AS cost_basis_closed
       FROM public.user_trade_events e
       JOIN public.games g ON g.game_id = e.game_id
       WHERE e.timestamp >= $1
@@ -233,7 +241,10 @@ async function fetchLeaderboardAggFromDb(params: {
     SELECT
       user_id,
       league,
-      SUM(gross_in) FILTER (WHERE type='BUY' AND is_final = true AND resolution_type = 'NORMAL')::numeric AS buy_gross
+      (
+        COALESCE(SUM(gross_in) FILTER (WHERE type='BUY' AND is_final = true AND resolution_type = 'NORMAL'), 0)
+        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL'), 0)
+      )::numeric AS buy_gross
     FROM filtered
     GROUP BY user_id, league
   `;
