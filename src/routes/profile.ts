@@ -1,15 +1,26 @@
 // src/routes/profile.ts
+
+/**
+ * IMPORTANT:
+ * Do NOT default to localhost in production.
+ * Set VITE_API_BASE_URL in your frontend env (Vercel/Netlify/etc):
+ *   VITE_API_BASE_URL=https://api.blockpools.io
+ */
 import { Router, Response, NextFunction } from "express";
 import { pool } from "../db";
 import { authPrivy, AuthedRequest } from "../middleware/authPrivy";
 import multer from "multer";
 import path from "path";
 import { PrivyClient } from "@privy-io/server-auth";
+import { Resend } from "resend";
 
 // ✅ Portfolio builder (create this file OR point this import to wherever your builder lives)
 import { buildProfilePortfolio } from "../services/profilePortfolio";
 
 const router = Router();
+
+// ── Resend client ────────────────────────────────────────────────────────────
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Store avatar files under /uploads/avatars (relative to compiled server)
 const upload = multer({
@@ -197,6 +208,7 @@ router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
 /**
  * POST /api/profile
  * Creates or updates current user's profile.
+ * ── On first-time creation: saves email + fires Resend welcome email ──
  */
 router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
   try {
@@ -208,7 +220,9 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
     const primaryAddress = req.user.primaryAddress.toLowerCase();
     const eoaAddress = req.user.eoaAddress ? req.user.eoaAddress.toLowerCase() : null;
 
-    const { username, display_name, x_handle, instagram_handle, avatar_url } = req.body || {};
+    // ── Pull email from the request body (sent by frontend from Privy) ──
+    const { username, display_name, x_handle, instagram_handle, avatar_url, email } =
+      req.body || {};
 
     if (!username || typeof username !== "string") {
       return res.status(400).json({ error: "username is required" });
@@ -216,6 +230,14 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     const now = new Date().toISOString();
 
+    // ── Check if this is a brand-new user (no existing row) ──
+    const existingUser = await pool.query(
+      `SELECT id, email FROM users WHERE id = $1 LIMIT 1`,
+      [userId]
+    );
+    const isNewUser = existingUser.rows.length === 0;
+
+    // ── Upsert the user row, now including email ──
     const result = await pool.query(
       `
       INSERT INTO users (
@@ -227,10 +249,11 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         x_handle,
         instagram_handle,
         avatar_url,
+        email,
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
       ON CONFLICT (id) DO UPDATE SET
         primary_address   = EXCLUDED.primary_address,
         eoa_address       = EXCLUDED.eoa_address,
@@ -239,6 +262,7 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         x_handle          = EXCLUDED.x_handle,
         instagram_handle  = EXCLUDED.instagram_handle,
         avatar_url        = EXCLUDED.avatar_url,
+        email             = COALESCE(EXCLUDED.email, users.email),
         updated_at        = EXCLUDED.updated_at
       RETURNING
         id,
@@ -249,6 +273,7 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         x_handle,
         instagram_handle,
         avatar_url,
+        email,
         created_at,
         updated_at
       `,
@@ -261,12 +286,47 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         x_handle ?? null,
         instagram_handle ?? null,
         avatar_url ?? null,
+        email ?? null,
         now,
       ]
     );
 
+    const savedProfile = result.rows[0];
+
+    // ── Send welcome email only on first-time profile creation ──
+    if (isNewUser && savedProfile.email) {
+      try {
+        await resend.emails.send({
+          from: process.env.RESEND_FROM_EMAIL || "BlockPools <Welcome@mail.blockpools.io>",
+          to: savedProfile.email,
+          subject: "Welcome to BlockPools",
+          // Use your Resend template — pass the slug via template ID
+          // If using Resend's template feature:
+          // template: "welcome-email-post-sign-up",
+          // data: { username: savedProfile.username },
+          //
+          // OR if you prefer inline HTML (swap in your real template HTML):
+          html: `
+            <!DOCTYPE html>
+            <html>
+              <body style="background:#0f0f1a;color:#fff;font-family:sans-serif;padding:40px;">
+                <p>Hi ${savedProfile.username},</p>
+                <p>Welcome to BlockPools — where odds are driven by traders, not sportsbooks.</p>
+                <p>You're among the first users helping build a new kind of sports market. We're actively rolling out new markets and features, with a big focus on profiles and performance stats so you can track and showcase your edge.</p>
+                <p>— Harrison, Founder of BlockPools</p>
+              </body>
+            </html>
+          `,
+        });
+        console.log(`[Welcome Email] Sent to ${savedProfile.email} (userId: ${userId})`);
+      } catch (emailErr) {
+        // Never let email failure block the profile save response
+        console.error("[Welcome Email] Failed to send:", emailErr);
+      }
+    }
+
     const publicBaseUrl = getPublicBaseUrl(req);
-    return res.json(normalizeProfileRow(result.rows[0], publicBaseUrl));
+    return res.json(normalizeProfileRow(savedProfile, publicBaseUrl));
   } catch (err) {
     console.error("[POST /api/profile] error", err);
     return res.status(500).json({ error: "Internal server error" });
@@ -351,18 +411,17 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
         u.instagram_handle,
         u.avatar_url,
         u.created_at,
-        u.updated_at,
-        (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
-        (SELECT COUNT(*) FROM user_follows WHERE follower_id = u.id) AS "followingCount"
+        u.updated_at
       FROM users u
-      WHERE LOWER(u.primary_address) = ANY($1::text[])
-         OR LOWER(u.eoa_address)    = ANY($1::text[])
+      WHERE u.primary_address = ANY($1::text[])
+         OR u.eoa_address     = ANY($1::text[])
       `,
       [addrLower]
     );
 
     const publicBaseUrl = getPublicBaseUrl(req);
-    return res.json((result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl)));
+    const data = (result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl));
+    return res.json(data);
   } catch (err) {
     console.error("[POST /api/profile/by-addresses] error", err);
     return res.status(500).json({ error: "Internal server error" });
@@ -370,67 +429,18 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
 });
 
 /**
- * ✅ Recommended: GET /api/profile/by-id?profileId=<users.id>
- * Public lookup by users.id (Privy DID) using query param (avoids path encoding issues).
- * If Authorization bearer is present+valid, includes is_followed_by_me.
+ * GET /api/profile/by-id?profileId=...
+ * Public profile lookup by ID (users.id).
+ * Optionally uses auth to get is_followed_by_me flag.
  */
 router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response) => {
   try {
-    const profileId = typeof req.query.profileId === "string" ? req.query.profileId : "";
+    const profileId = req.query.profileId as string;
     if (!profileId) return res.status(400).json({ error: "profileId is required" });
 
-    const viewerId = req.user?.id;
-    const params = viewerId ? [profileId, viewerId] : [profileId];
-
-    const result = await pool.query(
-      `
-      SELECT
-        u.id,
-        u.primary_address,
-        u.eoa_address,
-        u.username,
-        u.display_name,
-        u.x_handle,
-        u.instagram_handle,
-        u.avatar_url,
-        u.created_at,
-        u.updated_at,
-        (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
-        (SELECT COUNT(*) FROM user_follows WHERE follower_id = u.id) AS "followingCount"
-        ${viewerId ? `,
-        EXISTS (
-          SELECT 1 FROM user_follows
-          WHERE follower_id = $2 AND following_id = u.id
-        ) AS "is_followed_by_me"` : ""}
-      FROM users u
-      WHERE u.id = $1
-      LIMIT 1
-      `,
-      params
-    );
-
-    if (result.rows.length === 0) return res.status(404).json({ error: "Profile not found" });
-
-    const publicBaseUrl = getPublicBaseUrl(req);
-    return res.json(normalizeProfileRow(result.rows[0], publicBaseUrl));
-  } catch (err) {
-    console.error("[GET /api/profile/by-id] error", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-/**
- * GET /api/profile/:profileId
- * Backwards compatibility endpoint.
- * Note: DIDs in a path are brittle; prefer /by-id.
- */
-router.get("/:profileId", async (req: AuthedRequest, res: Response) => {
-  try {
-    const { profileId } = req.params;
-    if (!profileId) return res.status(400).json({ error: "profileId is required" });
-
-    const viewerId = req.user?.id;
-    const params = viewerId ? [profileId, viewerId] : [profileId];
+    const viewerId = req.user?.id ?? null;
+    const params: any[] = [profileId];
+    if (viewerId) params.push(viewerId);
 
     const result = await pool.query(
       `
