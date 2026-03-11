@@ -37,9 +37,6 @@ const ENV_PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "")
 
 /**
  * Build a public base URL for the current request.
- * - If PUBLIC_BASE_URL env exists, always use it.
- * - Otherwise, attempt to infer from proxy headers.
- * - Fallback to localhost.
  */
 function getPublicBaseUrl(req?: any): string {
   if (ENV_PUBLIC_BASE_URL) return ENV_PUBLIC_BASE_URL;
@@ -70,8 +67,6 @@ function normalizeAvatarUrl(
   publicBaseUrl: string
 ): string | null {
   if (!avatarUrl) return null;
-
-  // If it's already correct or is some external CDN, leave it.
   if (!avatarUrl.includes("localhost")) return avatarUrl;
 
   try {
@@ -93,10 +88,6 @@ function normalizeProfileRow(row: any, publicBaseUrl: string) {
   };
 }
 
-/**
- * Optional auth: if Authorization Bearer is present and valid, populate req.user.
- * If missing/invalid, continue as anonymous.
- */
 const PRIVY_APP_ID = (process.env.PRIVY_APP_ID || "").trim();
 const PRIVY_APP_SECRET = (process.env.PRIVY_APP_SECRET || "").trim();
 
@@ -142,14 +133,12 @@ async function authPrivyOptional(
 
     return next();
   } catch {
-    // silent fail — treat as anonymous
     return next();
   }
 }
 
 /**
  * ✅ GET /api/profile/:address/portfolio
- * IMPORTANT: must be defined BEFORE `/:profileId` so it doesn't get swallowed.
  */
 router.get("/:address(0x[a-fA-F0-9]{40})/portfolio", async (req: AuthedRequest, res: Response) => {
   try {
@@ -163,7 +152,6 @@ router.get("/:address(0x[a-fA-F0-9]{40})/portfolio", async (req: AuthedRequest, 
 
 /**
  * GET /api/profile/me
- * Returns current user's profile, or 404 if not created yet.
  */
 router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
   try {
@@ -215,14 +203,15 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
     const userId = req.user.id;
+    console.log(`[POST /api/profile] HIT — userId: ${userId}`);
 
-    // From authPrivy: smart wallet preferred as primary
     const primaryAddress = req.user.primaryAddress.toLowerCase();
     const eoaAddress = req.user.eoaAddress ? req.user.eoaAddress.toLowerCase() : null;
 
-    // ── Pull email from the request body (sent by frontend from Privy) ──
     const { username, display_name, x_handle, instagram_handle, avatar_url, email } =
       req.body || {};
+
+    console.log(`[POST /api/profile] body — username: ${username}, email: ${email}`);
 
     if (!username || typeof username !== "string") {
       return res.status(400).json({ error: "username is required" });
@@ -236,6 +225,7 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
       [userId]
     );
     const isNewUser = existingUser.rows.length === 0;
+    console.log(`[POST /api/profile] isNewUser: ${isNewUser}, existingRows: ${existingUser.rows.length}`);
 
     // ── Upsert the user row, now including email ──
     const result = await pool.query(
@@ -292,20 +282,20 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
     );
 
     const savedProfile = result.rows[0];
+    console.log(`[POST /api/profile] savedProfile.email: ${savedProfile.email}`);
+    console.log(`[POST /api/profile] email gate — isNewUser: ${isNewUser}, hasEmail: ${!!savedProfile.email}`);
 
     // ── Send welcome email only on first-time profile creation ──
     if (isNewUser && savedProfile.email) {
       try {
-        await resend.emails.send({
-          from: process.env.RESEND_FROM_EMAIL || "BlockPools <Welcome@mail.blockpools.io>",
+        console.log(`[Welcome Email] Attempting send to: ${savedProfile.email}`);
+        console.log(`[Welcome Email] RESEND_API_KEY present: ${!!process.env.RESEND_API_KEY}`);
+        console.log(`[Welcome Email] FROM: ${process.env.RESEND_FROM_EMAIL}`);
+
+        const emailResult = await resend.emails.send({
+          from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
           to: savedProfile.email,
           subject: "Welcome to BlockPools",
-          // Use your Resend template — pass the slug via template ID
-          // If using Resend's template feature:
-          // template: "welcome-email-post-sign-up",
-          // data: { username: savedProfile.username },
-          //
-          // OR if you prefer inline HTML (swap in your real template HTML):
           html: `
             <!DOCTYPE html>
             <html>
@@ -318,11 +308,13 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
             </html>
           `,
         });
-        console.log(`[Welcome Email] Sent to ${savedProfile.email} (userId: ${userId})`);
-      } catch (emailErr) {
-        // Never let email failure block the profile save response
-        console.error("[Welcome Email] Failed to send:", emailErr);
+
+        console.log(`[Welcome Email] Resend response: ${JSON.stringify(emailResult)}`);
+      } catch (emailErr: any) {
+        console.error("[Welcome Email] Failed to send:", emailErr?.message || emailErr);
       }
+    } else {
+      console.log(`[Welcome Email] Skipped — isNewUser: ${isNewUser}, email: ${savedProfile.email ?? "null"}`);
     }
 
     const publicBaseUrl = getPublicBaseUrl(req);
@@ -335,8 +327,6 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
 /**
  * POST /api/profile/avatar
- * Upload a new avatar image for the current user.
- * Expects multipart/form-data with field "avatar".
  */
 router.post(
   "/avatar",
@@ -388,7 +378,6 @@ router.post(
 
 /**
  * POST /api/profile/by-addresses
- * Public lookup: { addresses: string[] } -> Profile[]
  */
 router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
   try {
@@ -430,8 +419,6 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
 
 /**
  * GET /api/profile/by-id?profileId=...
- * Public profile lookup by ID (users.id).
- * Optionally uses auth to get is_followed_by_me flag.
  */
 router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response) => {
   try {
