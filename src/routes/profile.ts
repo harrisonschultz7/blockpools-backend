@@ -219,13 +219,18 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     const now = new Date().toISOString();
 
-    // ── Check if this is a brand-new user (no existing row) ──
+    // ── Check if this is a first-time profile creation (no username set yet) ──
+    // We check for empty username rather than row existence because Privy/auth
+    // may pre-create the user row before the profile modal is submitted.
     const existingUser = await pool.query(
-      `SELECT id, email FROM users WHERE id = $1 LIMIT 1`,
+      `SELECT id, email, username FROM users WHERE id = $1 LIMIT 1`,
       [userId]
     );
-    const isNewUser = existingUser.rows.length === 0;
-    console.log(`[POST /api/profile] isNewUser: ${isNewUser}, existingRows: ${existingUser.rows.length}`);
+    const isNewUser =
+      existingUser.rows.length === 0 ||
+      !existingUser.rows[0].username ||
+      existingUser.rows[0].username.trim() === "";
+    console.log(`[POST /api/profile] isNewUser: ${isNewUser}, existingRows: ${existingUser.rows.length}, existingUsername: ${existingUser.rows[0]?.username ?? "null"}`);
 
     // ── Upsert the user row, now including email ──
     const result = await pool.query(
