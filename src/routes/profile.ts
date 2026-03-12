@@ -219,18 +219,13 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     const now = new Date().toISOString();
 
-    // ── Check if this is a first-time profile creation (no username set yet) ──
-    // We check for empty username rather than row existence because Privy/auth
-    // may pre-create the user row before the profile modal is submitted.
+    // ── Check if this is a brand-new user (no existing row) ──
     const existingUser = await pool.query(
-      `SELECT id, email, username FROM users WHERE id = $1 LIMIT 1`,
+      `SELECT id, email FROM users WHERE id = $1 LIMIT 1`,
       [userId]
     );
-    const isNewUser =
-      existingUser.rows.length === 0 ||
-      !existingUser.rows[0].username ||
-      existingUser.rows[0].username.trim() === "";
-    console.log(`[POST /api/profile] isNewUser: ${isNewUser}, existingRows: ${existingUser.rows.length}, existingUsername: ${existingUser.rows[0]?.username ?? "null"}`);
+    const isNewUser = existingUser.rows.length === 0;
+    console.log(`[POST /api/profile] isNewUser: ${isNewUser}, existingRows: ${existingUser.rows.length}`);
 
     // ── Upsert the user row, now including email ──
     const result = await pool.query(
@@ -301,18 +296,8 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
           from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
           to: savedProfile.email,
           subject: "Welcome to BlockPools",
-          html: `
-            <!DOCTYPE html>
-            <html>
-              <body style="background:#0f0f1a;color:#fff;font-family:sans-serif;padding:40px;">
-                <p>Hi ${savedProfile.username},</p>
-                <p>Welcome to BlockPools — where odds are driven by traders, not sportsbooks.</p>
-                <p>You're among the first users helping build a new kind of sports market. We're actively rolling out new markets and features, with a big focus on profiles and performance stats so you can track and showcase your edge.</p>
-                <p>— Harrison, Founder of BlockPools</p>
-              </body>
-            </html>
-          `,
-        });
+          template: "welcome-email-post-sign-up",
+        } as any);
 
         console.log(`[Welcome Email] Resend response: ${JSON.stringify(emailResult)}`);
       } catch (emailErr: any) {
