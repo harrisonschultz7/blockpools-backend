@@ -14,7 +14,6 @@ import path from "path";
 import { PrivyClient } from "@privy-io/server-auth";
 import { Resend } from "resend";
 
-// ✅ Portfolio builder (create this file OR point this import to wherever your builder lives)
 import { buildProfilePortfolio } from "../services/profilePortfolio";
 
 const router = Router();
@@ -27,17 +26,10 @@ const upload = multer({
   dest: path.join(__dirname, "..", "..", "uploads", "avatars"),
 });
 
-/**
- * Prefer an explicit PUBLIC_BASE_URL in production.
- * Example: PUBLIC_BASE_URL=https://api.blockpools.io
- */
 const ENV_PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "")
   .trim()
   .replace(/\/+$/, "");
 
-/**
- * Build a public base URL for the current request.
- */
 function getPublicBaseUrl(req?: any): string {
   if (ENV_PUBLIC_BASE_URL) return ENV_PUBLIC_BASE_URL;
 
@@ -58,10 +50,6 @@ function getPublicBaseUrl(req?: any): string {
   return `http://localhost:${port}`;
 }
 
-/**
- * Normalize avatar_url values that were previously stored with localhost
- * to the real public host.
- */
 function normalizeAvatarUrl(
   avatarUrl: string | null | undefined,
   publicBaseUrl: string
@@ -138,7 +126,7 @@ async function authPrivyOptional(
 }
 
 /**
- * ✅ GET /api/profile/:address/portfolio
+ * GET /api/profile/:address/portfolio
  */
 router.get("/:address(0x[a-fA-F0-9]{40})/portfolio", async (req: AuthedRequest, res: Response) => {
   try {
@@ -151,13 +139,91 @@ router.get("/:address(0x[a-fA-F0-9]{40})/portfolio", async (req: AuthedRequest, 
 });
 
 /**
+ * POST /api/profile/sync-email
+ *
+ * Called silently on every authenticated page load (from TopAccountBar /
+ * TopAccountBarMobile) immediately after Privy auth resolves.
+ *
+ * Behaviour:
+ *  - If the user row already has an email → no-op (returns 200 immediately).
+ *  - If the user row has no email and the request body contains one → saves it.
+ *  - Never overwrites an existing email — the email column is write-once from
+ *    this endpoint so users can't accidentally clobber their address.
+ *
+ * The user row must already exist (created by authPrivy on first sign-in).
+ * If it doesn't exist yet we do nothing and return 200 — the profile-creation
+ * POST will handle it.
+ */
+router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+
+    const { email } = req.body || {};
+
+    // Nothing to sync — wallet-only user, just return OK.
+    if (!email || typeof email !== "string" || !email.includes("@")) {
+      return res.json({ ok: true, saved: false });
+    }
+
+    const userId = req.user.id;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const result = await pool.query(
+      `
+      UPDATE users
+      SET    email      = $1,
+             updated_at = NOW()
+      WHERE  id = $2
+        AND  (email IS NULL OR email = '')
+      RETURNING id, email
+      `,
+      [normalizedEmail, userId]
+    );
+
+    const saved = result.rowCount != null && result.rowCount > 0;
+    console.log(
+      `[POST /api/profile/sync-email] userId: ${userId} | email: ${normalizedEmail} | saved: ${saved}`
+    );
+
+    return res.json({ ok: true, saved });
+  } catch (err) {
+    console.error("[POST /api/profile/sync-email] error", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
  * GET /api/profile/me
+ *
+ * Returns the current user's profile row.
+ * Also opportunistically saves the email from the Privy JWT if it is not
+ * already stored — this acts as a second safety net on top of sync-email.
  */
 router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
     const userId = req.user.id;
+
+    // ── Opportunistically write email from Privy JWT if missing ──────────────
+    // req.user.email is populated by authPrivy when the JWT contains it.
+    // We do this with a single conditional UPDATE so it costs nothing when the
+    // email is already present.
+    const privyEmail = (req.user as any).email as string | undefined;
+    if (privyEmail && privyEmail.includes("@")) {
+      await pool.query(
+        `
+        UPDATE users
+        SET    email      = $1,
+               updated_at = NOW()
+        WHERE  id = $2
+          AND  (email IS NULL OR email = '')
+        `,
+        [privyEmail.toLowerCase().trim(), userId]
+      ).catch((e) =>
+        console.error("[GET /api/profile/me] email back-fill error", e)
+      );
+    }
 
     const result = await pool.query(
       `
@@ -170,6 +236,7 @@ router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
         u.x_handle,
         u.instagram_handle,
         u.avatar_url,
+        u.email,
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
@@ -220,8 +287,6 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
     const now = new Date().toISOString();
 
     // ── Check if this is a first-time profile creation (no username set yet) ──
-    // We check for empty username rather than row existence because Privy/auth
-    // may pre-create the user row before the profile modal is submitted.
     const existingUser = await pool.query(
       `SELECT id, email, username FROM users WHERE id = $1 LIMIT 1`,
       [userId]
@@ -230,9 +295,16 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
       existingUser.rows.length === 0 ||
       !existingUser.rows[0].username ||
       existingUser.rows[0].username.trim() === "";
-    console.log(`[POST /api/profile] isNewUser: ${isNewUser}, existingRows: ${existingUser.rows.length}, existingUsername: ${existingUser.rows[0]?.username ?? "null"}`);
 
-    // ── Upsert the user row, now including email ──
+    // Prefer the email from the request body; fall back to what's already in
+    // the DB so we never accidentally null it out via COALESCE below.
+    const emailToSave = email ?? existingUser.rows[0]?.email ?? null;
+
+    console.log(
+      `[POST /api/profile] isNewUser: ${isNewUser}, existingRows: ${existingUser.rows.length}, existingUsername: ${existingUser.rows[0]?.username ?? "null"}`
+    );
+
+    // ── Upsert the user row ──────────────────────────────────────────────────
     const result = await pool.query(
       `
       INSERT INTO users (
@@ -281,16 +353,18 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         x_handle ?? null,
         instagram_handle ?? null,
         avatar_url ?? null,
-        email ?? null,
+        emailToSave,
         now,
       ]
     );
 
     const savedProfile = result.rows[0];
     console.log(`[POST /api/profile] savedProfile.email: ${savedProfile.email}`);
-    console.log(`[POST /api/profile] email gate — isNewUser: ${isNewUser}, hasEmail: ${!!savedProfile.email}`);
+    console.log(
+      `[POST /api/profile] email gate — isNewUser: ${isNewUser}, hasEmail: ${!!savedProfile.email}`
+    );
 
-    // ── Send welcome email only on first-time profile creation ──
+    // ── Send welcome email only on first-time profile creation ──────────────
     if (isNewUser && savedProfile.email) {
       try {
         console.log(`[Welcome Email] Attempting send to: ${savedProfile.email}`);
@@ -309,7 +383,9 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         console.error("[Welcome Email] Failed to send:", emailErr?.message || emailErr);
       }
     } else {
-      console.log(`[Welcome Email] Skipped — isNewUser: ${isNewUser}, email: ${savedProfile.email ?? "null"}`);
+      console.log(
+        `[Welcome Email] Skipped — isNewUser: ${isNewUser}, email: ${savedProfile.email ?? "null"}`
+      );
     }
 
     const publicBaseUrl = getPublicBaseUrl(req);
