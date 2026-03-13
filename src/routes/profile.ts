@@ -77,15 +77,15 @@ function normalizeProfileRow(row: any, publicBaseUrl: string) {
 }
 
 // ── Shared welcome email helper ──────────────────────────────────────────────
-// Sends the welcome email via Resend (SDK v6.8.0 template object syntax)
-// and marks welcome_email_sent = true.
-// Only sets the flag if Resend returns a valid id — silent failures leave
-// the flag as false so the next login will retry.
+// Sends the welcome email via Resend (SDK v6.8.0 template object syntax).
+// NOTE: Does NOT set welcome_email_sent — callers must claim the flag
+// atomically BEFORE calling this function to prevent race conditions.
+// If Resend fails, callers should roll back the flag.
 async function sendWelcomeEmail(
   userId: string,
   email: string,
   context: string
-): Promise<void> {
+): Promise<boolean> {
   try {
     console.log(`[Welcome Email][${context}] Sending to: ${email} (userId: ${userId})`);
     console.log(`[Welcome Email][${context}] RESEND_API_KEY present: ${!!process.env.RESEND_API_KEY}`);
@@ -103,17 +103,26 @@ async function sendWelcomeEmail(
 
     if ((emailResult as any)?.error || !(emailResult as any)?.data?.id) {
       console.error(
-        `[Welcome Email][${context}] Resend returned no id — possible silent failure. Not flagging as sent.`
+        `[Welcome Email][${context}] Resend returned no id — rolling back flag for userId: ${userId}`
       );
-    } else {
+      // Roll back the flag so the next login retries
       await pool.query(
-        `UPDATE users SET welcome_email_sent = true WHERE id = $1`,
+        `UPDATE users SET welcome_email_sent = false WHERE id = $1`,
         [userId]
       );
-      console.log(`[Welcome Email][${context}] Sent and flagged OK for userId: ${userId}`);
+      return false;
     }
+
+    console.log(`[Welcome Email][${context}] Sent OK for userId: ${userId}`);
+    return true;
   } catch (err: any) {
     console.error(`[Welcome Email][${context}] Failed:`, err?.message || err);
+    // Roll back the flag so the next login retries
+    await pool.query(
+      `UPDATE users SET welcome_email_sent = false WHERE id = $1`,
+      [userId]
+    ).catch(() => {});
+    return false;
   }
 }
 
@@ -254,13 +263,16 @@ router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) 
       return res.json({ ok: true, saved: false });
     }
 
-    // Write email only if the column is currently null/empty
+    // ── Path A: email not yet stored — write it and atomically claim the
+    // welcome_email_sent flag in one UPDATE so concurrent requests can't
+    // both win the race.
     const writeResult = await pool.query(
       `UPDATE users
-         SET email = $1, updated_at = NOW()
+         SET email = $1, updated_at = NOW(), welcome_email_sent = true
        WHERE id = $2
          AND (email IS NULL OR email = '')
-       RETURNING email, welcome_email_sent`,
+         AND welcome_email_sent = false
+       RETURNING email`,
       [email, userId]
     );
 
@@ -268,25 +280,27 @@ router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) 
     console.log(`[sync-email] userId: ${userId}, wrote new email: ${wrote}`);
 
     if (wrote) {
-      // Email just saved for the first time — send welcome if not already sent
-      const row = writeResult.rows[0];
-      if (!row.welcome_email_sent) {
-        await sendWelcomeEmail(userId, email, "sync-email/first-save");
-      }
+      await sendWelcomeEmail(userId, email, "sync-email/first-save");
     } else {
-      // Email was already stored — check whether welcome email still needs sending.
-      // Handles the case where email existed from a previous path but the flag
-      // was never set (e.g. before welcome_email_sent column was added).
-      const check = await pool.query(
-        `SELECT email, welcome_email_sent FROM users WHERE id = $1 LIMIT 1`,
+      // ── Path B: email already stored — atomically claim the flag to send
+      // a catchup welcome email (covers users whose email existed before the
+      // welcome_email_sent column was added).
+      const catchupResult = await pool.query(
+        `UPDATE users
+           SET welcome_email_sent = true
+         WHERE id = $1
+           AND email IS NOT NULL
+           AND email != ''
+           AND welcome_email_sent = false
+         RETURNING email`,
         [userId]
       );
-      const existing = check.rows[0];
-      if (existing?.email && !existing.welcome_email_sent) {
+      const catchupRow = catchupResult.rows[0];
+      if (catchupRow?.email) {
         console.log(
-          `[sync-email] Email already set but welcome not sent — sending catchup for userId: ${userId}`
+          `[sync-email] Catchup — atomically claimed flag for userId: ${userId}`
         );
-        await sendWelcomeEmail(userId, existing.email, "sync-email/catchup");
+        await sendWelcomeEmail(userId, catchupRow.email, "sync-email/catchup");
       }
     }
 
@@ -408,9 +422,20 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
       `[POST /api/profile] savedProfile.email: ${savedProfile.email}, welcome_email_sent: ${savedProfile.welcome_email_sent}`
     );
 
-    // Send welcome email on first-time profile creation if not already sent
+    // Send welcome email on first-time profile creation — atomically claim
+    // the flag first so concurrent requests can't both trigger a send.
     if (isNewUser && savedProfile.email && !savedProfile.welcome_email_sent) {
-      await sendWelcomeEmail(userId, savedProfile.email, "profile-upsert");
+      const claim = await pool.query(
+        `UPDATE users SET welcome_email_sent = true
+         WHERE id = $1 AND welcome_email_sent = false
+         RETURNING id`,
+        [userId]
+      );
+      if (claim.rows.length > 0) {
+        await sendWelcomeEmail(userId, savedProfile.email, "profile-upsert");
+      } else {
+        console.log(`[Welcome Email] Flag already claimed — skipping for userId: ${userId}`);
+      }
     } else {
       console.log(
         `[Welcome Email] Skipped — isNewUser: ${isNewUser}, email: ${savedProfile.email ?? "null"}, already_sent: ${savedProfile.welcome_email_sent}`
