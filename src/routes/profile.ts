@@ -78,7 +78,8 @@ function normalizeProfileRow(row: any, publicBaseUrl: string) {
 
 // ── Shared welcome email helper ──────────────────────────────────────────────
 // Sends the welcome email via Resend and marks welcome_email_sent = true.
-// Safe to call from any route — errors are caught and logged, never re-thrown.
+// Only sets the flag if Resend returns a valid id — silent failures leave
+// the flag as false so the next login will retry.
 async function sendWelcomeEmail(
   userId: string,
   email: string,
@@ -88,19 +89,26 @@ async function sendWelcomeEmail(
     console.log(`[Welcome Email][${context}] Sending to: ${email} (userId: ${userId})`);
     console.log(`[Welcome Email][${context}] RESEND_API_KEY present: ${!!process.env.RESEND_API_KEY}`);
 
-    await resend.emails.send({
+    const emailResult = await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
       to: email,
       subject: "Welcome to BlockPools",
       template: "2a86d254-f493-45d1-abda-706fd33f1479",
     } as any);
 
-    await pool.query(
-      `UPDATE users SET welcome_email_sent = true WHERE id = $1`,
-      [userId]
-    );
+    console.log(`[Welcome Email][${context}] Resend result:`, JSON.stringify(emailResult));
 
-    console.log(`[Welcome Email][${context}] Sent and flagged OK for userId: ${userId}`);
+    if ((emailResult as any)?.error || !(emailResult as any)?.data?.id) {
+      console.error(
+        `[Welcome Email][${context}] Resend returned no id — possible silent failure. Not flagging as sent.`
+      );
+    } else {
+      await pool.query(
+        `UPDATE users SET welcome_email_sent = true WHERE id = $1`,
+        [userId]
+      );
+      console.log(`[Welcome Email][${context}] Sent and flagged OK for userId: ${userId}`);
+    }
   } catch (err: any) {
     console.error(`[Welcome Email][${context}] Failed:`, err?.message || err);
   }
@@ -263,9 +271,9 @@ router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) 
         await sendWelcomeEmail(userId, email, "sync-email/first-save");
       }
     } else {
-      // Email was already stored — check whether welcome email still needs sending
-      // (handles the case where email existed from a previous path but the flag
-      //  was never set, e.g. before welcome_email_sent column was added)
+      // Email was already stored — check whether welcome email still needs sending.
+      // Handles the case where email existed from a previous path but the flag
+      // was never set (e.g. before welcome_email_sent column was added).
       const check = await pool.query(
         `SELECT email, welcome_email_sent FROM users WHERE id = $1 LIMIT 1`,
         [userId]
@@ -332,8 +340,7 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     // Prefer the email from the request body; fall back to whatever is already
     // stored so we never accidentally null it out.
-    const emailToSave =
-      email ?? existingUser.rows[0]?.email ?? null;
+    const emailToSave = email ?? existingUser.rows[0]?.email ?? null;
 
     console.log(
       `[POST /api/profile] isNewUser: ${isNewUser}, emailToSave: ${emailToSave ?? "null"}`
