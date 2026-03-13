@@ -76,6 +76,37 @@ function normalizeProfileRow(row: any, publicBaseUrl: string) {
   };
 }
 
+// ── Shared welcome email helper ──────────────────────────────────────────────
+// Sends the welcome email via Resend and marks welcome_email_sent = true.
+// Safe to call from any route — errors are caught and logged, never re-thrown.
+async function sendWelcomeEmail(
+  userId: string,
+  email: string,
+  context: string
+): Promise<void> {
+  try {
+    console.log(`[Welcome Email][${context}] Sending to: ${email} (userId: ${userId})`);
+    console.log(`[Welcome Email][${context}] RESEND_API_KEY present: ${!!process.env.RESEND_API_KEY}`);
+
+    await resend.emails.send({
+      from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
+      to: email,
+      subject: "Welcome to BlockPools",
+      template: "2a86d254-f493-45d1-abda-706fd33f1479",
+    } as any);
+
+    await pool.query(
+      `UPDATE users SET welcome_email_sent = true WHERE id = $1`,
+      [userId]
+    );
+
+    console.log(`[Welcome Email][${context}] Sent and flagged OK for userId: ${userId}`);
+  } catch (err: any) {
+    console.error(`[Welcome Email][${context}] Failed:`, err?.message || err);
+  }
+}
+
+// ── Privy optional auth (for public routes that benefit from knowing the viewer) ──
 const PRIVY_APP_ID = (process.env.PRIVY_APP_ID || "").trim();
 const PRIVY_APP_SECRET = (process.env.PRIVY_APP_SECRET || "").trim();
 
@@ -107,123 +138,48 @@ async function authPrivyOptional(
     const smartAddress = user.smartWallet?.address
       ? user.smartWallet.address.toLowerCase()
       : null;
-    const eoaAddress = user.wallet?.address ? user.wallet.address.toLowerCase() : null;
+    const eoaAddress = user.wallet?.address
+      ? user.wallet.address.toLowerCase()
+      : null;
     const primaryAddress = smartAddress ?? eoaAddress;
 
     if (!primaryAddress) return next();
 
-    req.user = {
-      id: user.id,
-      primaryAddress,
-      smartAddress,
-      eoaAddress,
-    };
-
+    req.user = { id: user.id, primaryAddress, smartAddress, eoaAddress };
     return next();
   } catch {
     return next();
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUTES
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * GET /api/profile/:address/portfolio
  */
-router.get("/:address(0x[a-fA-F0-9]{40})/portfolio", async (req: AuthedRequest, res: Response) => {
-  try {
-    const out = await buildProfilePortfolio(req);
-    return res.json(out);
-  } catch (err: any) {
-    console.error("[GET /api/profile/:address/portfolio] error", err);
-    return res.status(500).json({ ok: false, error: "internal_error" });
-  }
-});
-
-/**
- * POST /api/profile/sync-email
- *
- * Called silently on every authenticated page load (from TopAccountBar /
- * TopAccountBarMobile) immediately after Privy auth resolves.
- *
- * Behaviour:
- *  - If the user row already has an email → no-op (returns 200 immediately).
- *  - If the user row has no email and the request body contains one → saves it.
- *  - Never overwrites an existing email — the email column is write-once from
- *    this endpoint so users can't accidentally clobber their address.
- *
- * The user row must already exist (created by authPrivy on first sign-in).
- * If it doesn't exist yet we do nothing and return 200 — the profile-creation
- * POST will handle it.
- */
-router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) => {
-  try {
-    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
-
-    const { email } = req.body || {};
-
-    // Nothing to sync — wallet-only user, just return OK.
-    if (!email || typeof email !== "string" || !email.includes("@")) {
-      return res.json({ ok: true, saved: false });
+router.get(
+  "/:address(0x[a-fA-F0-9]{40})/portfolio",
+  async (req: AuthedRequest, res: Response) => {
+    try {
+      const out = await buildProfilePortfolio(req);
+      return res.json(out);
+    } catch (err: any) {
+      console.error("[GET /api/profile/:address/portfolio] error", err);
+      return res.status(500).json({ ok: false, error: "internal_error" });
     }
-
-    const userId = req.user.id;
-    const normalizedEmail = email.toLowerCase().trim();
-
-    const result = await pool.query(
-      `
-      UPDATE users
-      SET    email      = $1,
-             updated_at = NOW()
-      WHERE  id = $2
-        AND  (email IS NULL OR email = '')
-      RETURNING id, email
-      `,
-      [normalizedEmail, userId]
-    );
-
-    const saved = result.rowCount != null && result.rowCount > 0;
-    console.log(
-      `[POST /api/profile/sync-email] userId: ${userId} | email: ${normalizedEmail} | saved: ${saved}`
-    );
-
-    return res.json({ ok: true, saved });
-  } catch (err) {
-    console.error("[POST /api/profile/sync-email] error", err);
-    return res.status(500).json({ error: "Internal server error" });
   }
-});
+);
 
 /**
  * GET /api/profile/me
- *
- * Returns the current user's profile row.
- * Also opportunistically saves the email from the Privy JWT if it is not
- * already stored — this acts as a second safety net on top of sync-email.
  */
 router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
     const userId = req.user.id;
-
-    // ── Opportunistically write email from Privy JWT if missing ──────────────
-    // req.user.email is populated by authPrivy when the JWT contains it.
-    // We do this with a single conditional UPDATE so it costs nothing when the
-    // email is already present.
-    const privyEmail = (req.user as any).email as string | undefined;
-    if (privyEmail && privyEmail.includes("@")) {
-      await pool.query(
-        `
-        UPDATE users
-        SET    email      = $1,
-               updated_at = NOW()
-        WHERE  id = $2
-          AND  (email IS NULL OR email = '')
-        `,
-        [privyEmail.toLowerCase().trim(), userId]
-      ).catch((e) =>
-        console.error("[GET /api/profile/me] email back-fill error", e)
-      );
-    }
 
     const result = await pool.query(
       `
@@ -237,10 +193,11 @@ router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
         u.instagram_handle,
         u.avatar_url,
         u.email,
+        u.welcome_email_sent,
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
-        (SELECT COUNT(*) FROM user_follows WHERE follower_id = u.id) AS "followingCount"
+        (SELECT COUNT(*) FROM user_follows WHERE follower_id  = u.id) AS "followingCount"
       FROM users u
       WHERE u.id = $1
       LIMIT 1
@@ -261,9 +218,81 @@ router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
 });
 
 /**
+ * POST /api/profile/sync-email
+ *
+ * Called fire-and-forget on every login from the frontend (TopAccountBar +
+ * TopAccountBarMobile). Persists the Privy email for the first time if the
+ * column is currently null, then sends a welcome email if one hasn't been
+ * sent yet. Idempotent — safe to call on every login.
+ *
+ * This is the primary path that catches:
+ *  - Users who signed up before email collection was in place
+ *  - Users who skipped the profile modal
+ *  - Any user whose email was saved by a previous code path but whose
+ *    welcome_email_sent flag was never set
+ */
+router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+
+    const userId = req.user.id;
+    const { email } = req.body || {};
+
+    // Wallet-only users (no Privy email) — nothing to do
+    if (!email || typeof email !== "string") {
+      return res.json({ ok: true, saved: false });
+    }
+
+    // Write email only if the column is currently null/empty
+    const writeResult = await pool.query(
+      `UPDATE users
+         SET email = $1, updated_at = NOW()
+       WHERE id = $2
+         AND (email IS NULL OR email = '')
+       RETURNING email, welcome_email_sent`,
+      [email, userId]
+    );
+
+    const wrote = writeResult.rows.length > 0;
+    console.log(`[sync-email] userId: ${userId}, wrote new email: ${wrote}`);
+
+    if (wrote) {
+      // Email just saved for the first time — send welcome if not already sent
+      const row = writeResult.rows[0];
+      if (!row.welcome_email_sent) {
+        await sendWelcomeEmail(userId, email, "sync-email/first-save");
+      }
+    } else {
+      // Email was already stored — check whether welcome email still needs sending
+      // (handles the case where email existed from a previous path but the flag
+      //  was never set, e.g. before welcome_email_sent column was added)
+      const check = await pool.query(
+        `SELECT email, welcome_email_sent FROM users WHERE id = $1 LIMIT 1`,
+        [userId]
+      );
+      const existing = check.rows[0];
+      if (existing?.email && !existing.welcome_email_sent) {
+        console.log(
+          `[sync-email] Email already set but welcome not sent — sending catchup for userId: ${userId}`
+        );
+        await sendWelcomeEmail(userId, existing.email, "sync-email/catchup");
+      }
+    }
+
+    return res.json({ ok: true, saved: wrote });
+  } catch (err) {
+    console.error("[POST /api/profile/sync-email] error", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
  * POST /api/profile
- * Creates or updates current user's profile.
- * ── On first-time creation: saves email + fires Resend welcome email ──
+ *
+ * Creates or updates the current user's profile (username, socials, etc.).
+ * On first-time profile creation (username was previously null/empty):
+ *   - Saves email to DB
+ *   - Fires welcome email if not already sent
  */
 router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
   try {
@@ -273,7 +302,9 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
     console.log(`[POST /api/profile] HIT — userId: ${userId}`);
 
     const primaryAddress = req.user.primaryAddress.toLowerCase();
-    const eoaAddress = req.user.eoaAddress ? req.user.eoaAddress.toLowerCase() : null;
+    const eoaAddress = req.user.eoaAddress
+      ? req.user.eoaAddress.toLowerCase()
+      : null;
 
     const { username, display_name, x_handle, instagram_handle, avatar_url, email } =
       req.body || {};
@@ -286,25 +317,28 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     const now = new Date().toISOString();
 
-    // ── Check if this is a first-time profile creation (no username set yet) ──
+    // Determine whether this is a first-time profile creation.
+    // We check for a missing/empty username rather than row absence because
+    // Privy may pre-create the user row before the profile modal is submitted.
     const existingUser = await pool.query(
-      `SELECT id, email, username FROM users WHERE id = $1 LIMIT 1`,
+      `SELECT id, email, username, welcome_email_sent FROM users WHERE id = $1 LIMIT 1`,
       [userId]
     );
+
     const isNewUser =
       existingUser.rows.length === 0 ||
       !existingUser.rows[0].username ||
       existingUser.rows[0].username.trim() === "";
 
-    // Prefer the email from the request body; fall back to what's already in
-    // the DB so we never accidentally null it out via COALESCE below.
-    const emailToSave = email ?? existingUser.rows[0]?.email ?? null;
+    // Prefer the email from the request body; fall back to whatever is already
+    // stored so we never accidentally null it out.
+    const emailToSave =
+      email ?? existingUser.rows[0]?.email ?? null;
 
     console.log(
-      `[POST /api/profile] isNewUser: ${isNewUser}, existingRows: ${existingUser.rows.length}, existingUsername: ${existingUser.rows[0]?.username ?? "null"}`
+      `[POST /api/profile] isNewUser: ${isNewUser}, emailToSave: ${emailToSave ?? "null"}`
     );
 
-    // ── Upsert the user row ──────────────────────────────────────────────────
     const result = await pool.query(
       `
       INSERT INTO users (
@@ -322,15 +356,15 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
       ON CONFLICT (id) DO UPDATE SET
-        primary_address   = EXCLUDED.primary_address,
-        eoa_address       = EXCLUDED.eoa_address,
-        username          = EXCLUDED.username,
-        display_name      = EXCLUDED.display_name,
-        x_handle          = EXCLUDED.x_handle,
-        instagram_handle  = EXCLUDED.instagram_handle,
-        avatar_url        = EXCLUDED.avatar_url,
-        email             = COALESCE(EXCLUDED.email, users.email),
-        updated_at        = EXCLUDED.updated_at
+        primary_address  = EXCLUDED.primary_address,
+        eoa_address      = EXCLUDED.eoa_address,
+        username         = EXCLUDED.username,
+        display_name     = EXCLUDED.display_name,
+        x_handle         = EXCLUDED.x_handle,
+        instagram_handle = EXCLUDED.instagram_handle,
+        avatar_url       = EXCLUDED.avatar_url,
+        email            = COALESCE(EXCLUDED.email, users.email),
+        updated_at       = EXCLUDED.updated_at
       RETURNING
         id,
         primary_address,
@@ -341,6 +375,7 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         instagram_handle,
         avatar_url,
         email,
+        welcome_email_sent,
         created_at,
         updated_at
       `,
@@ -359,32 +394,16 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
     );
 
     const savedProfile = result.rows[0];
-    console.log(`[POST /api/profile] savedProfile.email: ${savedProfile.email}`);
     console.log(
-      `[POST /api/profile] email gate — isNewUser: ${isNewUser}, hasEmail: ${!!savedProfile.email}`
+      `[POST /api/profile] savedProfile.email: ${savedProfile.email}, welcome_email_sent: ${savedProfile.welcome_email_sent}`
     );
 
-    // ── Send welcome email only on first-time profile creation ──────────────
-    if (isNewUser && savedProfile.email) {
-      try {
-        console.log(`[Welcome Email] Attempting send to: ${savedProfile.email}`);
-        console.log(`[Welcome Email] RESEND_API_KEY present: ${!!process.env.RESEND_API_KEY}`);
-        console.log(`[Welcome Email] FROM: ${process.env.RESEND_FROM_EMAIL}`);
-
-        const emailResult = await resend.emails.send({
-          from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
-          to: savedProfile.email,
-          subject: "Welcome to BlockPools",
-          template: "2a86d254-f493-45d1-abda-706fd33f1479",
-        } as any);
-
-        console.log(`[Welcome Email] Resend response: ${JSON.stringify(emailResult)}`);
-      } catch (emailErr: any) {
-        console.error("[Welcome Email] Failed to send:", emailErr?.message || emailErr);
-      }
+    // Send welcome email on first-time profile creation if not already sent
+    if (isNewUser && savedProfile.email && !savedProfile.welcome_email_sent) {
+      await sendWelcomeEmail(userId, savedProfile.email, "profile-upsert");
     } else {
       console.log(
-        `[Welcome Email] Skipped — isNewUser: ${isNewUser}, email: ${savedProfile.email ?? "null"}`
+        `[Welcome Email] Skipped — isNewUser: ${isNewUser}, email: ${savedProfile.email ?? "null"}, already_sent: ${savedProfile.welcome_email_sent}`
       );
     }
 
@@ -480,7 +499,9 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
     );
 
     const publicBaseUrl = getPublicBaseUrl(req);
-    const data = (result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl));
+    const data = (result.rows || []).map((r: any) =>
+      normalizeProfileRow(r, publicBaseUrl)
+    );
     return res.json(data);
   } catch (err) {
     console.error("[POST /api/profile/by-addresses] error", err);
@@ -514,12 +535,16 @@ router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
-        (SELECT COUNT(*) FROM user_follows WHERE follower_id = u.id) AS "followingCount"
-        ${viewerId ? `,
+        (SELECT COUNT(*) FROM user_follows WHERE follower_id  = u.id) AS "followingCount"
+        ${
+          viewerId
+            ? `,
         EXISTS (
           SELECT 1 FROM user_follows
           WHERE follower_id = $2 AND following_id = u.id
-        ) AS "is_followed_by_me"` : ""}
+        ) AS "is_followed_by_me"`
+            : ""
+        }
       FROM users u
       WHERE u.id = $1
       LIMIT 1
@@ -527,12 +552,13 @@ router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response
       params
     );
 
-    if (result.rows.length === 0) return res.status(404).json({ error: "Profile not found" });
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: "Profile not found" });
 
     const publicBaseUrl = getPublicBaseUrl(req);
     return res.json(normalizeProfileRow(result.rows[0], publicBaseUrl));
   } catch (err) {
-    console.error("[GET /api/profile/:profileId] error", err);
+    console.error("[GET /api/profile/by-id] error", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -548,10 +574,12 @@ router.post("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: Res
     const { profileId } = req.params;
 
     if (!profileId) return res.status(400).json({ error: "profileId is required" });
-    if (viewerId === profileId) return res.status(400).json({ error: "Cannot follow your own profile" });
+    if (viewerId === profileId)
+      return res.status(400).json({ error: "Cannot follow your own profile" });
 
     const targetRes = await pool.query(`SELECT id FROM users WHERE id = $1`, [profileId]);
-    if (targetRes.rows.length === 0) return res.status(404).json({ error: "Target profile not found" });
+    if (targetRes.rows.length === 0)
+      return res.status(404).json({ error: "Target profile not found" });
 
     await pool.query(
       `
@@ -576,7 +604,7 @@ router.post("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: Res
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
-        (SELECT COUNT(*) FROM user_follows WHERE follower_id = u.id) AS "followingCount",
+        (SELECT COUNT(*) FROM user_follows WHERE follower_id  = u.id) AS "followingCount",
         EXISTS (
           SELECT 1 FROM user_follows
           WHERE follower_id = $1 AND following_id = u.id
@@ -611,10 +639,7 @@ router.delete("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: R
     if (!profileId) return res.status(400).json({ error: "profileId is required" });
 
     await pool.query(
-      `
-      DELETE FROM user_follows
-      WHERE follower_id = $1 AND following_id = $2
-      `,
+      `DELETE FROM user_follows WHERE follower_id = $1 AND following_id = $2`,
       [viewerId, profileId]
     );
 
@@ -632,7 +657,7 @@ router.delete("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: R
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
-        (SELECT COUNT(*) FROM user_follows WHERE follower_id = u.id) AS "followingCount",
+        (SELECT COUNT(*) FROM user_follows WHERE follower_id  = u.id) AS "followingCount",
         EXISTS (
           SELECT 1 FROM user_follows
           WHERE follower_id = $1 AND following_id = u.id
@@ -657,31 +682,35 @@ router.delete("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: R
 /**
  * GET /api/profile/:profileId/follow-status
  */
-router.get("/:profileId/follow-status", authPrivy, async (req: AuthedRequest, res: Response) => {
-  try {
-    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+router.get(
+  "/:profileId/follow-status",
+  authPrivy,
+  async (req: AuthedRequest, res: Response) => {
+    try {
+      if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
-    const viewerId = req.user.id;
-    const { profileId } = req.params;
+      const viewerId = req.user.id;
+      const { profileId } = req.params;
 
-    if (!profileId) return res.status(400).json({ error: "profileId is required" });
+      if (!profileId) return res.status(400).json({ error: "profileId is required" });
 
-    const check = await pool.query(
-      `
-      SELECT 1
-      FROM user_follows
-      WHERE follower_id = $1 AND following_id = $2
-      LIMIT 1
-      `,
-      [viewerId, profileId]
-    );
+      const check = await pool.query(
+        `
+        SELECT 1
+        FROM user_follows
+        WHERE follower_id = $1 AND following_id = $2
+        LIMIT 1
+        `,
+        [viewerId, profileId]
+      );
 
-    return res.json({ is_followed_by_me: check.rows.length > 0 });
-  } catch (err) {
-    console.error("[GET /api/profile/:profileId/follow-status] error", err);
-    return res.status(500).json({ error: "Internal server error" });
+      return res.json({ is_followed_by_me: check.rows.length > 0 });
+    } catch (err) {
+      console.error("[GET /api/profile/:profileId/follow-status] error", err);
+      return res.status(500).json({ error: "Internal server error" });
+    }
   }
-});
+);
 
 /**
  * GET /api/profile/:profileId/followers
@@ -692,7 +721,8 @@ router.get("/:profileId/followers", async (req: AuthedRequest, res: Response) =>
     if (!profileId) return res.status(400).json({ error: "profileId is required" });
 
     const target = await pool.query(`SELECT id FROM users WHERE id = $1`, [profileId]);
-    if (target.rows.length === 0) return res.status(404).json({ error: "Profile not found" });
+    if (target.rows.length === 0)
+      return res.status(404).json({ error: "Profile not found" });
 
     const result = await pool.query(
       `
@@ -716,7 +746,9 @@ router.get("/:profileId/followers", async (req: AuthedRequest, res: Response) =>
     );
 
     const publicBaseUrl = getPublicBaseUrl(req);
-    const data = (result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl));
+    const data = (result.rows || []).map((r: any) =>
+      normalizeProfileRow(r, publicBaseUrl)
+    );
     return res.json({ data });
   } catch (err) {
     console.error("[GET /api/profile/:profileId/followers] error", err);
@@ -733,7 +765,8 @@ router.get("/:profileId/following", async (req: AuthedRequest, res: Response) =>
     if (!profileId) return res.status(400).json({ error: "profileId is required" });
 
     const target = await pool.query(`SELECT id FROM users WHERE id = $1`, [profileId]);
-    if (target.rows.length === 0) return res.status(404).json({ error: "Profile not found" });
+    if (target.rows.length === 0)
+      return res.status(404).json({ error: "Profile not found" });
 
     const result = await pool.query(
       `
@@ -757,7 +790,9 @@ router.get("/:profileId/following", async (req: AuthedRequest, res: Response) =>
     );
 
     const publicBaseUrl = getPublicBaseUrl(req);
-    const data = (result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl));
+    const data = (result.rows || []).map((r: any) =>
+      normalizeProfileRow(r, publicBaseUrl)
+    );
     return res.json({ data });
   } catch (err) {
     console.error("[GET /api/profile/:profileId/following] error", err);
