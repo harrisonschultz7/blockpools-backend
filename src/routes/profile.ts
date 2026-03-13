@@ -77,7 +77,8 @@ function normalizeProfileRow(row: any, publicBaseUrl: string) {
 }
 
 // ── Shared welcome email helper ──────────────────────────────────────────────
-// Sends the welcome email via Resend and marks welcome_email_sent = true.
+// Sends the welcome email via Resend (SDK v6.8.0 template object syntax)
+// and marks welcome_email_sent = true.
 // Only sets the flag if Resend returns a valid id — silent failures leave
 // the flag as false so the next login will retry.
 async function sendWelcomeEmail(
@@ -93,7 +94,9 @@ async function sendWelcomeEmail(
       from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
       to: email,
       subject: "Welcome to BlockPools",
-      template: "2a86d254-f493-45d1-abda-706fd33f1479",
+      template: {
+        id: "2a86d254-f493-45d1-abda-706fd33f1479",
+      },
     } as any);
 
     console.log(`[Welcome Email][${context}] Resend result:`, JSON.stringify(emailResult));
