@@ -301,7 +301,7 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
           from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
           to: savedProfile.email,
           subject: "Welcome to BlockPools",
-          template: "welcome-email-post-sign-up",
+          template: "2a86d254-f493-45d1-abda-706fd33f1479",
         } as any);
 
         console.log(`[Welcome Email] Resend response: ${JSON.stringify(emailResult)}`);
