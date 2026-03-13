@@ -9,7 +9,7 @@
  *   env $(cat /etc/blockpools/backend.env | xargs) npx ts-node scripts/backfill-welcome-emails.ts
  */
 
-import { pool } from "../src/db";
+import { pool } from "../db";
 import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
