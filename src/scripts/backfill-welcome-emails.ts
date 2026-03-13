@@ -63,8 +63,8 @@ async function run() {
         sent++;
       }
 
-      // Small delay to stay within Resend rate limits
-      await new Promise((r) => setTimeout(r, 300));
+      // Stay within Resend's 2 req/sec rate limit
+      await new Promise((r) => setTimeout(r, 700));
     } catch (err: any) {
       console.error(`[ERROR] ${user.email} — ${err?.message || err}`);
       // Roll back the flag so a future run retries this user
