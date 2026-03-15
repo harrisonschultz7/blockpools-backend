@@ -1,5 +1,6 @@
 // src/services/persistTrades.ts
 import { pool } from "../db";
+import { markUserHasTraded } from "../utils/markHasTraded";
 
 type TradeType = "BUY" | "SELL" | "CLAIM";
 
@@ -513,6 +514,14 @@ export async function upsertUserTradesAndGames(opts: {
     }
 
     await client.query("COMMIT");
+
+    // ── Mark traders in users table (fire-and-forget, never blocks) ──────────
+    if (trades.length) {
+      const uniqueAddresses = [...new Set(trades.map((t) => t.user))];
+      Promise.all(uniqueAddresses.map((addr) => markUserHasTraded(addr)))
+        .catch((err) => console.error("[persistTrades] markUserHasTraded failed:", err));
+    }
+
     return { tradesUpserted: trades.length, gamesUpserted: games.length };
   } catch (e) {
     await client.query("ROLLBACK");
