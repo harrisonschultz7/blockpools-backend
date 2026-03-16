@@ -6,7 +6,7 @@
  *
  * Run on VPS:
  *   cd /opt/blockpools/backend
- *   env $(cat /etc/blockpools/backend.env | xargs) npx ts-node scripts/send-no-trade-followup.ts
+ *   env $(cat /etc/blockpools/backend.env | xargs) npx ts-node src/scripts/send-no-trade-followup.ts
  */
 import { pool } from "../db";
 import { Resend } from "resend";
@@ -24,6 +24,7 @@ async function run() {
        AND email IS NOT NULL
        AND email != ''
        AND welcome_email_sent = true
+       AND email = 'harrisonschultz1240@gmail.com'
      RETURNING id, email`
   );
 
