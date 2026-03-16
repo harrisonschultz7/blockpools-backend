@@ -15,8 +15,7 @@ import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// ── Paste your Resend template ID here ──────────────────────────────────────
-// Find it in the URL: resend.com/templates/YOUR_ID_HERE/editor
+// ── Resend template ID ───────────────────────────────────────────────────────
 const TEMPLATE_ID = "2fb7a3e0-c425-4221-8036-63887b64305b";
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -26,7 +25,6 @@ async function run() {
      FROM users
      WHERE email IS NOT NULL
        AND email != ''
-       AND email = 'harrisonschultz1240@gmail.com'
      ORDER BY created_at ASC`
   );
 
