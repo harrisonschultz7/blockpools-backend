@@ -26,7 +26,6 @@ async function run() {
      FROM users
      WHERE email IS NOT NULL
        AND email != ''
-       AND email = 'harrisonschultz1240@gmail.com'
      ORDER BY created_at ASC`
   );
 
