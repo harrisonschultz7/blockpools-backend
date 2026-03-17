@@ -25,6 +25,9 @@ import groupsMetricsRouter from "./routes/groupsMetrics";
 // ✅ Trade agg route (NEW)
 import tradeAggRoutes from "./routes/tradeAggRoutes";
 
+// ✅ Live scores proxy (Goalserve)
+import scoresRouter from "./routes/scores";
+
 const PORT = Number(process.env.PORT || 3001);
 
 // Behind Nginx/Cloudflare, this ensures req.protocol/host are derived from forwarded headers.
@@ -102,6 +105,10 @@ export function makeServer() {
   // Endpoints:
   //   GET /api/groups/leaderboard?range=D30&league=ALL
   app.use("/api", groupsMetricsRouter);
+
+  // ✅ Live scores proxy — Goalserve
+  //   GET /api/scores/live?league=UCL&teamAName=...&teamBName=...&lockTime=...
+  app.use("/api/scores", scoresRouter);
 
   // 404 (optional but helpful for debugging)
   app.use((_req, res) => {
