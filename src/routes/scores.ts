@@ -12,6 +12,7 @@
 // The route:
 //  1. Maps league → Goalserve sportPath + leaguePaths (same logic as settlement-bot.ts)
 //  2. Builds URL(s) for lockTime day ET + next day ET
+//     ✅ If lockTime is > 60 days in the past, uses today instead (handles stale deployments)
 //  3. Fetches from Goalserve (with a short in-memory cache per URL, TTL 55s)
 //  4. Tries each URL in order; returns the first payload that isn't empty
 //
@@ -33,6 +34,10 @@ const GOALSERVE_BASE_URL =
 // Cache TTL slightly under 60s so the client poll window never gets stale data
 const CACHE_TTL_MS = 55_000;
 const FETCH_TIMEOUT_MS = 12_000;
+
+// If lockTime is more than this many seconds in the past, treat it as stale
+// and use today's date instead. 60 days covers any reasonable deployment lag.
+const STALE_LOCK_THRESHOLD_SEC = 60 * 86_400;
 
 // ── In-memory cache (survives restart-free for the process lifetime) ────────
 
@@ -105,7 +110,16 @@ function buildGoalserveUrls(league: string, lockTime: number): string[] {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
   if (!sportPath || !leaguePaths.length) return [];
 
-  const d0 = epochToEtISO(lockTime);
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  // ✅ If lockTime is stale (> 60 days ago), use today's date instead.
+  // This handles contracts deployed with a prior year's lockTime.
+  const effectiveLockTime =
+    lockTime > 0 && nowSec - lockTime > STALE_LOCK_THRESHOLD_SEC
+      ? nowSec
+      : lockTime;
+
+  const d0 = epochToEtISO(effectiveLockTime);
   // Also check the next day for late-night games that roll past midnight ET
   const d1 = addDaysISO(d0, 1);
   const dates = [d0, d1];
