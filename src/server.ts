@@ -11,6 +11,7 @@ import { pingDb } from "./db/pg";
 // Existing routes (keep these exactly as your backend uses today)
 import profileRouter from "./routes/profile";
 import wallRouter from "./routes/wall";
+import leagueChatRouter from "./routes/leagueChat";
 import invitesRouter from "./routes/invites";
 import emailTestRouter from "./routes/emailTest";
 import adminSweepsRouter from "./routes/adminSweeps";
@@ -91,6 +92,15 @@ export function makeServer() {
   app.use("/api/profile/trade-agg", tradeAggRoutes);
 
   app.use("/api", wallRouter);
+
+  // ✅ League chat routes
+  //   GET  /api/league-chat/:league/feed
+  //   POST /api/league-chat/:league/posts
+  //   POST /api/league-chat/posts/:postId/comments
+  //   POST /api/league-chat/posts/:postId/likes
+  //   DELETE /api/league-chat/posts/:postId/likes
+  app.use("/api", leagueChatRouter);
+
   app.use("/api", invitesRouter);
   app.use("/api", emailTestRouter);
   app.use("/api/admin", adminSweepsRouter);
