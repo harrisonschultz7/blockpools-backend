@@ -1,15 +1,4 @@
-// src/routes/leagueChat.ts  — additions / replacements for expert channel support
-// ─────────────────────────────────────────────────────────────────────────────
-// Key changes vs original:
-//   • GET  /api/league-chat/:league/posts?channel=public|expert
-//   • POST /api/league-chat/:league/posts  — enforces expert gate for channel=expert
-//   • GET  /api/league-chat/roi/:address   — lightweight ROI lookup for a single user
-//   • Cron endpoint: POST /api/league-chat/refresh-roi  (service-role only)
-//
-// The existing comment / like routes are unchanged — channel is inherited from
-// the parent post so no extra gating is needed there.
-// ─────────────────────────────────────────────────────────────────────────────
-
+// src/routes/leagueChat.ts
 import { Router, Request, Response } from "express";
 import { createClient } from "@supabase/supabase-js";
 import { PrivyClient } from "@privy-io/server-auth";
@@ -28,66 +17,63 @@ const privy = new PrivyClient(
 
 const VALID_LEAGUES = ["UCL", "NBA", "NHL", "EPL", "MLB", "NFL"] as const;
 const VALID_CHANNELS = ["public", "expert"] as const;
-const EXPERT_ROI_THRESHOLD = 10; // percent
-const EXPERT_MIN_TRADES = 3;     // must have at least 3 settled trades
+const EXPERT_ROI_THRESHOLD = 10;
+const EXPERT_MIN_TRADES = 3;
 
 // ── Auth helper ──────────────────────────────────────────────────────────────
+// Returns both the Privy userId AND the user's primary_address from our DB.
+// This is the fix for the wallet lookup bug — we look up by Privy DID, not
+// by wallet address directly, so we always get the right address.
 
-async function getVerifiedUserId(
+async function getVerifiedUser(
   authHeader: string | undefined
 ): Promise<{ userId: string; address: string } | null> {
   if (!authHeader?.startsWith("Bearer ")) return null;
   try {
     const token = authHeader.slice(7);
     const claims = await privy.verifyAuthToken(token);
-    // Fetch primary_address from users table
     const { data } = await supabase
       .from("users")
       .select("id, primary_address")
       .eq("id", claims.userId)
       .single();
-    if (!data) return null;
-    return { userId: data.id, address: data.primary_address };
+    if (!data?.primary_address) return null;
+    return { userId: data.id, address: data.primary_address.toLowerCase() };
   } catch {
     return null;
   }
 }
 
-// ── ROI helper ───────────────────────────────────────────────────────────────
+// ── League-specific ROI helper ───────────────────────────────────────────────
 
-async function getUserRoi(address: string): Promise<{
-  roi_30d: number;
-  trades_30d: number;
-  is_expert: boolean;
-} | null> {
+async function getLeagueRoi(
+  address: string,
+  league: string
+): Promise<{ roi_30d: number; trades_30d: number; is_expert: boolean } | null> {
   const { data } = await supabase
     .from("user_roi_snapshots")
     .select("roi_30d, trades_30d, is_expert")
-    .eq("user_address", address)
+    .eq("user_address", address.toLowerCase())
+    .eq("league", league.toUpperCase())
     .single();
   return data ?? null;
 }
 
 // ── GET /api/league-chat/:league/posts ──────────────────────────────────────
-// Query params:
-//   channel  = 'public' | 'expert'   (default: 'public')
-//   cursor   = ISO timestamp for pagination
-//   limit    = number (max 50)
 
 router.get("/:league/posts", async (req: Request, res: Response) => {
   const league = (req.params.league || "").toUpperCase();
   if (!VALID_LEAGUES.includes(league as any))
     return res.status(400).json({ error: "Invalid league" });
 
-  const channel = (req.query.channel as string) || "public";
+  const channel = (req.query.channel as string) || "expert";
   if (!VALID_CHANNELS.includes(channel as any))
     return res.status(400).json({ error: "Invalid channel" });
 
   const limit = Math.min(Number(req.query.limit) || 25, 50);
   const cursor = req.query.cursor as string | undefined;
 
-  // Verify auth (expert channel still requires auth to read)
-  const auth = await getVerifiedUserId(req.headers.authorization);
+  const auth = await getVerifiedUser(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
   let query = supabase
@@ -111,9 +97,7 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
     .order("created_at", { ascending: false })
     .limit(limit + 1);
 
-  if (cursor) {
-    query = query.lt("created_at", cursor);
-  }
+  if (cursor) query = query.lt("created_at", cursor);
 
   const { data: posts, error } = await query;
   if (error) return res.status(500).json({ error: error.message });
@@ -121,21 +105,22 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
   const hasMore = posts!.length > limit;
   const items = hasMore ? posts!.slice(0, limit) : posts!;
 
-  // Enrich with ROI for each unique author
+  // Enrich authors with league-specific ROI
   const authorAddresses = [
-    ...new Set(items.map((p: any) => p.author?.primary_address).filter(Boolean)),
+    ...new Set(items.map((p: any) => p.author?.primary_address?.toLowerCase()).filter(Boolean)),
   ] as string[];
 
   const { data: roiRows } = await supabase
     .from("user_roi_snapshots")
     .select("user_address, roi_30d, trades_30d, is_expert")
-    .in("user_address", authorAddresses);
+    .in("user_address", authorAddresses)
+    .eq("league", league);
 
   const roiMap = Object.fromEntries(
-    (roiRows || []).map((r: any) => [r.user_address, r])
+    (roiRows || []).map((r: any) => [r.user_address.toLowerCase(), r])
   );
 
-  // Check which posts the current user has liked
+  // Liked-by-me
   const postIds = items.map((p: any) => p.id);
   const { data: myLikes } = await supabase
     .from("league_chat_likes")
@@ -145,7 +130,7 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
   const likedSet = new Set((myLikes || []).map((l: any) => l.post_id));
 
   const enriched = items.map((post: any) => {
-    const authorAddr = post.author?.primary_address;
+    const authorAddr = post.author?.primary_address?.toLowerCase();
     const roi = roiMap[authorAddr] ?? { roi_30d: null, trades_30d: 0, is_expert: false };
     return {
       id: post.id,
@@ -158,7 +143,6 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
       author_display_name: post.author?.display_name,
       author_primary_address: post.author?.primary_address,
       author_avatar_url: post.author?.avatar_url,
-      // ROI badge fields
       author_roi_30d: roi.roi_30d,
       author_trades_30d: roi.trades_30d,
       author_is_expert: roi.is_expert,
@@ -187,18 +171,18 @@ router.post("/:league/posts", async (req: Request, res: Response) => {
   if (!VALID_LEAGUES.includes(league as any))
     return res.status(400).json({ error: "Invalid league" });
 
-  const auth = await getVerifiedUserId(req.headers.authorization);
+  const auth = await getVerifiedUser(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
-  const { content, channel = "public" } = req.body;
+  const { content, channel = "expert" } = req.body;
   if (!content?.trim()) return res.status(400).json({ error: "Content required" });
   if (!VALID_CHANNELS.includes(channel as any))
     return res.status(400).json({ error: "Invalid channel" });
   if (content.length > 500) return res.status(400).json({ error: "Too long" });
 
-  // ── Expert gate ─────────────────────────────────────────────────────────
+  // Expert gate — checked against THIS league's ROI
   if (channel === "expert") {
-    const roi = await getUserRoi(auth.address);
+    const roi = await getLeagueRoi(auth.address, league);
     const qualified =
       roi &&
       roi.roi_30d >= EXPERT_ROI_THRESHOLD &&
@@ -206,23 +190,19 @@ router.post("/:league/posts", async (req: Request, res: Response) => {
 
     if (!qualified) {
       return res.status(403).json({
-        error: "Expert channel requires ≥10% ROI over the last 30 days with at least 3 settled trades.",
+        error: `Expert channel requires ≥10% ${league} ROI over the last 30 days with at least 3 settled trades.`,
         code: "EXPERT_GATE",
         roi_30d: roi?.roi_30d ?? null,
         trades_30d: roi?.trades_30d ?? 0,
         threshold: EXPERT_ROI_THRESHOLD,
+        league,
       });
     }
   }
 
   const { data: post, error } = await supabase
     .from("league_chat_posts")
-    .insert({
-      league,
-      channel,
-      author_id: auth.userId,
-      content: content.trim(),
-    })
+    .insert({ league, channel, author_id: auth.userId, content: content.trim() })
     .select("id, created_at")
     .single();
 
@@ -232,25 +212,78 @@ router.post("/:league/posts", async (req: Request, res: Response) => {
 });
 
 // ── GET /api/league-chat/roi/:address ───────────────────────────────────────
-// Lightweight endpoint the frontend can hit to get the current user's ROI
-// (used to decide whether to show the "post in Expert" option).
+// Returns league-specific ROI when ?league= is passed, otherwise overall (ALL).
+// Fixed: address is now always lowercased for consistent lookup.
 
 router.get("/roi/:address", async (req: Request, res: Response) => {
-  const auth = await getVerifiedUserId(req.headers.authorization);
+  const auth = await getVerifiedUser(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
-  // Users can only look up their own ROI (or any address if you want it public)
   const address = req.params.address.toLowerCase();
+  const league = (req.query.league as string || "ALL").toUpperCase();
 
-  const roi = await getUserRoi(address);
-  if (!roi) return res.json({ roi_30d: null, trades_30d: 0, is_expert: false });
+  const { data } = await supabase
+    .from("user_roi_snapshots")
+    .select("roi_30d, trades_30d, is_expert")
+    .eq("user_address", address)
+    .eq("league", league)
+    .single();
 
-  return res.json(roi);
+  if (!data) return res.json({ roi_30d: null, trades_30d: 0, is_expert: false, league });
+
+  return res.json({ ...data, league });
+});
+
+// ── POST /api/league-chat/posts/:postId/comments ─────────────────────────────
+
+router.post("/posts/:postId/comments", async (req: Request, res: Response) => {
+  const auth = await getVerifiedUser(req.headers.authorization);
+  if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+  const { content } = req.body;
+  if (!content?.trim()) return res.status(400).json({ error: "Content required" });
+  if (content.length > 300) return res.status(400).json({ error: "Too long" });
+
+  const { data: comment, error } = await supabase
+    .from("league_chat_comments")
+    .insert({ post_id: req.params.postId, author_id: auth.userId, content: content.trim() })
+    .select("id, created_at")
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  return res.status(201).json({ comment });
+});
+
+// ── POST /api/league-chat/posts/:postId/likes ────────────────────────────────
+
+router.post("/posts/:postId/likes", async (req: Request, res: Response) => {
+  const auth = await getVerifiedUser(req.headers.authorization);
+  if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+  await supabase
+    .from("league_chat_likes")
+    .upsert({ post_id: req.params.postId, user_id: auth.userId }, { onConflict: "post_id,user_id" });
+
+  return res.json({ ok: true });
+});
+
+// ── DELETE /api/league-chat/posts/:postId/likes ──────────────────────────────
+
+router.delete("/posts/:postId/likes", async (req: Request, res: Response) => {
+  const auth = await getVerifiedUser(req.headers.authorization);
+  if (!auth) return res.status(401).json({ error: "Unauthorized" });
+
+  await supabase
+    .from("league_chat_likes")
+    .delete()
+    .eq("post_id", req.params.postId)
+    .eq("user_id", auth.userId);
+
+  return res.json({ ok: true });
 });
 
 // ── POST /api/league-chat/refresh-roi ───────────────────────────────────────
-// Called by a cron job (or Supabase Edge Function scheduled trigger).
-// Secured by a shared secret passed as Bearer token.
 
 router.post("/refresh-roi", async (req: Request, res: Response) => {
   const token = req.headers.authorization?.replace("Bearer ", "");
