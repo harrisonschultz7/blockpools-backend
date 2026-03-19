@@ -94,12 +94,11 @@ export function makeServer() {
   app.use("/api", wallRouter);
 
   // ✅ League chat routes
-  //   GET  /api/league-chat/:league/feed
+  //   GET  /api/league-chat/:league/posts?channel=public|expert
   //   POST /api/league-chat/:league/posts
-  //   POST /api/league-chat/posts/:postId/comments
-  //   POST /api/league-chat/posts/:postId/likes
-  //   DELETE /api/league-chat/posts/:postId/likes
-  app.use("/api", leagueChatRouter);
+  //   GET  /api/league-chat/roi/:address
+  //   POST /api/league-chat/refresh-roi
+  app.use("/api/league-chat", leagueChatRouter);
 
   app.use("/api", invitesRouter);
   app.use("/api", emailTestRouter);
