@@ -1,0 +1,18 @@
+#!/bin/bash
+# /etc/cron.d/blockpools-roi-refresh
+# Refreshes the user_roi_snapshots table every 15 minutes.
+# Deployed to VPS via git pull — do not edit directly on server.
+#
+# Install: sudo cp crons/blockpools-roi-refresh /etc/cron.d/ && sudo chmod 644 /etc/cron.d/blockpools-roi-refresh
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+MAILTO=""
+
+# ┌─────────── minute
+# │  ┌──────── hour (3 = 3am UTC)
+# │  │  ┌───── day of month (*)
+# │  │  │  ┌── month (*)
+# │  │  │  │  ┌─ day of week (*)
+# │  │  │  │  │
+0   3  *  *  *  root  /opt/blockpools/crons/roi-refresh.sh >> /var/log/blockpools/roi-refresh.log 2>&1
