@@ -16,7 +16,6 @@ import invitesRouter from "./routes/invites";
 import emailTestRouter from "./routes/emailTest";
 import adminSweepsRouter from "./routes/adminSweeps";
 
-
 // ✅ Leaderboard routes (backend-computed + cached metrics views)
 import leaderboardRouter from "./routes/leaderboard";
 
@@ -28,6 +27,9 @@ import tradeAggRoutes from "./routes/tradeAggRoutes";
 
 // ✅ Live scores proxy (Goalserve)
 import scoresRouter from "./routes/scores";
+
+// ✅ Standings proxy + background cron (Goalserve — UCL, EPL etc.)
+import standingsRouter, { startStandingsCron } from "./routes/standings";
 
 const PORT = Number(process.env.PORT || 3001);
 
@@ -119,6 +121,11 @@ export function makeServer() {
   //   GET /api/scores/live?league=UCL&teamAName=...&teamBName=...&lockTime=...
   app.use("/api/scores", scoresRouter);
 
+  // ✅ Standings proxy + background cron — Goalserve
+  //   GET /api/standings/:league   e.g. /api/standings/UCL
+  app.use("/api/standings", standingsRouter);
+  startStandingsCron();
+
   // 404 (optional but helpful for debugging)
   app.use((_req, res) => {
     res.status(404).json({ error: "Not found" });
@@ -140,5 +147,6 @@ if (require.main === module) {
   const app = makeServer();
   app.listen(PORT, () => {
     console.log(`BlockPools backend listening on port ${PORT}`);
+    startStandingsCron();
   });
 }
