@@ -174,24 +174,34 @@ function safeInt(v: any): number {
 }
 
 function normaliseTeamRow(t: any, rank: number, group?: string): StandingsTeam {
-  const played = safeInt(t?.gp ?? t?.played ?? t?.pld ?? t?.mp);
-  const won    = safeInt(t?.w   ?? t?.won);
-  const drawn  = safeInt(t?.d   ?? t?.drawn ?? t?.draw);
-  const lost   = safeInt(t?.l   ?? t?.lost  ?? t?.defeat);
-  const gf     = safeInt(t?.gf  ?? t?.goals_for    ?? t?.goalsfor);
-  const ga     = safeInt(t?.ga  ?? t?.goals_against ?? t?.goalsagainst);
-  const pts    = safeInt(t?.pts ?? t?.points);
+  // Goalserve soccer standings nest stats under t.overall, points under t.total
+  const ov = t?.overall ?? t;
+  const played = safeInt(ov?.gp ?? t?.gp ?? t?.played ?? t?.pld ?? t?.mp);
+  const won    = safeInt(ov?.w  ?? t?.w  ?? t?.won);
+  const drawn  = safeInt(ov?.d  ?? t?.d  ?? t?.drawn ?? t?.draw);
+  const lost   = safeInt(ov?.l  ?? t?.l  ?? t?.lost  ?? t?.defeat);
+  const gf     = safeInt(ov?.gs ?? ov?.gf ?? t?.gf ?? t?.goals_for    ?? t?.goalsfor);
+  const ga     = safeInt(ov?.ga ?? t?.ga  ?? t?.goals_against ?? t?.goalsagainst);
 
-  // Goalserve form field is usually a string like "W,W,D,L,W" or "WWDLW"
-  let form = String(t?.last_6 ?? t?.form ?? t?.last5 ?? "")
+  // Points: t.total.p  OR  t.pts  OR  t.points
+  const pts = safeInt(t?.total?.p ?? t?.pts ?? t?.points);
+
+  // Goal diff: t.total.gd  OR  compute from gf - ga
+  const gd = t?.total?.gd !== undefined ? safeInt(t.total.gd) : gf - ga;
+
+  // Form: t.recent_form  OR  t.last_6  OR  t.form  OR  t.last5
+  let form = String(t?.recent_form ?? t?.last_6 ?? t?.form ?? t?.last5 ?? "")
     .replace(/[^WDLwdl,]/g, "")
     .replace(/,/g, "")
     .toUpperCase()
     .slice(-5);
 
-  const name     = String(t?.name ?? t?.team_name ?? t?.teamname ?? "");
-  const shortRaw = String(t?.short_name ?? t?.abbr ?? t?.code ?? "");
+  const name      = String(t?.name ?? t?.team_name ?? t?.teamname ?? "");
+  const shortRaw  = String(t?.short_name ?? t?.abbr ?? t?.code ?? "");
   const shortName = shortRaw || name.slice(0, 3).toUpperCase();
+
+  // Note: t.description.value  OR  t.note  OR  t.status
+  const note = String(t?.description?.value ?? t?.note ?? t?.status ?? "");
 
   return {
     rank,
@@ -201,11 +211,11 @@ function normaliseTeamRow(t: any, rank: number, group?: string): StandingsTeam {
     played, won, drawn, lost,
     goalsFor:     gf,
     goalsAgainst: ga,
-    goalDiff:     gf - ga,
+    goalDiff:     gd,
     points:       pts,
     form,
     ...(group ? { group } : {}),
-    note:         String(t?.note ?? t?.status ?? ""),
+    note,
   };
 }
 
@@ -222,12 +232,53 @@ function normalise(raw: any, league: string, season: string): NormalisedStanding
     _raw: raw,
   };
 
-  // Goalserve wraps everything — dig to the relevant node
+  // Goalserve wraps everything — dig to the relevant node.
+  // Known shapes:
+  //   Soccer league:  raw.standings.tournament.team[]
+  //   Soccer UCL:     raw.standings.tournament.group[].team[]  (or category.group[])
+  //   Other:          raw.standings.category  /  raw.standings.data
   const standings = raw?.standings ?? raw?.standing ?? raw;
-  const data      = standings?.category ?? standings?.data ?? standings;
 
-  // ── UCL / group-phase detection ───────────────────────────────────────────
-  // UCL returns groups: data.group[] or data.groups[]
+  // ── Try tournament path first (EPL, UCL, La Liga etc.) ───────────────────
+  const tournament = standings?.tournament;
+  if (tournament) {
+    // UCL group phase: tournament.group[]
+    const groupsRaw: any[] =
+      tournament?.group  ? (Array.isArray(tournament.group)  ? tournament.group  : [tournament.group])  :
+      tournament?.groups ? (Array.isArray(tournament.groups) ? tournament.groups : [tournament.groups]) :
+      [];
+
+    if (groupsRaw.length > 0) {
+      base.phase = "group";
+      base.groups = groupsRaw.map((g: any) => {
+        const teamsRaw: any[] = g?.team ? (Array.isArray(g.team) ? g.team : [g.team]) : [];
+        return {
+          name:  String(g?.name ?? g?.group_name ?? g?.id ?? ""),
+          teams: teamsRaw.map((t, i) => normaliseTeamRow(t, safeInt(t?.position ?? i + 1), g?.name)),
+        };
+      });
+      return base;
+    }
+
+    // Standard league table: tournament.team[]
+    const teamsRaw: any[] =
+      tournament?.team     ? (Array.isArray(tournament.team)     ? tournament.team     : [tournament.team])     :
+      tournament?.teams    ? (Array.isArray(tournament.teams)    ? tournament.teams    : [tournament.teams])    :
+      tournament?.standing ? (Array.isArray(tournament.standing) ? tournament.standing : [tournament.standing]) :
+      [];
+
+    if (teamsRaw.length > 0) {
+      base.phase = "league";
+      base.table = teamsRaw
+        .map((t) => normaliseTeamRow(t, safeInt(t?.position ?? t?.rank ?? 0)))
+        .sort((a, b) => a.rank - b.rank);
+      return base;
+    }
+  }
+
+  // ── Fallback: category / data path ───────────────────────────────────────
+  const data = standings?.category ?? standings?.data ?? standings;
+
   const groupsRaw: any[] =
     data?.group   ? (Array.isArray(data.group)   ? data.group   : [data.group])   :
     data?.groups  ? (Array.isArray(data.groups)  ? data.groups  : [data.groups])  :
@@ -245,7 +296,6 @@ function normalise(raw: any, league: string, season: string): NormalisedStanding
     return base;
   }
 
-  // ── Standard league table ─────────────────────────────────────────────────
   const teamsRaw: any[] =
     data?.team     ? (Array.isArray(data.team)     ? data.team     : [data.team])     :
     data?.teams    ? (Array.isArray(data.teams)    ? data.teams    : [data.teams])    :
@@ -260,7 +310,7 @@ function normalise(raw: any, league: string, season: string): NormalisedStanding
     return base;
   }
 
-  // Fallback: return empty group / table
+  // Nothing found
   console.warn("[standings] Could not parse standings payload for", league);
   base.table = [];
   return base;
