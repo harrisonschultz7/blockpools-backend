@@ -18,12 +18,14 @@
 //   It refreshes all configured leagues every CRON_INTERVAL_MS (default 4 h).
 //   First run fires 30 s after startup so the server is fully initialised.
 //
-// LEAGUE IDs (Goalserve soccer — add more as needed):
-//   UCL  → 1005   EPL → 1204   La Liga → 1399
-//   Serie A → 1269  Bundesliga → 1229  Ligue 1 → 1408
+// LEAGUE IDs:
+//   Soccer:  UCL → 1005   EPL → 1204   La Liga → 1399
+//            Serie A → 1269  Bundesliga → 1229  Ligue 1 → 1408
+//   Basketball: NBA → 1046  (endpoint: /bsktbl/{id}_table)
+//   Hockey:     NHL → 1007  (endpoint: /hockey/{id}_table)
 //
 // GET /api/standings/:league          e.g. /api/standings/UCL
-// GET /api/standings/:league?season=2023-2024   (optional, defaults to current)
+// GET /api/standings/:league?season=2023-2024   (optional, soccer only)
 //
 // Env required:  GOALSERVE_API_KEY
 // Env optional:  GOALSERVE_BASE_URL
@@ -46,9 +48,10 @@ const POSTGRES_STALE_MS  = 4 * 60 * 60_000;  // 4 h — serve Postgres if freshe
 const CRON_INTERVAL_MS   = 4 * 60 * 60_000;  // refresh every 4 h
 const CRON_STARTUP_DELAY = 30_000;            // wait 30 s after boot before first cron run
 
-// ── League → Goalserve ID mapping ────────────────────────────────────────────
+// ── League config ─────────────────────────────────────────────────────────────
 
-const LEAGUE_IDS: Record<string, string> = {
+// Soccer leagues — use /standings/{id}?season=...
+const SOCCER_LEAGUE_IDS: Record<string, string> = {
   UCL:        "1005",
   EPL:        "1204",
   LA_LIGA:    "1399",
@@ -58,8 +61,20 @@ const LEAGUE_IDS: Record<string, string> = {
   MLS:        "1316",
 };
 
-// Leagues to warm in the background cron
-const CRON_LEAGUES = ["UCL", "EPL"] as const;
+// NA sport leagues — use /{sport}/{id}_table (no season param)
+const NA_LEAGUE_CONFIG: Record<string, { sport: string; id: string }> = {
+  NBA: { sport: "bsktbl", id: "1046" },
+  NHL: { sport: "hockey", id: "1007" },
+};
+
+const ALL_KNOWN_LEAGUES = new Set([
+  ...Object.keys(SOCCER_LEAGUE_IDS),
+  ...Object.keys(NA_LEAGUE_CONFIG),
+]);
+
+// Leagues warmed by background cron
+const CRON_SOCCER_LEAGUES = ["UCL", "EPL"] as const;
+const CRON_NA_LEAGUES     = ["NBA", "NHL"] as const;
 
 // ── In-memory cache ───────────────────────────────────────────────────────────
 
@@ -89,7 +104,7 @@ async function pgGet(league: string, season: string): Promise<NormalisedStanding
     );
     if (!rows[0]) return null;
     const ageMs = Date.now() - new Date(rows[0].fetched_at).getTime();
-    if (ageMs > POSTGRES_STALE_MS) return null; // stale — re-fetch
+    if (ageMs > POSTGRES_STALE_MS) return null;
     return rows[0].standings_data;
   } catch (e) {
     console.warn("[standings] pgGet error", (e as any)?.message);
@@ -114,38 +129,56 @@ async function pgSet(league: string, season: string, data: NormalisedStandings) 
 // ── Normalised data shape ─────────────────────────────────────────────────────
 
 export interface StandingsTeam {
-  rank:        number;
-  teamId:      string;
-  teamName:    string;
-  shortName:   string;   // up to 3-char code where available
-  played:      number;
-  won:         number;
-  drawn:       number;
-  lost:        number;
-  goalsFor:    number;
-  goalsAgainst:number;
-  goalDiff:    number;
-  points:      number;
-  form:        string;   // e.g. "WWDLW"  (last 5, newest last)
-  group?:      string;   // populated for UCL group stage
-  note?:       string;   // e.g. "Champions League", "Relegation"
+  rank:         number;
+  teamId:       string;
+  teamName:     string;
+  shortName:    string;
+  played:       number;
+  won:          number;
+  drawn:        number;
+  lost:         number;
+  goalsFor:     number;
+  goalsAgainst: number;
+  goalDiff:     number;
+  points:       number;
+  form:         string;   // "WWDLW" — last 5, newest last
+  group?:       string;
+  note?:        string;
+}
+
+// NA (NBA/NHL) conference team
+export interface NATeamStanding {
+  rank:    number;
+  teamId:  string;
+  name:    string;
+  w:       number;
+  l:       number;
+  otl?:    number;   // NHL only
+  pts?:    number;   // NHL only
+  pct:     number;
+  streak:  string;   // e.g. "W3" or "L2"
+  playoff: boolean;
+}
+
+export interface NAConference {
+  name:  string;
+  teams: NATeamStanding[];
 }
 
 export interface NormalisedStandings {
-  league:     string;
-  season:     string;
-  updatedAt:  string;   // ISO
-  // For league-table formats (EPL, La Liga, etc.)
-  table?:     StandingsTeam[];
-  // For UCL group/knockout phase
-  groups?:    { name: string; teams: StandingsTeam[] }[];
-  // Phase indicator — "group" | "knockout" | "league"
-  phase:      "group" | "knockout" | "league";
-  // Raw Goalserve payload kept for debugging / extended use
-  _raw?:      any;
+  league:    string;
+  season:    string;
+  updatedAt: string;
+  // Soccer
+  table?:    StandingsTeam[];
+  groups?:   { name: string; teams: StandingsTeam[] }[];
+  phase:     "group" | "knockout" | "league" | "conference";
+  // NBA / NHL
+  conferences?: NAConference[];
+  _raw?: any;
 }
 
-// ── Goalserve fetch + normalisation ──────────────────────────────────────────
+// ── Goalserve fetch ───────────────────────────────────────────────────────────
 
 async function fetchWithTimeout(url: string): Promise<any> {
   const ctrl = new AbortController();
@@ -153,7 +186,6 @@ async function fetchWithTimeout(url: string): Promise<any> {
   try {
     const res = await fetch(url, { signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // Goalserve returns JSON when ?json=1 is appended
     return await res.json();
   } finally {
     clearTimeout(t);
@@ -163,8 +195,7 @@ async function fetchWithTimeout(url: string): Promise<any> {
 function currentSeason(): string {
   const now = new Date();
   const y = now.getFullYear();
-  const m = now.getMonth() + 1; // 1-based
-  // Soccer seasons typically start in July/August
+  const m = now.getMonth() + 1;
   return m >= 7 ? `${y}-${y + 1}` : `${y - 1}-${y}`;
 }
 
@@ -173,83 +204,45 @@ function safeInt(v: any): number {
   return isNaN(n) ? 0 : n;
 }
 
+// ── Soccer normalisation (unchanged) ─────────────────────────────────────────
+
 function normaliseTeamRow(t: any, rank: number, group?: string): StandingsTeam {
-  // Goalserve soccer standings nest stats under t.overall, points under t.total
-  const ov = t?.overall ?? t;
+  const ov     = t?.overall ?? t;
   const played = safeInt(ov?.gp ?? t?.gp ?? t?.played ?? t?.pld ?? t?.mp);
   const won    = safeInt(ov?.w  ?? t?.w  ?? t?.won);
   const drawn  = safeInt(ov?.d  ?? t?.d  ?? t?.drawn ?? t?.draw);
   const lost   = safeInt(ov?.l  ?? t?.l  ?? t?.lost  ?? t?.defeat);
   const gf     = safeInt(ov?.gs ?? ov?.gf ?? t?.gf ?? t?.goals_for    ?? t?.goalsfor);
   const ga     = safeInt(ov?.ga ?? t?.ga  ?? t?.goals_against ?? t?.goalsagainst);
-
-  // Points: t.total.p  OR  t.pts  OR  t.points
-  const pts = safeInt(t?.total?.p ?? t?.pts ?? t?.points);
-
-  // Goal diff: t.total.gd  OR  compute from gf - ga
-  const gd = t?.total?.gd !== undefined ? safeInt(t.total.gd) : gf - ga;
-
-  // Form: t.recent_form  OR  t.last_6  OR  t.form  OR  t.last5
-  let form = String(t?.recent_form ?? t?.last_6 ?? t?.form ?? t?.last5 ?? "")
-    .replace(/[^WDLwdl,]/g, "")
-    .replace(/,/g, "")
-    .toUpperCase()
-    .slice(-5);
-
+  const pts    = safeInt(t?.total?.p ?? t?.pts ?? t?.points);
+  const gd     = t?.total?.gd !== undefined ? safeInt(t.total.gd) : gf - ga;
+  let form     = String(t?.recent_form ?? t?.last_6 ?? t?.form ?? t?.last5 ?? "")
+    .replace(/[^WDLwdl,]/g, "").replace(/,/g, "").toUpperCase().slice(-5);
   const name      = String(t?.name ?? t?.team_name ?? t?.teamname ?? "");
   const shortRaw  = String(t?.short_name ?? t?.abbr ?? t?.code ?? "");
   const shortName = shortRaw || name.slice(0, 3).toUpperCase();
-
-  // Note: t.description.value  OR  t.note  OR  t.status
-  const note = String(t?.description?.value ?? t?.note ?? t?.status ?? "");
-
+  const note      = String(t?.description?.value ?? t?.note ?? t?.status ?? "");
   return {
-    rank,
-    teamId:       String(t?.id ?? t?.team_id ?? ""),
-    teamName:     name,
-    shortName,
-    played, won, drawn, lost,
-    goalsFor:     gf,
-    goalsAgainst: ga,
-    goalDiff:     gd,
-    points:       pts,
-    form,
-    ...(group ? { group } : {}),
-    note,
+    rank, teamId: String(t?.id ?? t?.team_id ?? ""), teamName: name, shortName,
+    played, won, drawn, lost, goalsFor: gf, goalsAgainst: ga, goalDiff: gd,
+    points: pts, form, ...(group ? { group } : {}), note,
   };
 }
 
-/**
- * Parse whatever Goalserve returns for a standings endpoint.
- * Goalserve's JSON structure is inconsistent — this handles the common shapes.
- */
-function normalise(raw: any, league: string, season: string): NormalisedStandings {
+function normaliseSoccer(raw: any, league: string, season: string): NormalisedStandings {
   const base: NormalisedStandings = {
-    league,
-    season,
-    updatedAt: new Date().toISOString(),
-    phase: "league",
-    _raw: raw,
+    league, season, updatedAt: new Date().toISOString(), phase: "league", _raw: raw,
   };
-
-  // Goalserve wraps everything — dig to the relevant node.
-  // Known shapes:
-  //   Soccer league:  raw.standings.tournament.team[]
-  //   Soccer UCL:     raw.standings.tournament.group[].team[]  (or category.group[])
-  //   Other:          raw.standings.category  /  raw.standings.data
-  const standings = raw?.standings ?? raw?.standing ?? raw;
-
-  // ── Try tournament path first (EPL, UCL, La Liga etc.) ───────────────────
+  const standings  = raw?.standings ?? raw?.standing ?? raw;
   const tournament = standings?.tournament;
+
   if (tournament) {
-    // UCL group phase: tournament.group[]
     const groupsRaw: any[] =
       tournament?.group  ? (Array.isArray(tournament.group)  ? tournament.group  : [tournament.group])  :
-      tournament?.groups ? (Array.isArray(tournament.groups) ? tournament.groups : [tournament.groups]) :
-      [];
+      tournament?.groups ? (Array.isArray(tournament.groups) ? tournament.groups : [tournament.groups]) : [];
 
     if (groupsRaw.length > 0) {
-      base.phase = "group";
+      base.phase  = "group";
       base.groups = groupsRaw.map((g: any) => {
         const teamsRaw: any[] = g?.team ? (Array.isArray(g.team) ? g.team : [g.team]) : [];
         return {
@@ -260,32 +253,25 @@ function normalise(raw: any, league: string, season: string): NormalisedStanding
       return base;
     }
 
-    // Standard league table: tournament.team[]
     const teamsRaw: any[] =
       tournament?.team     ? (Array.isArray(tournament.team)     ? tournament.team     : [tournament.team])     :
       tournament?.teams    ? (Array.isArray(tournament.teams)    ? tournament.teams    : [tournament.teams])    :
-      tournament?.standing ? (Array.isArray(tournament.standing) ? tournament.standing : [tournament.standing]) :
-      [];
+      tournament?.standing ? (Array.isArray(tournament.standing) ? tournament.standing : [tournament.standing]) : [];
 
     if (teamsRaw.length > 0) {
       base.phase = "league";
-      base.table = teamsRaw
-        .map((t) => normaliseTeamRow(t, safeInt(t?.position ?? t?.rank ?? 0)))
-        .sort((a, b) => a.rank - b.rank);
+      base.table = teamsRaw.map((t) => normaliseTeamRow(t, safeInt(t?.position ?? t?.rank ?? 0))).sort((a, b) => a.rank - b.rank);
       return base;
     }
   }
 
-  // ── Fallback: category / data path ───────────────────────────────────────
-  const data = standings?.category ?? standings?.data ?? standings;
-
+  const data      = standings?.category ?? standings?.data ?? standings;
   const groupsRaw: any[] =
-    data?.group   ? (Array.isArray(data.group)   ? data.group   : [data.group])   :
-    data?.groups  ? (Array.isArray(data.groups)  ? data.groups  : [data.groups])  :
-    [];
+    data?.group  ? (Array.isArray(data.group)  ? data.group  : [data.group])  :
+    data?.groups ? (Array.isArray(data.groups) ? data.groups : [data.groups]) : [];
 
   if (groupsRaw.length > 0) {
-    base.phase = "group";
+    base.phase  = "group";
     base.groups = groupsRaw.map((g: any) => {
       const teamsRaw: any[] = g?.team ? (Array.isArray(g.team) ? g.team : [g.team]) : [];
       return {
@@ -299,21 +285,98 @@ function normalise(raw: any, league: string, season: string): NormalisedStanding
   const teamsRaw: any[] =
     data?.team     ? (Array.isArray(data.team)     ? data.team     : [data.team])     :
     data?.teams    ? (Array.isArray(data.teams)    ? data.teams    : [data.teams])    :
-    data?.standing ? (Array.isArray(data.standing) ? data.standing : [data.standing]) :
-    [];
+    data?.standing ? (Array.isArray(data.standing) ? data.standing : [data.standing]) : [];
 
   if (teamsRaw.length > 0) {
     base.phase = "league";
-    base.table = teamsRaw.map((t, i) =>
-      normaliseTeamRow(t, safeInt(t?.rank ?? t?.position ?? i + 1))
-    );
+    base.table = teamsRaw.map((t, i) => normaliseTeamRow(t, safeInt(t?.rank ?? t?.position ?? i + 1)));
     return base;
   }
 
-  // Nothing found
-  console.warn("[standings] Could not parse standings payload for", league);
+  console.warn("[standings] Could not parse soccer payload for", league);
   base.table = [];
   return base;
+}
+
+// ── NA normalisation (NBA / NHL) ──────────────────────────────────────────────
+
+// Converts Goalserve recent_form "WWLWW" → streak string "W2" / "L1"
+function formToStreak(form: string): string {
+  if (!form) return "W0";
+  const chars = form.replace(/[^WLwl]/g, "").toUpperCase();
+  if (!chars.length) return "W0";
+  const last = chars[chars.length - 1];
+  let count = 0;
+  for (let i = chars.length - 1; i >= 0; i--) {
+    if (chars[i] === last) count++;
+    else break;
+  }
+  return `${last}${count}`;
+}
+
+function extractConferences(raw: any): any[] {
+  // Shape: raw.standings.category[] → each has .league[] → each has .name + .team[]
+  const s   = raw?.standings;
+  const cat = s?.category;
+  if (!cat) return [];
+  const cats = Array.isArray(cat) ? cat : [cat];
+  const results: any[] = [];
+  for (const c of cats) {
+    const l = c?.league;
+    if (!l) continue;
+    const leagues = Array.isArray(l) ? l : [l];
+    results.push(...leagues);
+  }
+  return results;
+}
+
+function normaliseNA(raw: any, league: string, isHockey: boolean): NormalisedStandings {
+  const leagues = extractConferences(raw);
+  const conferences: NAConference[] = [];
+
+  for (const lg of leagues) {
+    const confName = String(lg?.name ?? "Conference");
+    const teamsRaw = Array.isArray(lg?.team) ? lg.team : lg?.team ? [lg.team] : [];
+
+    const teams: NATeamStanding[] = teamsRaw.map((t: any) => {
+      const w   = safeInt(t.w);
+      const l   = safeInt(t.l);
+      const otl = isHockey ? safeInt(t.lo ?? t.otl ?? 0) : undefined;
+      const pts = isHockey ? safeInt(t.pts) : undefined;
+      const gp  = safeInt(t.gp) || (w + l + (otl ?? 0));
+      const pct = isHockey
+        ? (gp > 0 && pts !== undefined ? pts / (gp * 2) : 0)
+        : (gp > 0 ? w / gp : 0);
+      const isPlayoff = String(t?.description?.value ?? "").includes("Play Offs");
+
+      return {
+        rank:    safeInt(t.pos),
+        teamId:  String(t.id ?? ""),
+        name:    String(t.name ?? ""),
+        w, l,
+        ...(isHockey ? { otl, pts } : {}),
+        pct:     Math.round(pct * 1000) / 1000,
+        streak:  formToStreak(String(t.recent_form ?? "")),
+        playoff: isPlayoff,
+      };
+    }).sort((a: NATeamStanding, b: NATeamStanding) => a.rank - b.rank);
+
+    if (teams.length > 0) conferences.push({ name: confName, teams });
+  }
+
+  // Sort East before West for display consistency
+  conferences.sort((a, b) => {
+    const order = (n: string) => n.toLowerCase().includes("east") ? 0 : 1;
+    return order(a.name) - order(b.name);
+  });
+
+  return {
+    league:      league.toUpperCase(),
+    season:      currentSeason(),
+    updatedAt:   new Date().toISOString(),
+    phase:       "conference",
+    conferences,
+  };
 }
 
 // ── Main fetch + cache pipeline ───────────────────────────────────────────────
@@ -321,32 +384,32 @@ function normalise(raw: any, league: string, season: string): NormalisedStanding
 async function getStandings(league: string, season: string): Promise<NormalisedStandings> {
   const cacheKey = `${league}:${season}`;
 
-  // Tier 2 — memory
   const memHit = memGet(cacheKey);
   if (memHit) return memHit;
 
-  // Tier 1 — Postgres
   const pgHit = await pgGet(league, season);
-  if (pgHit) {
-    memSet(cacheKey, pgHit);
-    return pgHit;
+  if (pgHit) { memSet(cacheKey, pgHit); return pgHit; }
+
+  const isNA = !!NA_LEAGUE_CONFIG[league];
+
+  let raw: any;
+  if (isNA) {
+    const cfg = NA_LEAGUE_CONFIG[league];
+    const url = `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/${cfg.sport}/${cfg.id}_table?json=1`;
+    raw = await fetchWithTimeout(url);
+  } else {
+    const leagueId = SOCCER_LEAGUE_IDS[league];
+    if (!leagueId) throw new Error(`Unknown league: ${league}`);
+    const url = `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/standings/${leagueId}?season=${encodeURIComponent(season)}&json=1`;
+    raw = await fetchWithTimeout(url);
   }
 
-  // Fetch from Goalserve
-  const leagueId = LEAGUE_IDS[league.toUpperCase()];
-  if (!leagueId) throw new Error(`Unknown league: ${league}`);
+  const data = isNA
+    ? normaliseNA(raw, league, league === "NHL")
+    : normaliseSoccer(raw, league.toUpperCase(), season);
 
-  const url =
-    `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}` +
-    `/standings/${leagueId}?season=${encodeURIComponent(season)}&json=1`;
-
-  const raw  = await fetchWithTimeout(url);
-  const data = normalise(raw, league.toUpperCase(), season);
-
-  // Persist
   await pgSet(league, season, data);
   memSet(cacheKey, data);
-
   return data;
 }
 
@@ -361,10 +424,10 @@ router.get("/:league", async (req: Request, res: Response) => {
     const league = String(req.params.league || "").toUpperCase();
     const season = String(req.query.season || currentSeason());
 
-    if (!LEAGUE_IDS[league]) {
+    if (!ALL_KNOWN_LEAGUES.has(league)) {
       return res.status(400).json({
-        error: `Unknown league: ${league}`,
-        knownLeagues: Object.keys(LEAGUE_IDS),
+        error:        `Unknown league: ${league}`,
+        knownLeagues: Array.from(ALL_KNOWN_LEAGUES),
       });
     }
 
@@ -385,32 +448,45 @@ export function startStandingsCron() {
   if (_cronTimer) return; // idempotent
 
   const run = async () => {
-    for (const league of CRON_LEAGUES) {
+    // Soccer leagues (season-aware)
+    for (const league of CRON_SOCCER_LEAGUES) {
       const season = currentSeason();
       try {
-        // Bypass memory cache — force Goalserve fetch
         const cacheKey = `${league}:${season}`;
         delete _mem[cacheKey];
-
-        const leagueId = LEAGUE_IDS[league];
-        const url =
-          `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}` +
-          `/standings/${leagueId}?season=${encodeURIComponent(season)}&json=1`;
-
+        const cfg = SOCCER_LEAGUE_IDS[league];
+        const url = `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/standings/${cfg}?season=${encodeURIComponent(season)}&json=1`;
         const raw  = await fetchWithTimeout(url);
-        const data = normalise(raw, league, season);
+        const data = normaliseSoccer(raw, league, season);
         await pgSet(league, season, data);
         memSet(cacheKey, data);
         console.log(`[standings:cron] refreshed ${league} ${season}`);
       } catch (e: any) {
         console.error(`[standings:cron] failed for ${league}:`, e?.message);
       }
-      // Small delay between requests to be polite to Goalserve
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+
+    // NA leagues (no season param)
+    for (const league of CRON_NA_LEAGUES) {
+      const season = currentSeason();
+      try {
+        const cacheKey = `${league}:${season}`;
+        delete _mem[cacheKey];
+        const cfg = NA_LEAGUE_CONFIG[league];
+        const url = `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/${cfg.sport}/${cfg.id}_table?json=1`;
+        const raw  = await fetchWithTimeout(url);
+        const data = normaliseNA(raw, league, league === "NHL");
+        await pgSet(league, season, data);
+        memSet(cacheKey, data);
+        console.log(`[standings:cron] refreshed ${league}`);
+      } catch (e: any) {
+        console.error(`[standings:cron] failed for ${league}:`, e?.message);
+      }
       await new Promise((r) => setTimeout(r, 2_000));
     }
   };
 
-  // First run 30 s after startup
   setTimeout(() => {
     run().catch(console.error);
     _cronTimer = setInterval(() => run().catch(console.error), CRON_INTERVAL_MS);
