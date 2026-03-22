@@ -2,7 +2,7 @@
 import { Router, Request, Response } from "express";
 import { createClient } from "@supabase/supabase-js";
 import { PrivyClient } from "@privy-io/server-auth";
-import { pool } from "../db"; // ✅ Added for canonical live ROI query
+import { pool } from "../db"; // ✅ canonical live ROI query
 
 const router = Router();
 
@@ -18,8 +18,8 @@ const privy = new PrivyClient(
 
 const VALID_LEAGUES = ["UCL", "NBA", "NHL", "EPL", "MLB", "NFL"] as const;
 const VALID_CHANNELS = ["public", "expert"] as const;
-const EXPERT_ROI_THRESHOLD = 10; // percent (i.e. 10 = +10%)
-const EXPERT_MIN_TRADES = 3;     // minimum settled BUY trades in window
+const EXPERT_ROI_THRESHOLD = 10; // percent (10 = +10%)
+const EXPERT_MIN_TRADES = 3;     // settled BUY trades required
 
 // ── Auth helper ──────────────────────────────────────────────────────────────
 
@@ -42,16 +42,16 @@ async function getVerifiedUser(
   }
 }
 
-// ── Canonical live ROI helper ────────────────────────────────────────────────
+// ── Canonical live ROI (single user) ────────────────────────────────────────
 //
-// Matches the profile page formula exactly (masterMetrics.ts / tradeAggRoutes.ts):
-//   Total Traded = SUM(gross_in_dec) WHERE type = 'BUY'
-//   Total Return = SUM(net_out_dec)  WHERE type IN ('SELL', 'CLAIM')
-//   ROI (%) = (TotalReturn / TotalTraded - 1) * 100
-//   trades_30d = COUNT of settled BUY rows (is_final = true) in the 30-day window
+// Matches masterMetrics.ts / profile page exactly:
+//   total_traded = SUM(gross_in_dec) WHERE type='BUY' AND is_final=true AND resolution_type='NORMAL'
+//                + SUM(cost_basis_closed_dec) WHERE type='SELL' AND is_final=false
+//   total_return = SUM(net_out_dec) WHERE type IN ('SELL','CLAIM')
+//   ROI (%)      = (total_return / total_traded - 1) * 100
+//   trades_30d   = COUNT of BUY rows where is_final=true (settled trades)
 //
-// Window: event timestamp-based (NOT game lock_time), last 30 days.
-// League filter applied to games.league.
+// Open positions (is_final=false BUYs) are excluded from total_traded — matches profile page.
 
 async function computeLiveRoi(
   address: string,
@@ -60,17 +60,28 @@ async function computeLiveRoi(
   const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
 
   const sql = `
+    WITH filtered AS (
+      SELECT
+        e.type,
+        g.is_final,
+        g.resolution_type,
+        COALESCE(e.gross_in_dec::numeric,         0) AS gross_in,
+        COALESCE(e.net_out_dec::numeric,           0) AS net_out,
+        COALESCE(e.cost_basis_closed_dec::numeric, 0) AS cost_basis_closed
+      FROM public.user_trade_events e
+      JOIN public.games g ON g.game_id = e.game_id
+      WHERE LOWER(e.user_address) = $1
+        AND e.timestamp >= $2
+        AND g.league = $3
+    )
     SELECT
-      COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0)           AS total_traded,
-      COALESCE(SUM(e.net_out_dec::numeric)  FILTER (WHERE e.type IN ('SELL','CLAIM')), 0) AS total_return,
-      COUNT(*)                              FILTER (
-        WHERE e.type = 'BUY' AND g.is_final = true
-      )::int                                                                              AS trades_settled
-    FROM public.user_trade_events e
-    JOIN public.games g ON g.game_id = e.game_id
-    WHERE LOWER(e.user_address) = $1
-      AND e.timestamp >= $2
-      AND g.league = $3
+      (
+        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type = 'NORMAL'), 0)
+        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
+      )::numeric AS total_traded,
+      COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
+      COUNT(*)   FILTER (WHERE type = 'BUY' AND is_final = true)::int            AS trades_settled
+    FROM filtered
   `;
 
   const { rows } = await pool.query(sql, [
@@ -82,8 +93,8 @@ async function computeLiveRoi(
   const row = rows[0];
   if (!row) return { roi_30d: null, trades_30d: 0, is_expert: false };
 
-  const totalTraded = Number(row.total_traded) || 0;
-  const totalReturn = Number(row.total_return) || 0;
+  const totalTraded   = Number(row.total_traded)   || 0;
+  const totalReturn   = Number(row.total_return)   || 0;
   const tradesSettled = Number(row.trades_settled) || 0;
 
   const roi_30d = totalTraded > 0
@@ -98,8 +109,7 @@ async function computeLiveRoi(
   return { roi_30d, trades_30d: tradesSettled, is_expert };
 }
 
-// ── Bulk ROI for post enrichment ─────────────────────────────────────────────
-// Same canonical formula, batched across multiple author addresses for efficiency.
+// ── Canonical live ROI (bulk, for post enrichment) ───────────────────────────
 
 async function computeLiveRoiBulk(
   addresses: string[],
@@ -110,19 +120,31 @@ async function computeLiveRoiBulk(
   const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
 
   const sql = `
+    WITH filtered AS (
+      SELECT
+        LOWER(e.user_address) AS user_address,
+        e.type,
+        g.is_final,
+        g.resolution_type,
+        COALESCE(e.gross_in_dec::numeric,         0) AS gross_in,
+        COALESCE(e.net_out_dec::numeric,           0) AS net_out,
+        COALESCE(e.cost_basis_closed_dec::numeric, 0) AS cost_basis_closed
+      FROM public.user_trade_events e
+      JOIN public.games g ON g.game_id = e.game_id
+      WHERE LOWER(e.user_address) = ANY($1::text[])
+        AND e.timestamp >= $2
+        AND g.league = $3
+    )
     SELECT
-      LOWER(e.user_address)                                                               AS user_address,
-      COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0)           AS total_traded,
-      COALESCE(SUM(e.net_out_dec::numeric)  FILTER (WHERE e.type IN ('SELL','CLAIM')), 0) AS total_return,
-      COUNT(*)                              FILTER (
-        WHERE e.type = 'BUY' AND g.is_final = true
-      )::int                                                                              AS trades_settled
-    FROM public.user_trade_events e
-    JOIN public.games g ON g.game_id = e.game_id
-    WHERE LOWER(e.user_address) = ANY($1::text[])
-      AND e.timestamp >= $2
-      AND g.league = $3
-    GROUP BY LOWER(e.user_address)
+      user_address,
+      (
+        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type = 'NORMAL'), 0)
+        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
+      )::numeric AS total_traded,
+      COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
+      COUNT(*)   FILTER (WHERE type = 'BUY' AND is_final = true)::int            AS trades_settled
+    FROM filtered
+    GROUP BY user_address
   `;
 
   const { rows } = await pool.query(sql, [
@@ -134,8 +156,8 @@ async function computeLiveRoiBulk(
   const result = new Map<string, { roi_30d: number | null; trades_30d: number; is_expert: boolean }>();
 
   for (const row of rows) {
-    const totalTraded = Number(row.total_traded) || 0;
-    const totalReturn = Number(row.total_return) || 0;
+    const totalTraded   = Number(row.total_traded)   || 0;
+    const totalReturn   = Number(row.total_return)   || 0;
     const tradesSettled = Number(row.trades_settled) || 0;
 
     const roi_30d = totalTraded > 0
@@ -199,7 +221,7 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
   const hasMore = posts!.length > limit;
   const items = hasMore ? posts!.slice(0, limit) : posts!;
 
-  // ✅ Enrich authors with LIVE canonical ROI (same formula as profile page)
+  // ✅ Live canonical ROI — matches profile page exactly
   const authorAddresses = [
     ...new Set(items.map((p: any) => p.author?.primary_address?.toLowerCase()).filter(Boolean)),
   ] as string[];
@@ -266,12 +288,11 @@ router.post("/:league/posts", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Invalid channel" });
   if (content.length > 500) return res.status(400).json({ error: "Too long" });
 
-  // ✅ Expert gate — live canonical ROI, same formula as profile page
+  // ✅ Expert gate — live canonical ROI, identical to profile page
   if (channel === "expert") {
     const roi = await computeLiveRoi(auth.address, league);
-    const qualified = roi.is_expert;
 
-    if (!qualified) {
+    if (!roi.is_expert) {
       return res.status(403).json({
         error: `Expert channel requires ≥10% ${league} ROI over the last 30 days with at least ${EXPERT_MIN_TRADES} settled trades.`,
         code: "EXPERT_GATE",
@@ -295,8 +316,6 @@ router.post("/:league/posts", async (req: Request, res: Response) => {
 });
 
 // ── GET /api/league-chat/roi/:address ───────────────────────────────────────
-// Returns live canonical ROI for the given address + league (or ALL).
-// NOW matches profile page math exactly.
 
 router.get("/roi/:address", async (req: Request, res: Response) => {
   const auth = await getVerifiedUser(req.headers.authorization);
@@ -306,39 +325,39 @@ router.get("/roi/:address", async (req: Request, res: Response) => {
   const league = (req.query.league as string || "ALL").toUpperCase();
 
   if (league === "ALL") {
-    // For ALL leagues, aggregate across all valid leagues
     const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
-
     const sql = `
+      WITH filtered AS (
+        SELECT
+          e.type,
+          g.is_final,
+          g.resolution_type,
+          COALESCE(e.gross_in_dec::numeric,         0) AS gross_in,
+          COALESCE(e.net_out_dec::numeric,           0) AS net_out,
+          COALESCE(e.cost_basis_closed_dec::numeric, 0) AS cost_basis_closed
+        FROM public.user_trade_events e
+        JOIN public.games g ON g.game_id = e.game_id
+        WHERE LOWER(e.user_address) = $1
+          AND e.timestamp >= $2
+          AND g.league = ANY($3::text[])
+      )
       SELECT
-        COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0)           AS total_traded,
-        COALESCE(SUM(e.net_out_dec::numeric)  FILTER (WHERE e.type IN ('SELL','CLAIM')), 0) AS total_return,
-        COUNT(*)                              FILTER (
-          WHERE e.type = 'BUY' AND g.is_final = true
-        )::int                                                                              AS trades_settled
-      FROM public.user_trade_events e
-      JOIN public.games g ON g.game_id = e.game_id
-      WHERE LOWER(e.user_address) = $1
-        AND e.timestamp >= $2
-        AND g.league = ANY($3::text[])
+        (
+          COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type = 'NORMAL'), 0)
+          + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
+        )::numeric AS total_traded,
+        COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
+        COUNT(*)   FILTER (WHERE type = 'BUY' AND is_final = true)::int            AS trades_settled
+      FROM filtered
     `;
 
-    const { rows } = await pool.query(sql, [
-      address,
-      windowSec,
-      Array.from(VALID_LEAGUES),
-    ]);
-
+    const { rows } = await pool.query(sql, [address, windowSec, Array.from(VALID_LEAGUES)]);
     const row = rows[0];
-    const totalTraded = Number(row?.total_traded) || 0;
-    const totalReturn = Number(row?.total_return) || 0;
+    const totalTraded   = Number(row?.total_traded)   || 0;
+    const totalReturn   = Number(row?.total_return)   || 0;
     const tradesSettled = Number(row?.trades_settled) || 0;
-
     const roi_30d = totalTraded > 0 ? (totalReturn / totalTraded - 1) * 100 : null;
-    const is_expert =
-      roi_30d !== null &&
-      roi_30d >= EXPERT_ROI_THRESHOLD &&
-      tradesSettled >= EXPERT_MIN_TRADES;
+    const is_expert = roi_30d !== null && roi_30d >= EXPERT_ROI_THRESHOLD && tradesSettled >= EXPERT_MIN_TRADES;
 
     return res.json({ roi_30d, trades_30d: tradesSettled, is_expert, league: "ALL" });
   }
@@ -400,17 +419,14 @@ router.delete("/posts/:postId/likes", async (req: Request, res: Response) => {
 });
 
 // ── POST /api/league-chat/refresh-roi ───────────────────────────────────────
-// This endpoint is now a no-op since ROI is computed live, but kept for
-// backwards compatibility with any cron jobs hitting it.
+// No-op — ROI is now computed live. Kept for cron backwards-compatibility.
 
 router.post("/refresh-roi", async (req: Request, res: Response) => {
   const token = req.headers.authorization?.replace("Bearer ", "");
   if (token !== process.env.CRON_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-
-  // ROI is now computed live from user_trade_events — no snapshot to refresh.
-  return res.json({ ok: true, message: "ROI is now computed live; no snapshot refresh needed.", refreshed_at: new Date().toISOString() });
+  return res.json({ ok: true, message: "ROI is computed live; no snapshot refresh needed.", refreshed_at: new Date().toISOString() });
 });
 
 export default router;
