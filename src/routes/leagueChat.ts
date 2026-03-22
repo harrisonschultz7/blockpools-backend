@@ -2,6 +2,7 @@
 import { Router, Request, Response } from "express";
 import { createClient } from "@supabase/supabase-js";
 import { PrivyClient } from "@privy-io/server-auth";
+import { pool } from "../db"; // ✅ Added for canonical live ROI query
 
 const router = Router();
 
@@ -17,13 +18,10 @@ const privy = new PrivyClient(
 
 const VALID_LEAGUES = ["UCL", "NBA", "NHL", "EPL", "MLB", "NFL"] as const;
 const VALID_CHANNELS = ["public", "expert"] as const;
-const EXPERT_ROI_THRESHOLD = 10;
-const EXPERT_MIN_TRADES = 3;
+const EXPERT_ROI_THRESHOLD = 10; // percent (i.e. 10 = +10%)
+const EXPERT_MIN_TRADES = 3;     // minimum settled BUY trades in window
 
 // ── Auth helper ──────────────────────────────────────────────────────────────
-// Returns both the Privy userId AND the user's primary_address from our DB.
-// This is the fix for the wallet lookup bug — we look up by Privy DID, not
-// by wallet address directly, so we always get the right address.
 
 async function getVerifiedUser(
   authHeader: string | undefined
@@ -44,19 +42,115 @@ async function getVerifiedUser(
   }
 }
 
-// ── League-specific ROI helper ───────────────────────────────────────────────
+// ── Canonical live ROI helper ────────────────────────────────────────────────
+//
+// Matches the profile page formula exactly (masterMetrics.ts / tradeAggRoutes.ts):
+//   Total Traded = SUM(gross_in_dec) WHERE type = 'BUY'
+//   Total Return = SUM(net_out_dec)  WHERE type IN ('SELL', 'CLAIM')
+//   ROI (%) = (TotalReturn / TotalTraded - 1) * 100
+//   trades_30d = COUNT of settled BUY rows (is_final = true) in the 30-day window
+//
+// Window: event timestamp-based (NOT game lock_time), last 30 days.
+// League filter applied to games.league.
 
-async function getLeagueRoi(
+async function computeLiveRoi(
   address: string,
   league: string
-): Promise<{ roi_30d: number; trades_30d: number; is_expert: boolean } | null> {
-  const { data } = await supabase
-    .from("user_roi_snapshots")
-    .select("roi_30d, trades_30d, is_expert")
-    .eq("user_address", address.toLowerCase())
-    .eq("league", league.toUpperCase())
-    .single();
-  return data ?? null;
+): Promise<{ roi_30d: number | null; trades_30d: number; is_expert: boolean }> {
+  const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
+
+  const sql = `
+    SELECT
+      COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0)           AS total_traded,
+      COALESCE(SUM(e.net_out_dec::numeric)  FILTER (WHERE e.type IN ('SELL','CLAIM')), 0) AS total_return,
+      COUNT(*)                              FILTER (
+        WHERE e.type = 'BUY' AND g.is_final = true
+      )::int                                                                              AS trades_settled
+    FROM public.user_trade_events e
+    JOIN public.games g ON g.game_id = e.game_id
+    WHERE LOWER(e.user_address) = $1
+      AND e.timestamp >= $2
+      AND g.league = $3
+  `;
+
+  const { rows } = await pool.query(sql, [
+    address.toLowerCase(),
+    windowSec,
+    league.toUpperCase(),
+  ]);
+
+  const row = rows[0];
+  if (!row) return { roi_30d: null, trades_30d: 0, is_expert: false };
+
+  const totalTraded = Number(row.total_traded) || 0;
+  const totalReturn = Number(row.total_return) || 0;
+  const tradesSettled = Number(row.trades_settled) || 0;
+
+  const roi_30d = totalTraded > 0
+    ? (totalReturn / totalTraded - 1) * 100
+    : null;
+
+  const is_expert =
+    roi_30d !== null &&
+    roi_30d >= EXPERT_ROI_THRESHOLD &&
+    tradesSettled >= EXPERT_MIN_TRADES;
+
+  return { roi_30d, trades_30d: tradesSettled, is_expert };
+}
+
+// ── Bulk ROI for post enrichment ─────────────────────────────────────────────
+// Same canonical formula, batched across multiple author addresses for efficiency.
+
+async function computeLiveRoiBulk(
+  addresses: string[],
+  league: string
+): Promise<Map<string, { roi_30d: number | null; trades_30d: number; is_expert: boolean }>> {
+  if (!addresses.length) return new Map();
+
+  const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
+
+  const sql = `
+    SELECT
+      LOWER(e.user_address)                                                               AS user_address,
+      COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0)           AS total_traded,
+      COALESCE(SUM(e.net_out_dec::numeric)  FILTER (WHERE e.type IN ('SELL','CLAIM')), 0) AS total_return,
+      COUNT(*)                              FILTER (
+        WHERE e.type = 'BUY' AND g.is_final = true
+      )::int                                                                              AS trades_settled
+    FROM public.user_trade_events e
+    JOIN public.games g ON g.game_id = e.game_id
+    WHERE LOWER(e.user_address) = ANY($1::text[])
+      AND e.timestamp >= $2
+      AND g.league = $3
+    GROUP BY LOWER(e.user_address)
+  `;
+
+  const { rows } = await pool.query(sql, [
+    addresses.map((a) => a.toLowerCase()),
+    windowSec,
+    league.toUpperCase(),
+  ]);
+
+  const result = new Map<string, { roi_30d: number | null; trades_30d: number; is_expert: boolean }>();
+
+  for (const row of rows) {
+    const totalTraded = Number(row.total_traded) || 0;
+    const totalReturn = Number(row.total_return) || 0;
+    const tradesSettled = Number(row.trades_settled) || 0;
+
+    const roi_30d = totalTraded > 0
+      ? (totalReturn / totalTraded - 1) * 100
+      : null;
+
+    const is_expert =
+      roi_30d !== null &&
+      roi_30d >= EXPERT_ROI_THRESHOLD &&
+      tradesSettled >= EXPERT_MIN_TRADES;
+
+    result.set(row.user_address.toLowerCase(), { roi_30d, trades_30d: tradesSettled, is_expert });
+  }
+
+  return result;
 }
 
 // ── GET /api/league-chat/:league/posts ──────────────────────────────────────
@@ -105,20 +199,12 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
   const hasMore = posts!.length > limit;
   const items = hasMore ? posts!.slice(0, limit) : posts!;
 
-  // Enrich authors with league-specific ROI
+  // ✅ Enrich authors with LIVE canonical ROI (same formula as profile page)
   const authorAddresses = [
     ...new Set(items.map((p: any) => p.author?.primary_address?.toLowerCase()).filter(Boolean)),
   ] as string[];
 
-  const { data: roiRows } = await supabase
-    .from("user_roi_snapshots")
-    .select("user_address, roi_30d, trades_30d, is_expert")
-    .in("user_address", authorAddresses)
-    .eq("league", league);
-
-  const roiMap = Object.fromEntries(
-    (roiRows || []).map((r: any) => [r.user_address.toLowerCase(), r])
-  );
+  const roiMap = await computeLiveRoiBulk(authorAddresses, league);
 
   // Liked-by-me
   const postIds = items.map((p: any) => p.id);
@@ -131,7 +217,7 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
 
   const enriched = items.map((post: any) => {
     const authorAddr = post.author?.primary_address?.toLowerCase();
-    const roi = roiMap[authorAddr] ?? { roi_30d: null, trades_30d: 0, is_expert: false };
+    const roi = roiMap.get(authorAddr) ?? { roi_30d: null, trades_30d: 0, is_expert: false };
     return {
       id: post.id,
       league: post.league,
@@ -180,20 +266,17 @@ router.post("/:league/posts", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "Invalid channel" });
   if (content.length > 500) return res.status(400).json({ error: "Too long" });
 
-  // Expert gate — checked against THIS league's ROI
+  // ✅ Expert gate — live canonical ROI, same formula as profile page
   if (channel === "expert") {
-    const roi = await getLeagueRoi(auth.address, league);
-    const qualified =
-      roi &&
-      roi.roi_30d >= EXPERT_ROI_THRESHOLD &&
-      roi.trades_30d >= EXPERT_MIN_TRADES;
+    const roi = await computeLiveRoi(auth.address, league);
+    const qualified = roi.is_expert;
 
     if (!qualified) {
       return res.status(403).json({
-        error: `Expert channel requires ≥10% ${league} ROI over the last 30 days with at least 3 settled trades.`,
+        error: `Expert channel requires ≥10% ${league} ROI over the last 30 days with at least ${EXPERT_MIN_TRADES} settled trades.`,
         code: "EXPERT_GATE",
-        roi_30d: roi?.roi_30d ?? null,
-        trades_30d: roi?.trades_30d ?? 0,
+        roi_30d: roi.roi_30d,
+        trades_30d: roi.trades_30d,
         threshold: EXPERT_ROI_THRESHOLD,
         league,
       });
@@ -212,8 +295,8 @@ router.post("/:league/posts", async (req: Request, res: Response) => {
 });
 
 // ── GET /api/league-chat/roi/:address ───────────────────────────────────────
-// Returns league-specific ROI when ?league= is passed, otherwise overall (ALL).
-// Fixed: address is now always lowercased for consistent lookup.
+// Returns live canonical ROI for the given address + league (or ALL).
+// NOW matches profile page math exactly.
 
 router.get("/roi/:address", async (req: Request, res: Response) => {
   const auth = await getVerifiedUser(req.headers.authorization);
@@ -222,16 +305,49 @@ router.get("/roi/:address", async (req: Request, res: Response) => {
   const address = req.params.address.toLowerCase();
   const league = (req.query.league as string || "ALL").toUpperCase();
 
-  const { data } = await supabase
-    .from("user_roi_snapshots")
-    .select("roi_30d, trades_30d, is_expert")
-    .eq("user_address", address)
-    .eq("league", league)
-    .single();
+  if (league === "ALL") {
+    // For ALL leagues, aggregate across all valid leagues
+    const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
 
-  if (!data) return res.json({ roi_30d: null, trades_30d: 0, is_expert: false, league });
+    const sql = `
+      SELECT
+        COALESCE(SUM(e.gross_in_dec::numeric) FILTER (WHERE e.type = 'BUY'), 0)           AS total_traded,
+        COALESCE(SUM(e.net_out_dec::numeric)  FILTER (WHERE e.type IN ('SELL','CLAIM')), 0) AS total_return,
+        COUNT(*)                              FILTER (
+          WHERE e.type = 'BUY' AND g.is_final = true
+        )::int                                                                              AS trades_settled
+      FROM public.user_trade_events e
+      JOIN public.games g ON g.game_id = e.game_id
+      WHERE LOWER(e.user_address) = $1
+        AND e.timestamp >= $2
+        AND g.league = ANY($3::text[])
+    `;
 
-  return res.json({ ...data, league });
+    const { rows } = await pool.query(sql, [
+      address,
+      windowSec,
+      Array.from(VALID_LEAGUES),
+    ]);
+
+    const row = rows[0];
+    const totalTraded = Number(row?.total_traded) || 0;
+    const totalReturn = Number(row?.total_return) || 0;
+    const tradesSettled = Number(row?.trades_settled) || 0;
+
+    const roi_30d = totalTraded > 0 ? (totalReturn / totalTraded - 1) * 100 : null;
+    const is_expert =
+      roi_30d !== null &&
+      roi_30d >= EXPERT_ROI_THRESHOLD &&
+      tradesSettled >= EXPERT_MIN_TRADES;
+
+    return res.json({ roi_30d, trades_30d: tradesSettled, is_expert, league: "ALL" });
+  }
+
+  if (!VALID_LEAGUES.includes(league as any))
+    return res.status(400).json({ error: "Invalid league" });
+
+  const roi = await computeLiveRoi(address, league);
+  return res.json({ ...roi, league });
 });
 
 // ── POST /api/league-chat/posts/:postId/comments ─────────────────────────────
@@ -284,6 +400,8 @@ router.delete("/posts/:postId/likes", async (req: Request, res: Response) => {
 });
 
 // ── POST /api/league-chat/refresh-roi ───────────────────────────────────────
+// This endpoint is now a no-op since ROI is computed live, but kept for
+// backwards compatibility with any cron jobs hitting it.
 
 router.post("/refresh-roi", async (req: Request, res: Response) => {
   const token = req.headers.authorization?.replace("Bearer ", "");
@@ -291,10 +409,8 @@ router.post("/refresh-roi", async (req: Request, res: Response) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { error } = await supabase.rpc("refresh_roi_snapshots");
-  if (error) return res.status(500).json({ error: error.message });
-
-  return res.json({ ok: true, refreshed_at: new Date().toISOString() });
+  // ROI is now computed live from user_trade_events — no snapshot to refresh.
+  return res.json({ ok: true, message: "ROI is now computed live; no snapshot refresh needed.", refreshed_at: new Date().toISOString() });
 });
 
 export default router;
