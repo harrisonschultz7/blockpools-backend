@@ -12,6 +12,16 @@
 // - Prefer returning "not final"/errors over picking the wrong historical game.
 // - Avoid premature markReady if REQUIRE_FINAL_CHECK is disabled accidentally.
 //
+// ── FIXES vs prior version ────────────────────────────────────────────────────
+// FIX 1: SETTLEMENT_COORDINATOR_ABI now includes retryCount + maxRetries.
+// FIX 2: Before calling markReady, bot checks retryCount >= maxRetries on the
+//         coordinator. If retries are exhausted the pool is skipped with a clear
+//         [skip-exhausted] log, preventing infinite LINK burn on broken pools.
+// FIX 3: Coordinator "Not coordinator" revert is detected via a pre-flight
+//         staticCall simulation of finalizeFromCoordinator. Pools that would
+//         revert with that error are skipped and logged as [skip-wrong-coord].
+// ─────────────────────────────────────────────────────────────────────────────
+//
 // Required env:
 //   RPC_URL
 //   PRIVATE_KEY
@@ -21,7 +31,7 @@
 // Optional env:
 //   DRY_RUN=1
 //   REQUIRE_FINAL_CHECK=1|0 (default true)
-//   ALLOW_UNSAFE_NO_FINAL_CHECK=1|0 (default false)  <-- must be true to allow REQUIRE_FINAL_CHECK=false mode
+//   ALLOW_UNSAFE_NO_FINAL_CHECK=1|0 (default false)
 //   POSTGAME_MIN_ELAPSED=600
 //   REQUEST_GAP_SECONDS=120                <-- legacy; DO NOT use as eligibility gate
 //   READ_CONCURRENCY=25
@@ -30,22 +40,22 @@
 //   REQUEST_DELAY_MS=0
 //   GAMES_PATH=... (optional override)
 //   CONTRACTS="0x...,0x..." (fallback if no games.json)
-//   KICKOFF_MIN_TOLERANCE_SECONDS=0  (default 0; allows kickoff >= lockTime - tolerance)
-//   KICKOFF_MAX_LOOKAHEAD_SECONDS=172800 (default 48h; ignore kickoff absurdly far after lockTime)
-//   REQUIRE_KICKOFF_FOR_MATCH=true (default true; safest)
-//   FINAL_DEBOUNCE_SECONDS=300 (default 300; require final to be observed for at least this long across runs)
+//   KICKOFF_MIN_TOLERANCE_SECONDS=0
+//   KICKOFF_MAX_LOOKAHEAD_SECONDS=172800 (default 48h)
+//   REQUIRE_KICKOFF_FOR_MATCH=true (default true)
+//   FINAL_DEBOUNCE_SECONDS=300
 //   FINAL_CACHE_PATH=/opt/blockpools/.final-cache.json
 //
-// Hardening env (recommended for 50-100 contracts):
+// Hardening env:
 //   GOALSERVE_TIMEOUT_MS=15000
 //   TX_WAIT_TIMEOUT_MS=120000
 //   API_PACE_MS=250
 //   TX_PACE_MS=750
 //   LOOP_LOG_EVERY=1
 //
-// NEW (rate-limit + log controls):
-//   FEED_CACHE_TTL_MS=120000   (cache Goalserve feed responses per URL for this long within a single run)
-//   LOG_LEVEL=info|quiet       (quiet hides noisy lines while keeping FINAL/TX/SUMMARY)
+// Rate-limit + log controls:
+//   FEED_CACHE_TTL_MS=120000
+//   LOG_LEVEL=info|quiet
 
 try {
   require("dotenv").config();
@@ -100,8 +110,6 @@ const ALLOW_UNSAFE_NO_FINAL_CHECK = /^(1|true)$/i.test(
 
 const POSTGAME_MIN_ELAPSED = Number(process.env.POSTGAME_MIN_ELAPSED || 600);
 
-// Legacy naming: REQUEST_GAP_SECONDS historically existed. We keep it for backward compatibility,
-// but we DO NOT use it as an eligibility gate. Use API_PACE_MS / TX_PACE_MS to pace safely.
 const REQUEST_GAP_SECONDS = Number(process.env.REQUEST_GAP_SECONDS || 120);
 
 const READ_CONCURRENCY = Number(process.env.READ_CONCURRENCY || 25);
@@ -133,10 +141,10 @@ const GOALSERVE_API_KEY = process.env.GOALSERVE_API_KEY || "";
 const GOALSERVE_BASE_URL = process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
 const GOALSERVE_DEBUG = /^(1|true)$/i.test(String(process.env.GOALSERVE_DEBUG || ""));
 
-// NEW: per-run feed cache (cuts Goalserve hits drastically)
+// Per-run feed cache (cuts Goalserve hits drastically)
 const FEED_CACHE_TTL_MS = Number(process.env.FEED_CACHE_TTL_MS || 120000);
 
-// NEW: logging level
+// Logging level
 const LOG_LEVEL = String(process.env.LOG_LEVEL || "info").trim().toLowerCase();
 const QUIET = LOG_LEVEL === "quiet";
 
@@ -177,13 +185,17 @@ function loadGamePoolAbi(): { abi: any; source: "imported" | "minimal" } {
 const { abi: poolAbi } = loadGamePoolAbi();
 
 /* ────────────────────────────────────────────────────────────────────────────
-   SettlementCoordinator ABI (minimal)
+   SettlementCoordinator ABI
+   FIX 1: Added retryCount + maxRetries so the bot can skip exhausted pools.
 ──────────────────────────────────────────────────────────────────────────── */
 const SETTLEMENT_COORDINATOR_ABI = [
   "function markReady(address pool) external",
   "function ready(address pool) view returns (bool)",
   "function pending(address pool) view returns (bool)",
   "function isKnownPool(address pool) view returns (bool)",
+  // FIX 1 ↓
+  "function retryCount(address pool) view returns (uint8)",
+  "function maxRetries() view returns (uint8)",
 ];
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -359,7 +371,6 @@ function loadGamesMeta(): GameMeta[] {
    Goalserve helpers
 ──────────────────────────────────────────────────────────────────────────── */
 
-// final-ish labels (incl OT / soccer variants + NHL shootout variants)
 const finalsSet = new Set([
   "final",
   "finished",
@@ -372,8 +383,6 @@ const finalsSet = new Set([
   "final ot",
   "final aot",
   "final after ot",
-
-  // NHL shootout / penalty-shots finals (Goalserve variants)
   "after penalties",
   "after penalty shots",
   "after shootout",
@@ -385,17 +394,11 @@ function isFinalStatus(raw: string): boolean {
 
   if (finalsSet.has(s)) return true;
 
-  // OT variants
   if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot")) return true;
-
-  // Soccer variants
   if (s.includes("full time") || s === "full-time") return true;
-
-  // NHL shootout variants
   if (s.includes("after penalties")) return true;
   if (s.includes("after penalty")) return true;
   if (s.includes("shootout")) return true;
-
   if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half")) return true;
 
   return false;
@@ -405,7 +408,7 @@ const norm = (s: string) =>
   (s || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[’'`]/g, "")
+    .replace(/[''`]/g, "")
     .replace(/[^a-z0-9 ]/gi, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -440,8 +443,6 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
   throw lastErr;
 }
 
-// NEW: per-run cached fetch to reduce Goalserve pressure.
-// Cache is in-memory for the duration of the run (not persisted).
 const _feedCache: Record<string, { ts: number; data: any }> = {};
 async function fetchJsonCached(url: string) {
   const now = Date.now();
@@ -453,9 +454,6 @@ async function fetchJsonCached(url: string) {
   return data;
 }
 
-/**
- * Map on-chain league label -> Goalserve sportPath + leaguePaths.
- */
 function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leaguePaths: string[] } {
   const L = String(leagueLabel || "").trim().toLowerCase();
   if (L === "nfl") return { sportPath: "football", leaguePaths: ["nfl-scores"] };
@@ -592,7 +590,6 @@ function normalizeGameRow(r: any) {
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
-// Strict matching to avoid false positives
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -633,7 +630,6 @@ function unorderedTeamsMatchByTokens(
   return (hA && aB) || (hB && aA);
 }
 
-// Build candidate URL list for lockTime day ET and the next day ET
 function buildGoalserveUrlsForLockTime(league: string, lockTime: number): string[] {
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
   if (!sportPath || !leaguePaths.length) return [];
@@ -664,7 +660,6 @@ type FinalCheckResult = {
   debug?: any;
 };
 
-// CRITICAL: never look backward. Only accept kickoff >= lockTime - tolerance.
 function kickoffIsAcceptable(kickoff: number | undefined, lockTime: number): boolean {
   if (kickoff == null) return !REQUIRE_KICKOFF_FOR_MATCH;
   const minOk = lockTime - Math.max(0, KICKOFF_MIN_TOLERANCE_SECONDS);
@@ -695,7 +690,6 @@ async function confirmFinalGoalserve(params: {
 
   for (const url of urls) {
     try {
-      // NEW: cached fetch (cuts repeat calls massively)
       const payload = await fetchJsonCached(url);
 
       const rawGames = collectCandidateGames(payload);
@@ -758,8 +752,6 @@ async function confirmFinalGoalserve(params: {
         }
       }
     } catch (e: any) {
-      // Keep this visible even in quiet mode (operator needs to know provider is failing),
-      // but avoid printing full URLs unless debug is enabled.
       const msg = e?.message || e;
       if (GOALSERVE_DEBUG) console.log(`[GOALSERVE_ERR] ${url} :: ${msg}`);
       else console.log(`[GOALSERVE_ERR] ${msg}`);
@@ -839,6 +831,43 @@ async function confirmFinalGoalserve(params: {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
+   FIX 3: Pre-flight check — simulate finalizeFromCoordinator to detect pools
+   that will revert with "Not coordinator" before wasting a Functions call.
+   Returns true if the pool is safe to markReady, false if it should be skipped.
+──────────────────────────────────────────────────────────────────────────── */
+async function poolAcceptsCoordinator(
+  poolAddr: string,
+  coordinatorAddr: string,
+  provider: ethers.JsonRpcProvider
+): Promise<{ ok: boolean; reason?: string }> {
+  const FINALIZE_ABI = [
+    "function finalizeFromCoordinator(bytes calldata response) external",
+  ];
+  const pool = new ethers.Contract(poolAddr, FINALIZE_ABI, provider);
+
+  // Use a dummy payload — we only care whether the revert is "Not coordinator"
+  // vs any other revert (wrong state, already resolved, etc.).
+  const dummyPayload = ethers.AbiCoder.defaultAbiCoder().encode(["string"], ["TEST"]);
+
+  try {
+    await pool.finalizeFromCoordinator.staticCall(dummyPayload, {
+      from: coordinatorAddr,
+    });
+    // Succeeded (unlikely with dummy payload, but definitely not wrong-coordinator)
+    return { ok: true };
+  } catch (e: any) {
+    const msg = String(e?.reason || e?.message || "").toLowerCase();
+    if (msg.includes("not coordinator") || msg.includes("only coordinator")) {
+      return { ok: false, reason: "Not coordinator — pool has wrong coordinator address hardcoded" };
+    }
+    // Any other revert (e.g. "already resolved", state guard) is fine —
+    // it means the coordinator address is accepted, the dummy payload just failed
+    // for a legitimate reason. Safe to markReady.
+    return { ok: true };
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
    MAIN
 ──────────────────────────────────────────────────────────────────────────── */
 async function main() {
@@ -881,6 +910,15 @@ async function main() {
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
   const coordinator = new ethers.Contract(SETTLEMENT_COORDINATOR_ADDRESS, SETTLEMENT_COORDINATOR_ABI, wallet);
+
+  // FIX 1: Read maxRetries once up front so we can gate per-pool below.
+  let globalMaxRetries = 2;
+  try {
+    globalMaxRetries = Number(await coordinator.maxRetries());
+  } catch {
+    console.log("[warn] Could not read coordinator.maxRetries(); defaulting to 2");
+  }
+  console.log(`[CFG] coordinator.maxRetries=${globalMaxRetries}`);
 
   const gamesMeta = loadGamesMeta();
   if (!gamesMeta.length) {
@@ -949,7 +987,7 @@ async function main() {
             isOwner,
           });
         } catch (e: any) {
-          if (GOALSERVE_DEBUG && !QUIET) console.warn(`[READ FAIL] ${addr}:`, e?.message || e);
+          if (!QUIET) console.warn(`[READ FAIL] ${addr}: ${e?.message || e}`);
         }
       })
     )
@@ -957,11 +995,8 @@ async function main() {
 
   const nowSec = Math.floor(Date.now() / 1000);
 
-  // Eligible on-chain state (unresolved, locked)
   const gated = states.filter((s) => s.isOwner && s.isLocked && s.winningTeam === 0);
 
-  // Time gating: only POSTGAME_MIN_ELAPSED matters for eligibility.
-  // DO NOT use REQUEST_GAP_SECONDS here (legacy naming).
   const timeGated = gated.filter((s) => {
     if (!s.lockTime) return false;
     return nowSec >= s.lockTime + POSTGAME_MIN_ELAPSED;
@@ -986,7 +1021,6 @@ async function main() {
   const finalCache = loadFinalCache();
   const finalEligible: PoolState[] = [];
 
-  // Progress counters
   let checked = 0;
   let pending = 0;
   let skipped = 0;
@@ -1123,6 +1157,45 @@ async function main() {
 
     if (alreadyReady) {
       if (!QUIET) console.log(`[ok]  already ready:   ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+      continue;
+    }
+
+    // ── FIX 2: Skip pools that have exhausted coordinator retries ────────────
+    // If retryCount >= maxRetries the coordinator has already given up on this
+    // pool. Calling markReady would re-activate it, burn another Functions call,
+    // and fail again — wasting LINK for no gain.
+    try {
+      const rc = Number(await coordinator.retryCount(s.addr));
+      if (rc >= globalMaxRetries) {
+        console.log(
+          `[skip-exhausted] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) ` +
+            `retryCount=${rc}>=${globalMaxRetries} — coordinator has exhausted retries. ` +
+            `Pool likely has wrong coordinator address or broken finalizeFromCoordinator. ` +
+            `Run clearReady+purgePool on this address and remove it from games.json.`
+        );
+        skipped++;
+        continue;
+      }
+    } catch {
+      // coordinator doesn't expose retryCount (old deploy) — proceed normally
+    }
+
+    // ── FIX 3: Pre-flight coordinator address check ──────────────────────────
+    // Simulate finalizeFromCoordinator from the coordinator's address.
+    // If it reverts with "Not coordinator" we know this pool has the old
+    // coordinator hardcoded and will waste a Functions call every time.
+    const preflightResult = await poolAcceptsCoordinator(
+      s.addr,
+      SETTLEMENT_COORDINATOR_ADDRESS,
+      provider
+    );
+    if (!preflightResult.ok) {
+      console.log(
+        `[skip-wrong-coord] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) ` +
+          `— ${preflightResult.reason}. ` +
+          `Run clearReady+purgePool on this address and remove it from games.json.`
+      );
+      skipped++;
       continue;
     }
 
