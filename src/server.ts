@@ -31,6 +31,9 @@ import scoresRouter from "./routes/scores";
 // ✅ Standings proxy + background cron (Goalserve — UCL, EPL etc.)
 import standingsRouter, { startStandingsCron } from "./routes/standings";
 
+// ✅ Chart data from Supabase (league winner price history)
+import chartRouter from "./routes/chart";
+
 const PORT = Number(process.env.PORT || 3001);
 
 // Behind Nginx/Cloudflare, this ensures req.protocol/host are derived from forwarded headers.
@@ -125,6 +128,10 @@ export function makeServer() {
   //   GET /api/standings/:league   e.g. /api/standings/UCL
   app.use("/api/standings", standingsRouter);
   startStandingsCron();
+
+  // ✅ Chart data from Supabase
+  //   GET /api/chart/:contractAddress
+  app.use("/api/chart", chartRouter);
 
   // 404 (optional but helpful for debugging)
   app.use((_req, res) => {
