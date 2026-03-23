@@ -40,7 +40,7 @@ async function run() {
   for (const user of rows) {
     try {
       const result = await resend.emails.send({
-        from: process.env.RESEND_FROM_EMAIL || "Harrison at BlockPools <harrison@mail.blockpools.io>",
+        from: "Harrison <harrison@mail.blockpools.io>",
         to: user.email,
         template: {
           id: TEMPLATE_ID,
