@@ -92,6 +92,10 @@ export function makeServer() {
   // Existing backend routes (unchanged)
   app.use("/api/profile", profileRouter);
 
+  // ✅ Chart data from Supabase — MUST be before generic /api routers
+  //   GET /api/chart/:contractAddress
+  app.use("/api/chart", chartRouter);
+
   // ✅ NEW: Trade agg (query-based)
   //   GET /api/profile/trade-agg?user=0x...&page=1&pageSize=10&league=ALL&range=ALL
   app.use("/api/profile/trade-agg", tradeAggRoutes);
@@ -128,10 +132,6 @@ export function makeServer() {
   //   GET /api/standings/:league   e.g. /api/standings/UCL
   app.use("/api/standings", standingsRouter);
   startStandingsCron();
-
-  // ✅ Chart data from Supabase
-  //   GET /api/chart/:contractAddress
-  app.use("/api/chart", chartRouter);
 
   // 404 (optional but helpful for debugging)
   app.use((_req, res) => {
