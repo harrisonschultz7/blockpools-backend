@@ -23,7 +23,9 @@ async function run() {
   const { rows } = await pool.query(
     `SELECT id, email
      FROM users
-     WHERE email = 'harrisonschultz1240@gmail.com'`
+     WHERE email IS NOT NULL
+       AND email != ''
+     ORDER BY created_at ASC`
   );
 
   console.log(`Found ${rows.length} users to send weekly brief to`);
