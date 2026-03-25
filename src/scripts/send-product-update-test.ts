@@ -1,39 +1,71 @@
 /**
- * send-product-update-test.ts
+ * send-product-update.ts
  *
- * Sends the Product Update email to a single test address.
+ * Sends the Product Update email to all users with an email address.
+ * Subject and preview text are pulled directly from the Resend template.
  *
  * Run on VPS:
  *   cd /opt/blockpools/backend
  *   set -a && source /etc/blockpools/backend.env && set +a
- *   npx ts-node src/scripts/send-product-update-test.ts
+ *   npx ts-node src/scripts/send-product-update.ts
  */
+import { pool } from "../db";
 import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 const TEMPLATE_ID = "4a929977-2a9c-4981-b14d-7bb7fcba6411";
-const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 
 async function run() {
-  console.log(`Sending test to ${TEST_EMAIL}...`);
+  const { rows } = await pool.query(
+    `SELECT id, email
+     FROM users
+     WHERE email IS NOT NULL
+       AND email != ''
+     ORDER BY created_at ASC`
+  );
 
-  const result = await resend.emails.send({
-from: "Harrison at BlockPools <harrison@mail.blockpools.io>",
-    to: TEST_EMAIL,
-    template: {
-      id: TEMPLATE_ID,
-    },
-  } as any);
+  console.log(`Found ${rows.length} users to send product update to`);
 
-  const resultAny = result as any;
-  if (resultAny?.error || !resultAny?.data?.id) {
-    console.error(`[FAILED] ${JSON.stringify(resultAny?.error)}`);
-    process.exit(1);
-  } else {
-    console.log(`[SENT] Email ID: ${resultAny.data.id}`);
+  if (rows.length === 0) {
+    console.log("Nothing to do.");
+    await pool.end();
+    process.exit(0);
   }
 
+  let sent = 0;
+  let failed = 0;
+
+  for (const user of rows) {
+    try {
+      const result = await resend.emails.send({
+        from: "Harrison at BlockPools <harrison@mail.blockpools.io>",
+        to: user.email,
+        template: {
+          id: TEMPLATE_ID,
+        },
+      } as any);
+
+      const resultAny = result as any;
+
+      if (resultAny?.error || !resultAny?.data?.id) {
+        console.error(`[FAILED] ${user.email} — ${JSON.stringify(resultAny?.error)}`);
+        failed++;
+      } else {
+        console.log(`[SENT] ${user.email}`);
+        sent++;
+      }
+
+      // Stay within Resend rate limit
+      await new Promise((r) => setTimeout(r, 700));
+    } catch (err: any) {
+      console.error(`[ERROR] ${user.email} — ${err?.message || err}`);
+      failed++;
+    }
+  }
+
+  console.log(`\nDone. Sent: ${sent}, Failed: ${failed}`);
+  await pool.end();
   process.exit(0);
 }
 
