@@ -369,54 +369,55 @@ router.get("/roi/:address", async (req: Request, res: Response) => {
   return res.json({ ...roi, league });
 });
 
-// ── POST /api/league-chat/posts/:postId/comments ─────────────────────────────
+// ── Comments & Likes: shared handlers supporting both league-prefixed and legacy URLs ──
 
-router.post("/posts/:postId/comments", async (req: Request, res: Response) => {
+async function handleComment(req: Request, res: Response) {
   const auth = await getVerifiedUser(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
-
   const { content } = req.body;
   if (!content?.trim()) return res.status(400).json({ error: "Content required" });
   if (content.length > 300) return res.status(400).json({ error: "Too long" });
-
   const { data: comment, error } = await supabase
     .from("league_chat_comments")
     .insert({ post_id: req.params.postId, author_id: auth.userId, content: content.trim() })
     .select("id, created_at")
     .single();
-
   if (error) return res.status(500).json({ error: error.message });
-
   return res.status(201).json({ comment });
-});
+}
 
-// ── POST /api/league-chat/posts/:postId/likes ────────────────────────────────
-
-router.post("/posts/:postId/likes", async (req: Request, res: Response) => {
+async function handleLike(req: Request, res: Response) {
   const auth = await getVerifiedUser(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
-
   await supabase
     .from("league_chat_likes")
     .upsert({ post_id: req.params.postId, user_id: auth.userId }, { onConflict: "post_id,user_id" });
-
   return res.json({ ok: true });
-});
+}
 
-// ── DELETE /api/league-chat/posts/:postId/likes ──────────────────────────────
-
-router.delete("/posts/:postId/likes", async (req: Request, res: Response) => {
+async function handleUnlike(req: Request, res: Response) {
   const auth = await getVerifiedUser(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
-
   await supabase
     .from("league_chat_likes")
     .delete()
     .eq("post_id", req.params.postId)
     .eq("user_id", auth.userId);
-
   return res.json({ ok: true });
-});
+}
+
+// Frontend calls /:league/posts/:postId/comments — also keep legacy /posts/:postId/comments
+router.post("/:league/posts/:postId/comments", handleComment);
+router.post("/posts/:postId/comments", handleComment);
+
+// Frontend calls /:league/posts/:postId/like (singular) — keep legacy /likes plural too
+router.post("/:league/posts/:postId/like", handleLike);
+router.post("/:league/posts/:postId/likes", handleLike);
+router.post("/posts/:postId/likes", handleLike);
+
+router.delete("/:league/posts/:postId/like", handleUnlike);
+router.delete("/:league/posts/:postId/likes", handleUnlike);
+router.delete("/posts/:postId/likes", handleUnlike);
 
 // ── POST /api/league-chat/refresh-roi ───────────────────────────────────────
 // No-op — ROI is now computed live. Kept for cron backwards-compatibility.
