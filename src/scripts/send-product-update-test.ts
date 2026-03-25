@@ -19,7 +19,7 @@ async function run() {
   console.log(`Sending test to ${TEST_EMAIL}...`);
 
   const result = await resend.emails.send({
-    from: process.env.RESEND_FROM_EMAIL || "Harrison at BlockPools <harrison@mail.blockpools.io>",
+from: "Harrison at BlockPools <harrison@mail.blockpools.io>",
     to: TEST_EMAIL,
     template: {
       id: TEMPLATE_ID,
