@@ -28,7 +28,7 @@ import tradeAggRoutes from "./routes/tradeAggRoutes";
 // ✅ Live scores proxy (Goalserve)
 import scoresRouter from "./routes/scores";
 
-// ✅ Standings proxy + background cron (Goalserve — UCL, EPL etc.)
+// ✅ Standings proxy + background cron (Goalserve — UCL, EPL, NBA, NHL, MLB etc.)
 import standingsRouter, { startStandingsCron } from "./routes/standings";
 
 // ✅ Chart data from Supabase (league winner price history)
@@ -89,18 +89,30 @@ export function makeServer() {
   //   GET /cache/leaderboard?...
   app.use("/cache", cacheRoutes);
 
-  // Existing backend routes (unchanged)
+  // ── Specific /api/* routes first ─────────────────────────────────────────────
+  // ⚠️  wallRouter, leaderboardRouter, groupsMetricsRouter etc. are mounted on
+  //     the bare "/api" prefix. Any route mounted on "/api" (no sub-path) will
+  //     intercept ALL /api/* requests that arrive before it. Always register
+  //     specific sub-path routes (e.g. /api/standings, /api/scores) BEFORE the
+  //     bare /api mounts so they are not swallowed.
+
   app.use("/api/profile", profileRouter);
 
   // ✅ Chart data from Supabase — MUST be before generic /api routers
   //   GET /api/chart/:contractAddress
   app.use("/api/chart", chartRouter);
 
-  // ✅ NEW: Trade agg (query-based)
+  // ✅ Trade agg (query-based)
   //   GET /api/profile/trade-agg?user=0x...&page=1&pageSize=10&league=ALL&range=ALL
   app.use("/api/profile/trade-agg", tradeAggRoutes);
 
-  app.use("/api", wallRouter);
+  // ✅ Live scores proxy — Goalserve
+  //   GET /api/scores/live?league=MLB&teamAName=...&teamBName=...&lockTime=...
+  app.use("/api/scores", scoresRouter);
+
+  // ✅ Standings proxy + background cron — Goalserve
+  //   GET /api/standings/:league   e.g. /api/standings/MLB
+  app.use("/api/standings", standingsRouter);
 
   // ✅ League chat routes
   //   GET  /api/league-chat/:league/posts?channel=public|expert
@@ -109,9 +121,12 @@ export function makeServer() {
   //   POST /api/league-chat/refresh-roi
   app.use("/api/league-chat", leagueChatRouter);
 
+  app.use("/api/admin", adminSweepsRouter);
+
+  // ── Bare /api mounts (catch-all — must come last) ─────────────────────────────
+  app.use("/api", wallRouter);
   app.use("/api", invitesRouter);
   app.use("/api", emailTestRouter);
-  app.use("/api/admin", adminSweepsRouter);
 
   // ✅ User leaderboard API (backend-computed + cached metrics)
   // Endpoints:
@@ -123,15 +138,6 @@ export function makeServer() {
   // Endpoints:
   //   GET /api/groups/leaderboard?range=D30&league=ALL
   app.use("/api", groupsMetricsRouter);
-
-  // ✅ Live scores proxy — Goalserve
-  //   GET /api/scores/live?league=UCL&teamAName=...&teamBName=...&lockTime=...
-  app.use("/api/scores", scoresRouter);
-
-  // ✅ Standings proxy + background cron — Goalserve
-  //   GET /api/standings/:league   e.g. /api/standings/UCL
-  app.use("/api/standings", standingsRouter);
-  startStandingsCron();
 
   // 404 (optional but helpful for debugging)
   app.use((_req, res) => {
