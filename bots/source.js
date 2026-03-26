@@ -1,11 +1,11 @@
 // bots/source.js
 // Chainlink Functions source for BlockPools settlement (optimized args model)
-// Supports: NFL, NBA, NHL, EPL, UCL via Goalserve
+// Supports: NFL, NBA, NHL, MLB, EPL, UCL via Goalserve
 //
 // NEW ARGS (1):
 //  0: packed JSON string with fields:
 //     {
-//       league: "NFL" | "NBA" | "NHL" | "EPL" | "UCL",
+//       league: "NFL" | "NBA" | "NHL" | "MLB" | "EPL" | "UCL",
 //       dateFrom: "yyyy-MM-dd",
 //       dateTo:   "yyyy-MM-dd",
 //       teamACode: "DAL",
@@ -75,6 +75,7 @@ const GOALSERVE_BASE_URL =
  * NFL: /football/nfl-scores?date=dd.MM.yyyy&json=1
  * NBA: /bsktbl/nba-scores?date=dd.MM.yyyy&json=1
  * NHL: /hockey/nhl-scores?date=dd.MM.yyyy&json=1
+ * MLB: /baseball/usa?date=dd.MM.yyyy&json=1
  * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1        (England - Premier League)
  * UCL: /commentaries/1005?date=dd.MM.yyyy&json=1        (UEFA Champions League)
  */
@@ -89,6 +90,10 @@ function goalserveLeaguePaths(leagueLabel) {
   }
   if (L === "nhl") {
     return { sportPath: "hockey", leaguePaths: ["nhl-scores"] };
+  }
+
+  if (L === "mlb") {
+    return { sportPath: "baseball", leaguePaths: ["usa"] };
   }
 
   // EPL / England Premier League
