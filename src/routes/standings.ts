@@ -23,6 +23,7 @@
 //            Serie A → 1269  Bundesliga → 1229  Ligue 1 → 1408
 //   Basketball: NBA → 1046  (endpoint: /bsktbl/{id}_table)
 //   Hockey:     NHL → 1007  (endpoint: /hockey/{id}_table)
+//   Baseball:   MLB         (endpoint: /baseball/mlb_standings)
 //
 // GET /api/standings/:league          e.g. /api/standings/UCL
 // GET /api/standings/:league?season=2023-2024   (optional, soccer only)
@@ -67,14 +68,25 @@ const NA_LEAGUE_CONFIG: Record<string, { sport: string; id: string }> = {
   NHL: { sport: "hockey", id: "1007" },
 };
 
+// MLB uses its own dedicated endpoint
+const MLB_STANDINGS_URL = () =>
+  `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/baseball/mlb_standings?json=1`;
+
+// MLB season is just the calendar year (e.g. "2026")
+function mlbSeason(): string {
+  return String(new Date().getFullYear());
+}
+
 const ALL_KNOWN_LEAGUES = new Set([
   ...Object.keys(SOCCER_LEAGUE_IDS),
   ...Object.keys(NA_LEAGUE_CONFIG),
+  "MLB",
 ]);
 
 // Leagues warmed by background cron
 const CRON_SOCCER_LEAGUES = ["UCL", "EPL"] as const;
 const CRON_NA_LEAGUES     = ["NBA", "NHL"] as const;
+const CRON_MLB            = true;
 
 // ── In-memory cache ───────────────────────────────────────────────────────────
 
@@ -165,6 +177,32 @@ export interface NAConference {
   teams: NATeamStanding[];
 }
 
+// MLB division standing
+export interface MLBTeamStanding {
+  rank:     number;
+  teamId:   string;
+  name:     string;
+  shortName: string;
+  w:        number;
+  l:        number;
+  pct:      number;
+  gb:       string;   // games behind, "0" for leader
+  streak:   string;   // e.g. "W3" or "L2"
+  home:     string;   // "30-11"
+  away:     string;   // "25-16"
+  last10:   string;   // "7-3"
+}
+
+export interface MLBDivision {
+  name:  string;
+  teams: MLBTeamStanding[];
+}
+
+export interface MLBLeague {
+  name:      string;   // "American League" | "National League"
+  divisions: MLBDivision[];
+}
+
 export interface NormalisedStandings {
   league:    string;
   season:    string;
@@ -172,9 +210,11 @@ export interface NormalisedStandings {
   // Soccer
   table?:    StandingsTeam[];
   groups?:   { name: string; teams: StandingsTeam[] }[];
-  phase:     "group" | "knockout" | "league" | "conference";
+  phase:     "group" | "knockout" | "league" | "conference" | "division";
   // NBA / NHL
   conferences?: NAConference[];
+  // MLB
+  mlbLeagues?: MLBLeague[];
   _raw?: any;
 }
 
@@ -379,6 +419,82 @@ function normaliseNA(raw: any, league: string, isHockey: boolean): NormalisedSta
   };
 }
 
+// ── MLB normalisation ─────────────────────────────────────────────────────────
+//
+// Goalserve /baseball/mlb_standings shape:
+//   standings.category[] → each is a league (AL / NL)
+//     .league[] → each is a division
+//       .team[] → each is a team row
+
+function normaliseMLB(raw: any): NormalisedStandings {
+  const season = mlbSeason();
+  const cat = raw?.standings?.category;
+  const categories = cat ? (Array.isArray(cat) ? cat : [cat]) : [];
+
+  const mlbLeagues: MLBLeague[] = [];
+
+  for (const league of categories) {
+    const leagueName = String(league?.name ?? league?.["@name"] ?? "");
+    const divRaw = league?.league;
+    if (!divRaw) continue;
+    const divArr = Array.isArray(divRaw) ? divRaw : [divRaw];
+
+    const divisions: MLBDivision[] = [];
+
+    for (const div of divArr) {
+      const divName = String(div?.name ?? div?.["@name"] ?? "");
+      const teamsRaw = div?.team ? (Array.isArray(div.team) ? div.team : [div.team]) : [];
+
+      const teams: MLBTeamStanding[] = teamsRaw.map((t: any, i: number) => {
+        const w   = safeInt(t?.w ?? t?.["@w"]);
+        const l   = safeInt(t?.l ?? t?.["@l"]);
+        const gp  = w + l;
+        const pct = gp > 0 ? Math.round((w / gp) * 1000) / 1000 : 0;
+        const gb  = String(t?.gb ?? t?.["@gb"] ?? "-").trim();
+
+        // Streak: Goalserve gives "streak_type" (W/L) + "streak_total"
+        const sType  = String(t?.streak_type  ?? t?.["@streak_type"]  ?? "W").toUpperCase();
+        const sTotal = safeInt(t?.streak_total ?? t?.["@streak_total"] ?? 0);
+        const streak = `${sType}${sTotal}`;
+
+        // Record splits
+        const home   = String(t?.home   ?? t?.["@home"]   ?? "");
+        const away   = String(t?.away   ?? t?.["@away"]   ?? "");
+        const last10 = String(t?.last10 ?? t?.["@last10"] ?? t?.l10 ?? "");
+
+        const name      = String(t?.name     ?? t?.["@name"]      ?? "");
+        const shortName = String(t?.short_name ?? t?.["@short_name"] ?? t?.abbr ?? name.slice(0, 3).toUpperCase());
+
+        return {
+          rank:  safeInt(t?.pos ?? t?.["@pos"] ?? i + 1),
+          teamId: String(t?.id ?? t?.["@id"] ?? ""),
+          name,
+          shortName,
+          w, l, pct, gb, streak, home, away, last10,
+        };
+      }).sort((a: MLBTeamStanding, b: MLBTeamStanding) => a.rank - b.rank);
+
+      if (teams.length) divisions.push({ name: divName, teams });
+    }
+
+    if (divisions.length) mlbLeagues.push({ name: leagueName, divisions });
+  }
+
+  // Sort AL before NL
+  mlbLeagues.sort((a, b) => {
+    const order = (n: string) => n.toLowerCase().includes("american") ? 0 : 1;
+    return order(a.name) - order(b.name);
+  });
+
+  return {
+    league:    "MLB",
+    season,
+    updatedAt: new Date().toISOString(),
+    phase:     "division",
+    mlbLeagues,
+  };
+}
+
 // ── Main fetch + cache pipeline ───────────────────────────────────────────────
 
 async function getStandings(league: string, season: string): Promise<NormalisedStandings> {
@@ -390,10 +506,13 @@ async function getStandings(league: string, season: string): Promise<NormalisedS
   const pgHit = await pgGet(league, season);
   if (pgHit) { memSet(cacheKey, pgHit); return pgHit; }
 
-  const isNA = !!NA_LEAGUE_CONFIG[league];
+  const isNA  = !!NA_LEAGUE_CONFIG[league];
+  const isMLB = league === "MLB";
 
   let raw: any;
-  if (isNA) {
+  if (isMLB) {
+    raw = await fetchWithTimeout(MLB_STANDINGS_URL());
+  } else if (isNA) {
     const cfg = NA_LEAGUE_CONFIG[league];
     const url = `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/${cfg.sport}/${cfg.id}_table?json=1`;
     raw = await fetchWithTimeout(url);
@@ -404,9 +523,11 @@ async function getStandings(league: string, season: string): Promise<NormalisedS
     raw = await fetchWithTimeout(url);
   }
 
-  const data = isNA
-    ? normaliseNA(raw, league, league === "NHL")
-    : normaliseSoccer(raw, league.toUpperCase(), season);
+  const data = isMLB
+    ? normaliseMLB(raw)
+    : isNA
+      ? normaliseNA(raw, league, league === "NHL")
+      : normaliseSoccer(raw, league.toUpperCase(), season);
 
   await pgSet(league, season, data);
   memSet(cacheKey, data);
@@ -422,7 +543,9 @@ router.get("/:league", async (req: Request, res: Response) => {
     }
 
     const league = String(req.params.league || "").toUpperCase();
-    const season = String(req.query.season || currentSeason());
+    const season = league === "MLB"
+      ? mlbSeason()
+      : String(req.query.season || currentSeason());
 
     if (!ALL_KNOWN_LEAGUES.has(league)) {
       return res.status(400).json({
@@ -484,6 +607,22 @@ export function startStandingsCron() {
         console.error(`[standings:cron] failed for ${league}:`, e?.message);
       }
       await new Promise((r) => setTimeout(r, 2_000));
+    }
+
+    // MLB (calendar-year season, dedicated endpoint)
+    if (CRON_MLB) {
+      const season = mlbSeason();
+      const cacheKey = `MLB:${season}`;
+      try {
+        delete _mem[cacheKey];
+        const raw  = await fetchWithTimeout(MLB_STANDINGS_URL());
+        const data = normaliseMLB(raw);
+        await pgSet("MLB", season, data);
+        memSet(cacheKey, data);
+        console.log(`[standings:cron] refreshed MLB ${season}`);
+      } catch (e: any) {
+        console.error(`[standings:cron] failed for MLB:`, e?.message);
+      }
     }
   };
 
