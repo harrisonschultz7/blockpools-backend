@@ -459,6 +459,7 @@ function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leagueP
   if (L === "nfl") return { sportPath: "football", leaguePaths: ["nfl-scores"] };
   if (L === "nba") return { sportPath: "bsktbl", leaguePaths: ["nba-scores"] };
   if (L === "nhl") return { sportPath: "hockey", leaguePaths: ["nhl-scores"] };
+  if (L === "mlb") return { sportPath: "baseball", leaguePaths: ["usa"] };
   if (L === "epl" || L === "premier league" || L === "england - premier league" || L === "england premier league")
     return { sportPath: "commentaries", leaguePaths: ["1204"] };
   if (L === "ucl" || L === "uefa champions league" || L === "champions league")
@@ -898,7 +899,7 @@ async function main() {
   console.log(`[CFG] FINAL_DEBOUNCE_SECONDS=${FINAL_DEBOUNCE_SECONDS}s FINAL_CACHE_PATH=${FINAL_CACHE_PATH}`);
   console.log(`[CFG] FEED_CACHE_TTL_MS=${FEED_CACHE_TTL_MS} LOG_LEVEL=${LOG_LEVEL}`);
   console.log(`[CFG] SettlementCoordinator=${SETTLEMENT_COORDINATOR_ADDRESS}`);
-  console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + EPL + UCL)`);
+  console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + MLB + EPL + UCL)`);
 
   if (!REQUIRE_FINAL_CHECK && !ALLOW_UNSAFE_NO_FINAL_CHECK) {
     console.log(
