@@ -184,7 +184,7 @@ function goalserveLeaguePaths(leagueLabel: string): {
   if (L === "nfl") return { sportPath: "football",     leaguePaths: ["nfl-scores"] };
   if (L === "nba") return { sportPath: "bsktbl",       leaguePaths: ["nba-scores"] };
   if (L === "nhl") return { sportPath: "hockey",       leaguePaths: ["nhl-scores"] };
-  if (L === "mlb") return { sportPath: "baseball",     leaguePaths: ["mlb-scores"] };
+  if (L === "mlb") return { sportPath: "baseball",     leaguePaths: ["usa"] };
   if (
     L === "epl" || L === "premier league" ||
     L === "england - premier league" || L === "england premier league"
