@@ -428,46 +428,67 @@ function normaliseNA(raw: any, league: string, isHockey: boolean): NormalisedSta
 
 function normaliseMLB(raw: any): NormalisedStandings {
   const season = mlbSeason();
+
+  // Goalserve shape:
+  //   standings.category            — single object (not array)
+  //     .league[]                   — AL / NL
+  //       .division[]               — East / Central / West
+  //         .team[]                 — each team, all fields @prefixed
+  //   e.g. team["@name"], team["@won"], team["@current_streak"] = "W1"
+
   const cat = raw?.standings?.category;
-  const categories = cat ? (Array.isArray(cat) ? cat : [cat]) : [];
+  if (!cat) return { league: "MLB", season, updatedAt: new Date().toISOString(), phase: "division", mlbLeagues: [] };
+
+  const leagueArr = cat?.league
+    ? (Array.isArray(cat.league) ? cat.league : [cat.league])
+    : [];
 
   const mlbLeagues: MLBLeague[] = [];
 
-  for (const league of categories) {
-    const leagueName = String(league?.name ?? league?.["@name"] ?? "");
-    const divRaw = league?.league;
+  for (const lg of leagueArr) {
+    const leagueName = String(lg?.["@name"] ?? lg?.name ?? "");
+    const divRaw = lg?.division;
     if (!divRaw) continue;
     const divArr = Array.isArray(divRaw) ? divRaw : [divRaw];
 
     const divisions: MLBDivision[] = [];
 
     for (const div of divArr) {
-      const divName = String(div?.name ?? div?.["@name"] ?? "");
-      const teamsRaw = div?.team ? (Array.isArray(div.team) ? div.team : [div.team]) : [];
+      // Division name comes as "East", prefix with league abbreviation for display
+      const divShort = String(div?.["@name"] ?? div?.name ?? "");
+      const leagueAbbr = leagueName.toLowerCase().includes("american") ? "AL" : "NL";
+      const divName = `${leagueAbbr} ${divShort}`;
+
+      const teamsRaw = div?.team
+        ? (Array.isArray(div.team) ? div.team : [div.team])
+        : [];
 
       const teams: MLBTeamStanding[] = teamsRaw.map((t: any, i: number) => {
-        const w   = safeInt(t?.w ?? t?.["@w"]);
-        const l   = safeInt(t?.l ?? t?.["@l"]);
-        const gp  = w + l;
+        const w  = safeInt(t?.["@won"]  ?? t?.won  ?? 0);
+        const l  = safeInt(t?.["@lost"] ?? t?.lost ?? 0);
+        const gp = w + l;
         const pct = gp > 0 ? Math.round((w / gp) * 1000) / 1000 : 0;
-        const gb  = String(t?.gb ?? t?.["@gb"] ?? "-").trim();
 
-        // Streak: Goalserve gives "streak_type" (W/L) + "streak_total"
-        const sType  = String(t?.streak_type  ?? t?.["@streak_type"]  ?? "W").toUpperCase();
-        const sTotal = safeInt(t?.streak_total ?? t?.["@streak_total"] ?? 0);
-        const streak = `${sType}${sTotal}`;
+        // Games back: "-" means leader, Goalserve uses "-" for first place
+        const gbRaw = String(t?.["@games_back"] ?? t?.games_back ?? "-").trim();
+        const gb = gbRaw === "-" ? "0" : gbRaw;
 
-        // Record splits
-        const home   = String(t?.home   ?? t?.["@home"]   ?? "");
-        const away   = String(t?.away   ?? t?.["@away"]   ?? "");
-        const last10 = String(t?.last10 ?? t?.["@last10"] ?? t?.l10 ?? "");
+        // Streak: Goalserve gives "W1", "L2", or "-" as @current_streak
+        const streakRaw = String(t?.["@current_streak"] ?? t?.current_streak ?? "-").trim();
+        const streak = streakRaw === "-" ? "W0" : streakRaw;
 
-        const name      = String(t?.name     ?? t?.["@name"]      ?? "");
-        const shortName = String(t?.short_name ?? t?.["@short_name"] ?? t?.abbr ?? name.slice(0, 3).toUpperCase());
+        const home   = String(t?.["@home_record"] ?? t?.home_record ?? "");
+        const away   = String(t?.["@away_record"] ?? t?.away_record ?? "");
+        const last10 = String(t?.["@last10"] ?? t?.last10 ?? "");
+
+        const name = String(t?.["@name"] ?? t?.name ?? "");
+        // Derive a short name from the last word (e.g. "New York Yankees" → "Yankees")
+        const nameParts = name.trim().split(/\s+/);
+        const shortName = nameParts[nameParts.length - 1]?.slice(0, 10) ?? name.slice(0, 3).toUpperCase();
 
         return {
-          rank:  safeInt(t?.pos ?? t?.["@pos"] ?? i + 1),
-          teamId: String(t?.id ?? t?.["@id"] ?? ""),
+          rank:    safeInt(t?.["@position"] ?? t?.position ?? i + 1),
+          teamId:  String(t?.["@id"] ?? t?.id ?? ""),
           name,
           shortName,
           w, l, pct, gb, streak, home, away, last10,
