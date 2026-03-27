@@ -34,6 +34,9 @@ import standingsRouter, { startStandingsCron } from "./routes/standings";
 // ✅ Chart data from Supabase (league winner price history)
 import chartRouter from "./routes/chart";
 
+// ✅ Promo code redemption
+import promoRouter from "./routes/promo";
+
 const PORT = Number(process.env.PORT || 3001);
 
 // Behind Nginx/Cloudflare, this ensures req.protocol/host are derived from forwarded headers.
@@ -122,6 +125,7 @@ export function makeServer() {
   app.use("/api/league-chat", leagueChatRouter);
 
   app.use("/api/admin", adminSweepsRouter);
+  app.use("/api/promo", promoRouter);
 
   // ── Bare /api mounts (catch-all — must come last) ─────────────────────────────
   app.use("/api", wallRouter);
