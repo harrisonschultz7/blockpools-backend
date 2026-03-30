@@ -1,49 +1,47 @@
 /**
- * send-weekly-brief.ts
+ * send-weekly-brief-retry.ts
  *
- * Sends the BlockPools Weekly Brief to all users with an email address.
- * Subject and preview text are pulled directly from the Resend template —
- * no need to set them here.
+ * Resends the BlockPools Weekly Brief to the 12 addresses that failed
+ * due to Resend daily quota on 2026-03-30.
  *
  * Run on VPS:
  *   cd /opt/blockpools/backend
  *   set -a && source /etc/blockpools/backend.env && set +a
- *   npx ts-node src/scripts/send-weekly-brief.ts
+ *   npx ts-node src/scripts/send-weekly-brief-retry.ts
  */
-import { pool } from "../db";
 import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// ── Resend template ID ───────────────────────────────────────────────────────
 const TEMPLATE_ID = "2fb7a3e0-c425-4221-8036-63887b64305b";
-// ─────────────────────────────────────────────────────────────────────────────
+
+const FAILED_EMAILS = [
+  "jc741899@gmail.com",
+  "geduardogomes93@gmail.com",
+  "silvestresilva864@gmail.com",
+  "jonathancruzdemoraes300@gmail.com",
+  "danieljunior0099@gmail.com",
+  "ellyqueiros23@gmail.com",
+  "silvahortegalj@gmail.com",
+  "catrachoalex83@gmail.com",
+  "yolanda120694@gmail.com",
+  "agnaldolucas118@gmail.com",
+  // From screenshot
+  "miyabimty1217@gmail.com",
+  "adeianasabinofurtunato123@gmail.com",
+];
 
 async function run() {
-  const { rows } = await pool.query(
-    `SELECT id, email
-     FROM users
-     WHERE email IS NOT NULL
-       AND email != ''
-     ORDER BY created_at ASC`
-  );
-
-  console.log(`Found ${rows.length} users to send weekly brief to`);
-
-  if (rows.length === 0) {
-    console.log("Nothing to do.");
-    await pool.end();
-    process.exit(0);
-  }
+  console.log(`Retrying ${FAILED_EMAILS.length} failed recipients...`);
 
   let sent = 0;
   let failed = 0;
 
-  for (const user of rows) {
+  for (const email of FAILED_EMAILS) {
     try {
       const result = await resend.emails.send({
         from: "Harrison <harrison@mail.blockpools.io>",
-        to: user.email,
+        to: email,
         template: {
           id: TEMPLATE_ID,
         },
@@ -52,23 +50,21 @@ async function run() {
       const resultAny = result as any;
 
       if (resultAny?.error || !resultAny?.data?.id) {
-        console.error(`[FAILED] ${user.email} — ${JSON.stringify(resultAny?.error)}`);
+        console.error(`[FAILED] ${email} — ${JSON.stringify(resultAny?.error)}`);
         failed++;
       } else {
-        console.log(`[SENT] ${user.email}`);
+        console.log(`[SENT] ${email}`);
         sent++;
       }
 
-      // Stay within Resend rate limit
       await new Promise((r) => setTimeout(r, 700));
     } catch (err: any) {
-      console.error(`[ERROR] ${user.email} — ${err?.message || err}`);
+      console.error(`[ERROR] ${email} — ${err?.message || err}`);
       failed++;
     }
   }
 
   console.log(`\nDone. Sent: ${sent}, Failed: ${failed}`);
-  await pool.end();
   process.exit(0);
 }
 
