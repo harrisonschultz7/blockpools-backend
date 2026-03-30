@@ -136,6 +136,10 @@ const REQUIRE_KICKOFF_FOR_MATCH =
 const FINAL_DEBOUNCE_SECONDS = Number(process.env.FINAL_DEBOUNCE_SECONDS || 300);
 const FINAL_CACHE_PATH = process.env.FINAL_CACHE_PATH || "/opt/blockpools/.final-cache.json";
 
+// Settled-pool skip cache: pools confirmed winningTeam != 0 on-chain are written here
+// and skipped with zero RPC calls on all subsequent runs.
+const SETTLED_CACHE_PATH = process.env.SETTLED_CACHE_PATH || "/opt/blockpools/.settled-cache.json";
+
 // Goalserve
 const GOALSERVE_API_KEY = process.env.GOALSERVE_API_KEY || "";
 const GOALSERVE_BASE_URL = process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed";
@@ -280,6 +284,27 @@ function saveFinalCache(c: FinalCache) {
 
 function cacheKeyForPool(addr: string) {
   return String(addr || "").toLowerCase();
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Settled-pool skip cache
+   Pools confirmed winningTeam != 0 are written here so future runs skip them
+   with zero eth_calls.
+──────────────────────────────────────────────────────────────────────────── */
+type SettledCache = Record<string, { settledAt: number; label: string }>;
+
+function loadSettledCache(): SettledCache {
+  try {
+    return JSON.parse(fs.readFileSync(SETTLED_CACHE_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveSettledCache(c: SettledCache) {
+  try {
+    fs.writeFileSync(SETTLED_CACHE_PATH, JSON.stringify(c, null, 2));
+  } catch {}
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -832,43 +857,6 @@ async function confirmFinalGoalserve(params: {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   FIX 3: Pre-flight check — simulate finalizeFromCoordinator to detect pools
-   that will revert with "Not coordinator" before wasting a Functions call.
-   Returns true if the pool is safe to markReady, false if it should be skipped.
-──────────────────────────────────────────────────────────────────────────── */
-async function poolAcceptsCoordinator(
-  poolAddr: string,
-  coordinatorAddr: string,
-  provider: ethers.JsonRpcProvider
-): Promise<{ ok: boolean; reason?: string }> {
-  const FINALIZE_ABI = [
-    "function finalizeFromCoordinator(bytes calldata response) external",
-  ];
-  const pool = new ethers.Contract(poolAddr, FINALIZE_ABI, provider);
-
-  // Use a dummy payload — we only care whether the revert is "Not coordinator"
-  // vs any other revert (wrong state, already resolved, etc.).
-  const dummyPayload = ethers.AbiCoder.defaultAbiCoder().encode(["string"], ["TEST"]);
-
-  try {
-    await pool.finalizeFromCoordinator.staticCall(dummyPayload, {
-      from: coordinatorAddr,
-    });
-    // Succeeded (unlikely with dummy payload, but definitely not wrong-coordinator)
-    return { ok: true };
-  } catch (e: any) {
-    const msg = String(e?.reason || e?.message || "").toLowerCase();
-    if (msg.includes("not coordinator") || msg.includes("only coordinator")) {
-      return { ok: false, reason: "Not coordinator — pool has wrong coordinator address hardcoded" };
-    }
-    // Any other revert (e.g. "already resolved", state guard) is fine —
-    // it means the coordinator address is accepted, the dummy payload just failed
-    // for a legitimate reason. Safe to markReady.
-    return { ok: true };
-  }
-}
-
-/* ────────────────────────────────────────────────────────────────────────────
    MAIN
 ──────────────────────────────────────────────────────────────────────────── */
 async function main() {
@@ -896,7 +884,7 @@ async function main() {
       `KICKOFF_MAX_LOOKAHEAD_SECONDS=${KICKOFF_MAX_LOOKAHEAD_SECONDS}s ` +
       `REQUIRE_KICKOFF_FOR_MATCH=${REQUIRE_KICKOFF_FOR_MATCH}`
   );
-  console.log(`[CFG] FINAL_DEBOUNCE_SECONDS=${FINAL_DEBOUNCE_SECONDS}s FINAL_CACHE_PATH=${FINAL_CACHE_PATH}`);
+  console.log(`[CFG] FINAL_DEBOUNCE_SECONDS=${FINAL_DEBOUNCE_SECONDS}s FINAL_CACHE_PATH=${FINAL_CACHE_PATH} SETTLED_CACHE_PATH=${SETTLED_CACHE_PATH}`);
   console.log(`[CFG] FEED_CACHE_TTL_MS=${FEED_CACHE_TTL_MS} LOG_LEVEL=${LOG_LEVEL}`);
   console.log(`[CFG] SettlementCoordinator=${SETTLEMENT_COORDINATOR_ADDRESS}`);
   console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + MLB + EPL + UCL)`);
@@ -929,7 +917,6 @@ async function main() {
 
   const readLimit = limiter(READ_CONCURRENCY);
   const sendLimit = limiter(TX_SEND_CONCURRENCY);
-  const botAddr = (await wallet.getAddress()).toLowerCase();
 
   type PoolState = {
     addr: string;
@@ -941,27 +928,32 @@ async function main() {
     isLocked: boolean;
     winningTeam: number;
     lockTime: number;
-    isOwner: boolean;
   };
 
   const states: PoolState[] = [];
 
-  // Read on-chain states in parallel (bounded)
+  // Load settled cache — skip known-settled pools with zero RPC calls.
+  const settledCache = loadSettledCache();
+  let settledCacheHits = 0;
+  let settledCacheNew = 0;
+
+  // Read on-chain states in parallel (bounded).
+  // owner() check removed: all pools in games.json are owned by this wallet.
+  // Settled pools short-circuit via local cache after first confirmation.
   await Promise.all(
     gamesMeta.map(({ contractAddress }) =>
       readLimit(async () => {
         const addr = String(contractAddress || "").trim();
         if (!ethers.isAddress(addr)) return;
 
+        // Skip if already confirmed settled in a previous run
+        const cacheKey = cacheKeyForPool(addr);
+        if (settledCache[cacheKey]) {
+          settledCacheHits++;
+          return;
+        }
+
         const pool = new ethers.Contract(addr, poolAbi, wallet);
-
-        let onchainOwner = "(read failed)";
-        try {
-          onchainOwner = await pool.owner();
-        } catch {}
-
-        const isOwner = onchainOwner !== "(read failed)" && String(onchainOwner).toLowerCase() === botAddr;
-        if (!isOwner) return;
 
         try {
           const [lg, ta, tb, tca, tcb, locked, win, lt] = await Promise.all([
@@ -975,6 +967,17 @@ async function main() {
             pool.lockTime().then(Number),
           ]);
 
+          // If this pool just settled, write it to the cache so future runs skip it
+          if (Number(win) !== 0) {
+            settledCache[cacheKey] = {
+              settledAt: Math.floor(Date.now() / 1000),
+              label: `${lg} ${ta} vs ${tb}`,
+            };
+            settledCacheNew++;
+            saveSettledCache(settledCache);
+            return; // no need to push into states — already resolved
+          }
+
           states.push({
             addr,
             league: String(lg || ""),
@@ -985,7 +988,6 @@ async function main() {
             isLocked: Boolean(locked),
             winningTeam: Number(win),
             lockTime: Number(lt),
-            isOwner,
           });
         } catch (e: any) {
           if (!QUIET) console.warn(`[READ FAIL] ${addr}: ${e?.message || e}`);
@@ -994,9 +996,15 @@ async function main() {
     )
   );
 
+  if (!QUIET) {
+    console.log(
+      `[CACHE] settled-cache: ${settledCacheHits} skipped (no RPC), ${settledCacheNew} newly settled written`
+    );
+  }
+
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const gated = states.filter((s) => s.isOwner && s.isLocked && s.winningTeam === 0);
+  const gated = states.filter((s) => s.isLocked && s.winningTeam === 0);
 
   const timeGated = gated.filter((s) => {
     if (!s.lockTime) return false;
@@ -1006,7 +1014,7 @@ async function main() {
   if (!timeGated.length) {
     console.log("No eligible pools after time gates. Submitted 0 transaction(s).");
     console.log(
-      `[SUMMARY] totalGames=${gamesMeta.length} ownedLockedUnresolved=${gated.length} timeGated=${timeGated.length} txSubmitted=0`
+      `[SUMMARY] totalGames=${gamesMeta.length} settledSkipped=${settledCacheHits} lockedUnresolved=${gated.length} timeGated=${timeGated.length} txSubmitted=0`
     );
     return;
   }
@@ -1014,7 +1022,7 @@ async function main() {
   if (REQUIRE_FINAL_CHECK && !GOALSERVE_API_KEY) {
     console.log("GOALSERVE_API_KEY not set; cannot confirm final state. Submitted 0 transaction(s).");
     console.log(
-      `[SUMMARY] totalGames=${gamesMeta.length} ownedLockedUnresolved=${gated.length} timeGated=${timeGated.length} txSubmitted=0`
+      `[SUMMARY] totalGames=${gamesMeta.length} settledSkipped=${settledCacheHits} lockedUnresolved=${gated.length} timeGated=${timeGated.length} txSubmitted=0`
     );
     return;
   }
@@ -1119,7 +1127,7 @@ async function main() {
   if (!finalEligible.length) {
     console.log("No games confirmed FINAL (and debounced). Submitted 0 transaction(s).");
     console.log(
-      `[SUMMARY] totalGames=${gamesMeta.length} ownedLockedUnresolved=${gated.length} timeGated=${timeGated.length} checked=${checked} finalsReady=0 pending=${pending} skipped=${skipped} errors=${errors} txSubmitted=0`
+      `[SUMMARY] totalGames=${gamesMeta.length} settledSkipped=${settledCacheHits} lockedUnresolved=${gated.length} timeGated=${timeGated.length} checked=${checked} finalsReady=0 pending=${pending} skipped=${skipped} errors=${errors} txSubmitted=0`
     );
     return;
   }
@@ -1134,12 +1142,14 @@ async function main() {
     let known = false;
     let alreadyReady = false;
     let alreadyPending = false;
+    let retryCount = 0;
 
     try {
-      [known, alreadyReady, alreadyPending] = await Promise.all([
+      [known, alreadyReady, alreadyPending, retryCount] = await Promise.all([
         coordinator.isKnownPool(s.addr),
         coordinator.ready(s.addr),
         coordinator.pending(s.addr),
+        coordinator.retryCount(s.addr).then(Number).catch(() => 0),
       ]);
     } catch (e: any) {
       console.log(`[warn] coordinator reads failed for ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}). Skipping.`);
@@ -1161,40 +1171,13 @@ async function main() {
       continue;
     }
 
-    // ── FIX 2: Skip pools that have exhausted coordinator retries ────────────
-    // If retryCount >= maxRetries the coordinator has already given up on this
-    // pool. Calling markReady would re-activate it, burn another Functions call,
-    // and fail again — wasting LINK for no gain.
-    try {
-      const rc = Number(await coordinator.retryCount(s.addr));
-      if (rc >= globalMaxRetries) {
-        console.log(
-          `[skip-exhausted] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) ` +
-            `retryCount=${rc}>=${globalMaxRetries} — coordinator has exhausted retries. ` +
-            `Pool likely has wrong coordinator address or broken finalizeFromCoordinator. ` +
-            `Run clearReady+purgePool on this address and remove it from games.json.`
-        );
-        skipped++;
-        continue;
-      }
-    } catch {
-      // coordinator doesn't expose retryCount (old deploy) — proceed normally
-    }
-
-    // ── FIX 3: Pre-flight coordinator address check ──────────────────────────
-    // Simulate finalizeFromCoordinator from the coordinator's address.
-    // If it reverts with "Not coordinator" we know this pool has the old
-    // coordinator hardcoded and will waste a Functions call every time.
-    const preflightResult = await poolAcceptsCoordinator(
-      s.addr,
-      SETTLEMENT_COORDINATOR_ADDRESS,
-      provider
-    );
-    if (!preflightResult.ok) {
+    // Skip pools that have exhausted coordinator retries — calling markReady
+    // would re-activate them and burn another Functions call for no gain.
+    if (retryCount >= globalMaxRetries) {
       console.log(
-        `[skip-wrong-coord] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) ` +
-          `— ${preflightResult.reason}. ` +
-          `Run clearReady+purgePool on this address and remove it from games.json.`
+        `[skip-exhausted] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) ` +
+          `retryCount=${retryCount}>=${globalMaxRetries} — coordinator has exhausted retries. ` +
+          `Run purgePool on this address and remove it from games.json.`
       );
       skipped++;
       continue;
@@ -1231,7 +1214,7 @@ async function main() {
 
   console.log(`Submitted ${submitted} transaction(s).`);
   console.log(
-    `[SUMMARY] totalGames=${gamesMeta.length} ownedLockedUnresolved=${gated.length} timeGated=${timeGated.length} checked=${checked} finalsReady=${finalEligible.length} pending=${pending} skipped=${skipped} errors=${errors} txSubmitted=${submitted}`
+    `[SUMMARY] totalGames=${gamesMeta.length} settledSkipped=${settledCacheHits} lockedUnresolved=${gated.length} timeGated=${timeGated.length} checked=${checked} finalsReady=${finalEligible.length} pending=${pending} skipped=${skipped} errors=${errors} txSubmitted=${submitted}`
   );
 }
 
