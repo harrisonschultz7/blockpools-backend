@@ -1,6 +1,7 @@
 // src/services/persistTrades.ts
 import { pool } from "../db";
 import { markUserHasTraded } from "../utils/markHasTraded";
+import { updatePromoProgress } from "../utils/updatePromoProgress";
 
 type TradeType = "BUY" | "SELL" | "CLAIM";
 
@@ -520,6 +521,28 @@ export async function upsertUserTradesAndGames(opts: {
       const uniqueAddresses = [...new Set(trades.map((t) => t.user))];
       Promise.all(uniqueAddresses.map((addr) => markUserHasTraded(addr)))
         .catch((err) => console.error("[persistTrades] markUserHasTraded failed:", err));
+    }
+
+    // ── Update promo trade progress (fire-and-forget, never blocks) ──────────
+    // Only BUY trades count toward the promo unlock threshold.
+    // updatePromoProgress is a no-op for users who are not promo-locked.
+    if (trades.length) {
+      const buyTrades = trades.filter((t) => t.type === "BUY");
+      if (buyTrades.length) {
+        // Sum gross_in per user (a single call may contain buys from multiple users)
+        const buyVolumeByUser = new Map<string, number>();
+        for (const t of buyTrades) {
+          const prev = buyVolumeByUser.get(t.user) ?? 0;
+          buyVolumeByUser.set(t.user, prev + parseFloat(t.grossInDec || "0"));
+        }
+        Promise.all(
+          [...buyVolumeByUser.entries()].map(([addr, volume]) =>
+            updatePromoProgress(addr, volume)
+          )
+        ).catch((err) =>
+          console.error("[persistTrades] updatePromoProgress failed:", err)
+        );
+      }
     }
 
     return { tradesUpserted: trades.length, gamesUpserted: games.length };
