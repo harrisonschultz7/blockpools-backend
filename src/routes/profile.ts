@@ -525,7 +525,9 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
         u.instagram_handle,
         u.avatar_url,
         u.created_at,
-        u.updated_at
+        u.updated_at,
+        (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
+        (SELECT COUNT(*) FROM user_follows WHERE follower_id  = u.id) AS "followingCount"
       FROM users u
       WHERE u.primary_address = ANY($1::text[])
          OR u.eoa_address     = ANY($1::text[])
