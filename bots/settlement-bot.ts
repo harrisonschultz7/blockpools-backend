@@ -132,6 +132,9 @@ const REQUIRE_KICKOFF_FOR_MATCH =
     ? true
     : /^(1|true)$/i.test(String(process.env.REQUIRE_KICKOFF_FOR_MATCH || ""));
 
+// Same as src/routes/scores.ts — old lockTimes query the wrong calendar day otherwise
+const STALE_LOCK_THRESHOLD_SEC = 60 * 86_400; // 60 days
+
 // Debounce final across runs
 const FINAL_DEBOUNCE_SECONDS = Number(process.env.FINAL_DEBOUNCE_SECONDS || 300);
 const FINAL_CACHE_PATH = process.env.FINAL_CACHE_PATH || "/opt/blockpools/.final-cache.json";
@@ -570,7 +573,12 @@ function kickoffEpochFromRaw(raw: any): number | undefined {
 
 function collectCandidateGames(payload: any): any[] {
   if (!payload) return [];
-  if (Array.isArray(payload?.games?.game)) return payload.games.game;
+  // MLB / NFL: Goalserve often uses games.game — single game is an object, not []. Must normalize.
+  const gg = payload?.games?.game;
+  if (gg != null) {
+    if (Array.isArray(gg)) return gg;
+    if (typeof gg === "object") return [gg];
+  }
 
   const cat = payload?.scores?.category;
   if (cat) {
@@ -608,6 +616,7 @@ function collectCandidateGames(payload: any): any[] {
 function normalizeGameRow(r: any) {
   const homeName =
     r?.hometeam?.name ||
+    r?.hometeam?.["@name"] ||
     r?.home_name ||
     r?.home ||
     r?.home_team ||
@@ -616,6 +625,7 @@ function normalizeGameRow(r: any) {
 
   const awayName =
     r?.awayteam?.name ||
+    r?.awayteam?.["@name"] ||
     r?.away_name ||
     r?.away ||
     r?.away_team ||
@@ -624,6 +634,8 @@ function normalizeGameRow(r: any) {
 
   const homeScore = Number(
     r?.hometeam?.totalscore ??
+      r?.hometeam?.["@totalscore"] ??
+      r?.hometeam?.["@goals"] ??
       r?.home_score ??
       r?.home_final ??
       (r?.localteam && (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
@@ -632,6 +644,8 @@ function normalizeGameRow(r: any) {
 
   const awayScore = Number(
     r?.awayteam?.totalscore ??
+      r?.awayteam?.["@totalscore"] ??
+      r?.awayteam?.["@goals"] ??
       r?.away_score ??
       r?.away_final ??
       (r?.visitorteam && (r.visitorteam["@goals"] || r.visitorteam["@ft_score"])) ??
@@ -687,7 +701,11 @@ function buildGoalserveUrlsForLockTime(league: string, lockTime: number): string
   const { sportPath, leaguePaths } = goalserveLeaguePaths(league);
   if (!sportPath || !leaguePaths.length) return [];
 
-  const d0 = epochToEtISO(lockTime);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const effectiveLockTime =
+    lockTime > 0 && nowSec - lockTime > STALE_LOCK_THRESHOLD_SEC ? nowSec : lockTime;
+
+  const d0 = epochToEtISO(effectiveLockTime);
   const d1 = addDaysISO(d0, 1);
   const dPrev = addDaysISO(d0, -1);
   const L = String(league || "").trim().toLowerCase();

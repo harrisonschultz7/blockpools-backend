@@ -147,6 +147,12 @@ function extractMatchStatus(
   // Collect all matches/events from the payload (structure varies by sport)
   const candidates: any[] = [];
 
+  // MLB / NFL: games.game — single game is often an object, not an array (Goalserve JSON)
+  const gg = data?.games?.game;
+  if (gg != null) {
+    candidates.push(...(Array.isArray(gg) ? gg : [gg]));
+  }
+
   // NFL / NBA / NHL / MLB shape: data.scores.category.match[] or data.scores.match[]
   const scores = data?.scores ?? data?.score ?? data;
   const categories = scores?.category
@@ -175,10 +181,22 @@ function extractMatchStatus(
 
     // Try to identify home/away team names from various Goalserve field names
     const home = String(
-      m?.localteam?.name ?? m?.hometeam?.name ?? m?.home_team ?? m?.home ?? ""
+      m?.localteam?.name ??
+        m?.localteam?.["@name"] ??
+        m?.hometeam?.name ??
+        m?.hometeam?.["@name"] ??
+        m?.home_team ??
+        m?.home ??
+        ""
     ).toLowerCase();
     const away = String(
-      m?.visitorteam?.name ?? m?.awayteam?.name ?? m?.away_team ?? m?.away ?? ""
+      m?.visitorteam?.name ??
+        m?.visitorteam?.["@name"] ??
+        m?.awayteam?.name ??
+        m?.awayteam?.["@name"] ??
+        m?.away_team ??
+        m?.away ??
+        ""
     ).toLowerCase();
 
     const matchesGame =

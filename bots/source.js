@@ -283,8 +283,12 @@ function kickoffEpochFromRaw(raw) {
 function collectCandidateGames(payload) {
   if (!payload) return [];
 
-  // NFL
-  if (Array.isArray(payload?.games?.game)) return payload.games.game;
+  // NFL / MLB: games.game is often a single object when only one game is listed
+  const gg = payload?.games?.game;
+  if (gg != null) {
+    if (Array.isArray(gg)) return gg;
+    if (typeof gg === "object") return [gg];
+  }
 
   // NBA / NHL: scores.category.match[]
   const cat = payload?.scores?.category;
@@ -324,6 +328,7 @@ function collectCandidateGames(payload) {
 function normalizeGameRow(r) {
   const homeName =
     r?.hometeam?.name ||
+    r?.hometeam?.["@name"] ||
     r?.home_name ||
     r?.home ||
     r?.home_team ||
@@ -332,6 +337,7 @@ function normalizeGameRow(r) {
 
   const awayName =
     r?.awayteam?.name ||
+    r?.awayteam?.["@name"] ||
     r?.away_name ||
     r?.away ||
     r?.away_team ||
@@ -340,6 +346,8 @@ function normalizeGameRow(r) {
 
   const homeScore = Number(
     r?.hometeam?.totalscore ??
+      r?.hometeam?.["@totalscore"] ??
+      r?.hometeam?.["@goals"] ??
       r?.home_score ??
       r?.home_final ??
       (r?.localteam && (r.localteam["@goals"] || r.localteam["@ft_score"])) ??
@@ -348,6 +356,8 @@ function normalizeGameRow(r) {
 
   const awayScore = Number(
     r?.awayteam?.totalscore ??
+      r?.awayteam?.["@totalscore"] ??
+      r?.awayteam?.["@goals"] ??
       r?.away_score ??
       r?.away_final ??
       (r?.visitorteam &&
