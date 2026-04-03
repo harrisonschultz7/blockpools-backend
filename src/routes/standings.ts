@@ -244,6 +244,19 @@ function safeInt(v: any): number {
   return isNaN(n) ? 0 : n;
 }
 
+/**
+ * Domestic leagues (e.g. EPL) sometimes send standings.category as an array of blocks,
+ * each with .team — not a single object with .team at the top level.
+ */
+function normaliseCategoryBlock(categoryField: any): any {
+  if (!categoryField) return categoryField;
+  if (!Array.isArray(categoryField)) return categoryField;
+  const withTeams = categoryField.find(
+    (c: any) => c?.team || c?.teams || c?.standing || c?.group || c?.groups
+  );
+  return withTeams ?? categoryField[0] ?? categoryField;
+}
+
 // ── Soccer normalisation (unchanged) ─────────────────────────────────────────
 
 function normaliseTeamRow(t: any, rank: number, group?: string): StandingsTeam {
@@ -274,7 +287,12 @@ function normaliseSoccer(raw: any, league: string, season: string): NormalisedSt
     league, season, updatedAt: new Date().toISOString(), phase: "league", _raw: raw,
   };
   const standings  = raw?.standings ?? raw?.standing ?? raw;
-  const tournament = standings?.tournament;
+  // EPL-style: tournament may be [{ team: [...] }] — unwrap only that pattern (not UCL multi-group arrays).
+  let tournament: any = standings?.tournament;
+  if (Array.isArray(tournament) && tournament.length === 1) {
+    const t0 = tournament[0];
+    if (t0 && !t0.group && !t0.groups && (t0.team || t0.teams || t0.standing)) tournament = t0;
+  }
 
   if (tournament) {
     const groupsRaw: any[] =
@@ -305,7 +323,8 @@ function normaliseSoccer(raw: any, league: string, season: string): NormalisedSt
     }
   }
 
-  const data      = standings?.category ?? standings?.data ?? standings;
+  let data = standings?.category ?? standings?.data ?? standings;
+  data = normaliseCategoryBlock(data);
   const groupsRaw: any[] =
     data?.group  ? (Array.isArray(data.group)  ? data.group  : [data.group])  :
     data?.groups ? (Array.isArray(data.groups) ? data.groups : [data.groups]) : [];
@@ -430,20 +449,37 @@ function normaliseMLB(raw: any): NormalisedStandings {
   const season = mlbSeason();
 
   // Goalserve shape:
-  //   standings.category            — single object (not array)
+  //   standings.category            — object or array of objects
   //     .league[]                   — AL / NL
   //       .division[]               — East / Central / West
   //         .team[]                 — each team, all fields @prefixed
   //   e.g. team["@name"], team["@won"], team["@current_streak"] = "W1"
-
-  const cat = raw?.standings?.category;
-  if (!cat) return { league: "MLB", season, updatedAt: new Date().toISOString(), phase: "division", mlbLeagues: [] };
-
-  const leagueArr = cat?.league
-    ? (Array.isArray(cat.league) ? cat.league : [cat.league])
-    : [];
+  // Some seasons also expose .league directly under standings.
 
   const mlbLeagues: MLBLeague[] = [];
+
+  const collectLeagueNodes = (cat: any): any[] => {
+    if (!cat) return [];
+    if (cat.league) return Array.isArray(cat.league) ? cat.league : [cat.league];
+    // JSON feed: category[] can be [ { @name: "American League", division: [...] }, ... ] with no .league wrapper
+    if (cat.division) return [cat];
+    return [];
+  };
+
+  const categories: any[] = (() => {
+    const c = raw?.standings?.category;
+    if (c) return Array.isArray(c) ? c : [c];
+    const direct = raw?.standings?.league;
+    if (direct) return [{ league: direct }];
+    return [];
+  })();
+
+  if (!categories.length) {
+    return { league: "MLB", season, updatedAt: new Date().toISOString(), phase: "division", mlbLeagues: [] };
+  }
+
+  let leagueArr: any[] = [];
+  for (const cat of categories) leagueArr.push(...collectLeagueNodes(cat));
 
   for (const lg of leagueArr) {
     const leagueName = String(lg?.["@name"] ?? lg?.name ?? "");

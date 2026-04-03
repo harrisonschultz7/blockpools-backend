@@ -433,6 +433,20 @@ function isFinalStatus(raw: string): boolean {
   return false;
 }
 
+/** Goalserve rows that are not the real contest (avoid stale PPD when today's feed fails). */
+function isShellSchedulingStatus(raw: string): boolean {
+  const s = (raw || "").trim().toLowerCase();
+  if (!s) return false;
+  if (s === "postponed" || s === "ppd" || s === "ppd.") return true;
+  if (s.includes("postpon")) return true;
+  if (s.includes("cancell") || s.includes("canceled")) return true;
+  if (s.includes("suspended") && !s.includes("final")) return true;
+  if (s.includes("rain delay") || s === "delay") return true;
+  if (s.includes("forfeit")) return true;
+  if (s === "tbd" || s.includes("to be determined")) return true;
+  return false;
+}
+
 const norm = (s: string) =>
   (s || "")
     .normalize("NFD")
@@ -450,7 +464,7 @@ function acronym(s: string): string {
   return parts.map((p) => (p[0] || "").toUpperCase()).join("");
 }
 
-async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
+async function fetchJsonWithRetry(url: string, tries = 5, backoffMs = 500) {
   let lastErr: any;
 
   for (let i = 0; i < tries; i++) {
@@ -459,11 +473,20 @@ async function fetchJsonWithRetry(url: string, tries = 3, backoffMs = 400) {
 
     try {
       const res = await fetch(url, { signal: ctrl.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const err = new Error(`HTTP ${res.status}`) as Error & { httpStatus?: number };
+        err.httpStatus = res.status;
+        throw err;
+      }
       return await res.json();
     } catch (e) {
       lastErr = e;
-      if (i < tries - 1) await sleep(backoffMs * (i + 1));
+      if (i < tries - 1) {
+        const st = (e as any)?.httpStatus ?? (e as any)?.message?.match?.(/HTTP (\d+)/)?.[1];
+        const n = st != null ? Number(st) : NaN;
+        const mult = Number.isFinite(n) && n >= 500 ? 2.5 : 1;
+        await sleep(Math.round(backoffMs * mult * (i + 1)));
+      }
     } finally {
       clearTimeout(t);
     }
@@ -478,7 +501,7 @@ async function fetchJsonCached(url: string) {
   const hit = _feedCache[url];
   if (hit && now - hit.ts < FEED_CACHE_TTL_MS) return hit.data;
 
-  const data = await fetchJsonWithRetry(url, 3, 500);
+  const data = await fetchJsonWithRetry(url, 5, 500);
   _feedCache[url] = { ts: now, data };
   return data;
 }
@@ -666,7 +689,13 @@ function buildGoalserveUrlsForLockTime(league: string, lockTime: number): string
 
   const d0 = epochToEtISO(lockTime);
   const d1 = addDaysISO(d0, 1);
-  const dateIsos = [d0, d1];
+  const dPrev = addDaysISO(d0, -1);
+  const L = String(league || "").trim().toLowerCase();
+  // US sports feeds use ET calendar dates: try lock day + next first; add previous day last as fallback.
+  const dateIsos =
+    L === "mlb" || L === "nba" || L === "nhl"
+      ? [d0, d1, dPrev]
+      : [d0, d1];
 
   const urls: string[] = [];
   for (const iso of dateIsos) {
@@ -746,7 +775,17 @@ async function confirmFinalGoalserve(params: {
         continue;
       }
 
-      kickoffFiltered.sort((g1: any, g2: any) => {
+      const playable = kickoffFiltered.filter((g: any) => !isShellSchedulingStatus(g.status || ""));
+      if (!playable.length) {
+        if (GOALSERVE_DEBUG && !QUIET) {
+          console.log(
+            `[DBG] Skipping url: only postponed/cancelled rows for this matchup (lockTime=${params.lockTime})`
+          );
+        }
+        continue;
+      }
+
+      playable.sort((g1: any, g2: any) => {
         const f1 = isFinalStatus(g1.status || "") ? 1 : 0;
         const f2 = isFinalStatus(g2.status || "") ? 1 : 0;
         if (f1 !== f2) return f2 - f1;
@@ -758,7 +797,7 @@ async function confirmFinalGoalserve(params: {
         return d1 - d2;
       });
 
-      const candidate = kickoffFiltered[0];
+      const candidate = playable[0];
 
       if (!bestMatch) {
         bestMatch = candidate;
