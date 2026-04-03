@@ -136,7 +136,7 @@ const REQUIRE_KICKOFF_FOR_MATCH =
 const FINAL_DEBOUNCE_SECONDS = Number(process.env.FINAL_DEBOUNCE_SECONDS || 300);
 const FINAL_CACHE_PATH = process.env.FINAL_CACHE_PATH || "/opt/blockpools/.final-cache.json";
 
-// Settled-pool skip cache: pools confirmed winningTeam != 0 on-chain are written here
+// Settled-pool skip cache: binary pools with winningTeam != 0, or GamePoolMulti with isResolved
 // and skipped with zero RPC calls on all subsequent runs.
 const SETTLED_CACHE_PATH = process.env.SETTLED_CACHE_PATH || "/opt/blockpools/.settled-cache.json";
 
@@ -175,6 +175,10 @@ const FALLBACK_MIN_ABI = [
   { inputs: [], name: "winningTeam", outputs: [{ type: "uint8" }], stateMutability: "view", type: "function" },
   { inputs: [], name: "lockTime", outputs: [{ type: "uint256" }], stateMutability: "view", type: "function" },
   { inputs: [], name: "owner", outputs: [{ type: "address" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "outcomesCount", outputs: [{ type: "uint8" }], stateMutability: "view", type: "function" },
+  { inputs: [{ name: "i", type: "uint8" }], name: "outcomeName", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [{ name: "i", type: "uint8" }], name: "outcomeCode", outputs: [{ type: "string" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "isResolved", outputs: [{ type: "bool" }], stateMutability: "view", type: "function" },
 ] as const;
 
 function loadGamePoolAbi(): { abi: any; source: "imported" | "minimal" } {
@@ -288,7 +292,7 @@ function cacheKeyForPool(addr: string) {
 
 /* ────────────────────────────────────────────────────────────────────────────
    Settled-pool skip cache
-   Pools confirmed winningTeam != 0 are written here so future runs skip them
+   Pools confirmed settled on-chain are written here so future runs skip them
    with zero eth_calls.
 ──────────────────────────────────────────────────────────────────────────── */
 type SettledCache = Record<string, { settledAt: number; label: string }>;
@@ -700,6 +704,8 @@ async function confirmFinalGoalserve(params: {
   teamBName: string;
   teamACode?: string;
   teamBCode?: string;
+  /** GamePoolMulti 3-way: on-chain draw outcome code for logs (score draw) */
+  tieOutcomeCode?: string;
 }): Promise<FinalCheckResult> {
   if (!GOALSERVE_API_KEY) return { ok: false, reason: "missing GOALSERVE_API_KEY" };
 
@@ -852,6 +858,7 @@ async function confirmFinalGoalserve(params: {
   let winnerCode = "Tie";
   if (winner === "A") winnerCode = params.teamACode || params.teamAName;
   else if (winner === "B") winnerCode = params.teamBCode || params.teamBName;
+  else if (params.tieOutcomeCode) winnerCode = params.tieOutcomeCode;
 
   return { ok: true, winner, winnerCode };
 }
@@ -928,6 +935,11 @@ async function main() {
     isLocked: boolean;
     winningTeam: number;
     lockTime: number;
+    poolKind: "binary" | "multi";
+    /** false while unresolved; only set for GamePoolMulti */
+    isResolved?: boolean;
+    /** outcomeCode(1) when outcomesCount === 3 (soccer 1X2) */
+    drawOutcomeCode?: string;
   };
 
   const states: PoolState[] = [];
@@ -956,6 +968,71 @@ async function main() {
         const pool = new ethers.Contract(addr, poolAbi, wallet);
 
         try {
+          let nOut = 0;
+          let isMulti = false;
+          try {
+            nOut = Number(await pool.outcomesCount());
+            isMulti = Number.isFinite(nOut) && nOut >= 2;
+          } catch {
+            isMulti = false;
+          }
+
+          if (isMulti) {
+            const [lg, locked, lt, resolved] = await Promise.all([
+              pool.league(),
+              pool.isLocked(),
+              pool.lockTime().then(Number),
+              pool.isResolved(),
+            ]);
+
+            if (resolved) {
+              const idxB = nOut === 3 ? 2 : nOut === 2 ? 1 : nOut - 1;
+              let label = `${lg} (multi)`;
+              try {
+                const [na, nb] = await Promise.all([pool.outcomeName(0), pool.outcomeName(idxB)]);
+                label = `${lg} ${na} vs ${nb}`;
+              } catch {}
+              settledCache[cacheKey] = {
+                settledAt: Math.floor(Date.now() / 1000),
+                label,
+              };
+              settledCacheNew++;
+              saveSettledCache(settledCache);
+              return;
+            }
+
+            const idxB = nOut === 3 ? 2 : nOut === 2 ? 1 : nOut - 1;
+            const reads: Promise<any>[] = [
+              pool.outcomeName(0),
+              pool.outcomeName(idxB),
+              pool.outcomeCode(0),
+              pool.outcomeCode(idxB),
+            ];
+            if (nOut === 3) reads.push(pool.outcomeCode(1));
+            const outs = await Promise.all(reads);
+            const nameA = String(outs[0] || "");
+            const nameB = String(outs[1] || "");
+            const codeA = String(outs[2] || "");
+            const codeB = String(outs[3] || "");
+            const drawCode = nOut === 3 ? String(outs[4] || "") : undefined;
+
+            states.push({
+              addr,
+              league: String(lg || ""),
+              teamAName: nameA,
+              teamBName: nameB,
+              teamACode: codeA,
+              teamBCode: codeB,
+              isLocked: Boolean(locked),
+              winningTeam: 0,
+              lockTime: Number(lt),
+              poolKind: "multi",
+              isResolved: false,
+              drawOutcomeCode: drawCode || undefined,
+            });
+            return;
+          }
+
           const [lg, ta, tb, tca, tcb, locked, win, lt] = await Promise.all([
             pool.league(),
             pool.teamAName(),
@@ -967,7 +1044,6 @@ async function main() {
             pool.lockTime().then(Number),
           ]);
 
-          // If this pool just settled, write it to the cache so future runs skip it
           if (Number(win) !== 0) {
             settledCache[cacheKey] = {
               settledAt: Math.floor(Date.now() / 1000),
@@ -975,7 +1051,7 @@ async function main() {
             };
             settledCacheNew++;
             saveSettledCache(settledCache);
-            return; // no need to push into states — already resolved
+            return;
           }
 
           states.push({
@@ -988,6 +1064,7 @@ async function main() {
             isLocked: Boolean(locked),
             winningTeam: Number(win),
             lockTime: Number(lt),
+            poolKind: "binary",
           });
         } catch (e: any) {
           if (!QUIET) console.warn(`[READ FAIL] ${addr}: ${e?.message || e}`);
@@ -1004,7 +1081,11 @@ async function main() {
 
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const gated = states.filter((s) => s.isLocked && s.winningTeam === 0);
+  const gated = states.filter((s) => {
+    if (!s.isLocked) return false;
+    if (s.poolKind === "multi") return !s.isResolved;
+    return s.winningTeam === 0;
+  });
 
   const timeGated = gated.filter((s) => {
     if (!s.lockTime) return false;
@@ -1064,6 +1145,7 @@ async function main() {
         teamBName: s.teamBName,
         teamACode: s.teamACode,
         teamBCode: s.teamBCode,
+        tieOutcomeCode: s.poolKind === "multi" && s.drawOutcomeCode ? s.drawOutcomeCode : undefined,
       });
 
       if (pre.ok) {

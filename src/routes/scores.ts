@@ -4,8 +4,10 @@
 //
 // TWO-TIER CACHE:
 //   Tier 1 — Postgres (game_score_cache table)
-//     • Written when a game is detected as FINAL
-//     • Read first on every request — returns instantly, Goalserve never called again
+//     • Written when a game is detected as FINAL, and for in-progress games (is_final=false)
+//     • Final rows: read first — instant, Goalserve never called again
+//     • Recent non-final rows (fetched within PG_LIVE_CACHE_MAX_AGE_MS): instant warm cache
+//       so page loads are not blank while Goalserve is slow / cold in-memory cache
 //     • Survives server restarts and deploys
 //
 //   Tier 2 — In-process memory (55s TTL)
@@ -39,6 +41,8 @@ const GOALSERVE_BASE_URL =
 const CACHE_TTL_MS           = 55_000;   // in-memory TTL for live games
 const FETCH_TIMEOUT_MS       = 12_000;
 const STALE_LOCK_THRESHOLD_SEC = 60 * 86_400; // 60 days
+/** Serve non-final Postgres snapshot without calling Goalserve if fetched recently enough. */
+const PG_LIVE_CACHE_MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes
 
 // ── Tier 2: In-memory cache (live/upcoming games only) ──────────────────────
 
@@ -58,16 +62,32 @@ function memSet(key: string, data: any) {
 
 // ── Tier 1: Postgres cache (final games only) ───────────────────────────────
 
-async function pgCacheGet(contractAddress: string): Promise<any | null> {
+type PgCacheHit = { data: any; header: "postgres-final" | "postgres-live" };
+
+async function pgCacheGet(contractAddress: string): Promise<PgCacheHit | null> {
   if (!contractAddress) return null;
   try {
     const { rows } = await pool.query(
-      `SELECT score_data FROM game_score_cache
-       WHERE contract_address = $1 AND is_final = TRUE
+      `SELECT score_data, is_final, fetched_at
+       FROM game_score_cache
+       WHERE contract_address = $1
        LIMIT 1`,
       [contractAddress.toLowerCase()]
     );
-    return rows[0]?.score_data ?? null;
+    const row = rows[0];
+    const data = row?.score_data;
+    if (data == null) return null;
+
+    if (row.is_final === true) {
+      return { data, header: "postgres-final" };
+    }
+
+    const fetchedAt = row.fetched_at ? new Date(row.fetched_at).getTime() : 0;
+    if (fetchedAt && Date.now() - fetchedAt <= PG_LIVE_CACHE_MAX_AGE_MS) {
+      return { data, header: "postgres-live" };
+    }
+
+    return null;
   } catch (e) {
     // Non-fatal — fall through to Goalserve
     console.warn("[scores] pgCacheGet error", (e as any)?.message);
@@ -281,12 +301,12 @@ router.get("/live", async (req: Request, res: Response) => {
 
     const lockTime = Number(lockTimeStr) || 0;
 
-    // ── Tier 1: Postgres — instant return for finished games ──────────────
+    // ── Tier 1: Postgres — final games + recent non-final snapshots ─────────
     if (contractAddress) {
       const pgHit = await pgCacheGet(contractAddress);
       if (pgHit) {
-        res.setHeader("X-Score-Cache", "postgres-final");
-        return res.json(pgHit);
+        res.setHeader("X-Score-Cache", pgHit.header);
+        return res.json(pgHit.data);
       }
     }
 

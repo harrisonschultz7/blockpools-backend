@@ -13,6 +13,12 @@ export const gamePoolAbi = [
   { type:"function", stateMutability:"view", name:"lockTime",    inputs:[], outputs:[{type:"uint256"}] },
   { type:"function", stateMutability:"view", name:"owner",       inputs:[], outputs:[{type:"address"}] },
 
+  // GamePoolMulti: settlement-bot probes these after binary views
+  { type:"function", stateMutability:"view", name:"outcomesCount", inputs:[], outputs:[{type:"uint8"}] },
+  { type:"function", stateMutability:"view", name:"outcomeName", inputs:[{type:"uint8", name:"i"}], outputs:[{type:"string"}] },
+  { type:"function", stateMutability:"view", name:"outcomeCode", inputs:[{type:"uint8", name:"i"}], outputs:[{type:"string"}] },
+  { type:"function", stateMutability:"view", name:"isResolved", inputs:[], outputs:[{type:"bool"}] },
+
   // --- writes the bot may call ---
   {
     type:"function",

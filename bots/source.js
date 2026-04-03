@@ -13,14 +13,19 @@
 //       teamAName: "Dallas Cowboys",
 //       teamBName: "Washington Commanders",
 //       lockTime: "173..."   // epoch seconds as string (or number)
+//
+//       // Optional — 3-way soccer (GamePoolMulti: outcome 0 = A, 1 = draw, 2 = B).
+//       // Must match the on-chain outcome code for the draw outcome exactly (case-sensitive).
+//       drawOutcomeCode: "DRAW"
 //     }
 //
 // RETURNS (string, via Functions.encodeString):
 //  - teamACode        => Team A wins  (e.g. "PHI")
 //  - teamBCode        => Team B wins  (e.g. "KC")
-//  - "TIE"            => Tie
+//  - drawOutcomeCode  => Score draw, when drawOutcomeCode was set in payload
+//  - "TIE"            => Tie / ambiguous (binary pools, or 3-way when drawOutcomeCode omitted)
 //
-// The GamePool.finalizeFromCoordinator(response) should interpret this string.
+// The pool's finalize path should interpret this string (code hash match or void rules).
 
 if (!Array.isArray(args) || args.length < 1) {
   throw Error("Invalid args: expected 1 packed JSON string");
@@ -52,6 +57,9 @@ const teamBName = s(payload.teamBName);
 
 // lockTime may come as number or string
 const lockTime = Number(payload.lockTime || 0);
+
+// Exact string for 3-way draw; omit for legacy binary behavior (score draw => "TIE")
+const drawOutcomeCode = s(payload.drawOutcomeCode);
 
 if (!league || !dateFrom || !dateTo || !teamAName || !teamBName) {
   throw Error("Missing required packed args fields");
@@ -524,7 +532,8 @@ async function lookupWinnerCode() {
     else if (awayIsB && !awayIsA) winnerCode = targetBCode;
     else winnerCode = "TIE";
   } else {
-    winnerCode = "TIE";
+    // True score draw: use on-chain draw code for GamePoolMulti when provided
+    winnerCode = drawOutcomeCode || "TIE";
   }
 
   console.log(
