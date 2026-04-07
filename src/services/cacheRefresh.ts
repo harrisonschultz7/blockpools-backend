@@ -187,16 +187,17 @@ export async function serveWithStaleWhileRevalidate(opts: {
  * request fetches fresh data instead of serving stale cache.
  */
 export function bustUserCache(address: string): number {
-  const addr = address.toLowerCase();
+  const addrFull = (address || "").toLowerCase().trim();
+  const prefixV3 = `userTradesPage_v3:user:${addrFull}:`;
   let count = 0;
   for (const key of mem.keys()) {
-    if (key.includes(addr)) {
+    if (key.startsWith(prefixV3)) {
       mem.delete(key);
       lastRevalidateAt.delete(key);
       count++;
     }
   }
-  console.log(`[bustUserCache] cleared ${count} entries for ${addr}`);
+  console.log(`[bustUserCache] cleared ${count} entries for ${addrFull}`);
   return count;
 }
 

@@ -35,13 +35,17 @@ export function keyUserBetsPage(params: any) {
 }
 
 /**
- * NEW: user trades (BUY + SELL) page cache key
+ * User trades (BUY + SELL) page cache key
  * Params should include: { user, leagues, range, page, pageSize }
  *
- * NOTE: Versioned to invalidate old cached payloads when merge/dedupe logic changes.
+ * User address MUST appear in plaintext so POST /cache/user/:addr/bust can delete
+ * all trade-page keys for that wallet. (v2 hashed everything — bust matched 0 keys,
+ * so fresh cache skipped refresh and new txs never reached persist/Supabase.)
  */
 export function keyUserTradesPage(params: any) {
-  return `userTradesPage_v2:user:${hashParams(params)}`;
+  const user = String(params.user || "").toLowerCase().trim();
+  const { user: _u, ...rest } = params;
+  return `userTradesPage_v3:user:${user}:${hashParams(rest)}`;
 }
 
 export function keyUserClaimsAndStats(params: any) {
