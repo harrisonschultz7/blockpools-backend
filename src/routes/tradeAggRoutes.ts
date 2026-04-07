@@ -221,7 +221,7 @@ async function handleTradeAgg(req: any, res: any) {
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
         WHERE lower(e.user_address) = lower($1)
-          AND g.lock_time >= $2 AND g.lock_time <= $3
+          AND COALESCE(g.lock_time, 0) >= $2 AND COALESCE(g.lock_time, 0) <= $3
           AND ($4 = 'ALL' OR g.league = $4)
           AND e.type IN ('BUY','SELL')
           AND (
@@ -322,7 +322,7 @@ async function handleTradeAgg(req: any, res: any) {
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
         WHERE lower(e.user_address) = lower($1)
-          AND g.lock_time >= $2 AND g.lock_time <= $3
+          AND COALESCE(g.lock_time, 0) >= $2 AND COALESCE(g.lock_time, 0) <= $3
           AND ($4 = 'ALL' OR g.league = $4)
           AND e.type = 'CLAIM'
         GROUP BY e.game_id
@@ -456,7 +456,7 @@ async function handleTradeAgg(req: any, res: any) {
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
         WHERE lower(e.user_address) = lower($1)
-          AND g.lock_time >= $2 AND g.lock_time <= $3
+          AND COALESCE(g.lock_time, 0) >= $2 AND COALESCE(g.lock_time, 0) <= $3
           AND ($4 = 'ALL' OR g.league = $4)
           AND e.type IN ('BUY','SELL')
           AND (
@@ -566,7 +566,7 @@ async function handleTradeAgg(req: any, res: any) {
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
         WHERE lower(e.user_address) = lower($1)
-          AND g.lock_time >= $2 AND g.lock_time <= $3
+          AND COALESCE(g.lock_time, 0) >= $2 AND COALESCE(g.lock_time, 0) <= $3
           AND ($4 = 'ALL' OR g.league = $4)
           AND e.type = 'CLAIM'
         GROUP BY e.game_id
