@@ -251,8 +251,32 @@ router.get('/lock-status', async (req: Request, res: Response) => {
   }
 
   const promoTradeRequired = Number(data?.promo_trade_required ?? 0);
-  const promoTradeAccumulated = Number(data?.promo_trade_accumulated ?? 0);
-  const promoLocked = data?.promo_locked ?? false;
+  let promoTradeAccumulated = Number(data?.promo_trade_accumulated ?? 0);
+  let promoLocked = data?.promo_locked ?? false;
+
+  // Compute live net promo exposure so BUY then SELL reduces progress immediately:
+  // net_open = SUM(BUY gross_in_dec) - SUM(SELL cost_basis_closed_dec), floored at 0.
+  if (promoTradeRequired > 0) {
+    const { data: netRows, error: netErr } = await supabase
+      .from('user_trade_events')
+      .select('type, gross_in_dec, cost_basis_closed_dec')
+      .eq('user_address', address)
+      .in('type', ['BUY', 'SELL'])
+      .limit(3000);
+
+    if (netErr) {
+      console.error('[promo/lock-status net-open]', netErr);
+    } else {
+      let netOpen = 0;
+      for (const r of netRows ?? []) {
+        if (r?.type === 'BUY') netOpen += Number(r?.gross_in_dec ?? 0);
+        if (r?.type === 'SELL') netOpen -= Number(r?.cost_basis_closed_dec ?? 0);
+      }
+      const computedAccumulated = Math.max(0, Math.min(promoTradeRequired, netOpen));
+      promoTradeAccumulated = computedAccumulated;
+      promoLocked = computedAccumulated < promoTradeRequired;
+    }
+  }
 
   // Additional anti-abuse gate:
   // even after a user reaches trade volume, keep withdrawals blocked while they
