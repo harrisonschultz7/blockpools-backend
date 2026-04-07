@@ -17,7 +17,7 @@ export async function updatePromoProgress(userAddress: string): Promise<void> {
   await pool.query(
     `
     WITH latest_redemption AS (
-      SELECT COALESCE(MAX(redeemed_at), MAX(inserted_at)) AS redeemed_at
+      SELECT MAX(redeemed_at) AS redeemed_at
       FROM public.promo_redemptions
       WHERE user_address = $1
     ),

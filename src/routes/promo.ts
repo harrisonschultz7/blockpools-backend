@@ -258,7 +258,7 @@ router.get('/lock-status', async (req: Request, res: Response) => {
   if (promoTradeRequired > 0) {
     const { data: redemptionRows, error: redemptionErr } = await supabase
       .from('promo_redemptions')
-      .select('redeemed_at, inserted_at')
+      .select('redeemed_at')
       .eq('user_address', address)
       .order('redeemed_at', { ascending: false })
       .limit(1);
@@ -266,7 +266,7 @@ router.get('/lock-status', async (req: Request, res: Response) => {
     if (redemptionErr) {
       console.error('[promo/lock-status redemption]', redemptionErr);
     } else {
-      promoRedeemedAt = redemptionRows?.[0]?.redeemed_at ?? redemptionRows?.[0]?.inserted_at ?? null;
+      promoRedeemedAt = redemptionRows?.[0]?.redeemed_at ?? null;
     }
   }
 
