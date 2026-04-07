@@ -298,11 +298,15 @@ router.get('/lock-status', async (req: Request, res: Response) => {
     }
   }
 
-  // Additional anti-abuse gate:
-  // even after a user reaches trade volume, keep withdrawals blocked while they
-  // still have promo-related BUY activity on unresolved games.
+  // While the user is still below the required net-open promo volume, also require
+  // every post-promo BUY's game to be final (anti round-trip / watch-list abuse).
+  // Once promo_trade_accumulated >= promo_trade_required, later bets do not extend
+  // this gate — only net open below the requirement keeps them locked.
   let promoGameFinalized = true;
-  if (promoTradeRequired > 0) {
+  const stillBuildingVolume =
+    promoTradeRequired > 0 && promoTradeAccumulated < promoTradeRequired;
+
+  if (stillBuildingVolume) {
     let buyTradesQuery = supabase
       .from('user_trade_events')
       .select('game_id')
@@ -346,7 +350,9 @@ router.get('/lock-status', async (req: Request, res: Response) => {
     }
   }
 
-  const effectivePromoLocked = promoLocked || (promoTradeRequired > 0 && !promoGameFinalized);
+  const effectivePromoLocked =
+    promoLocked ||
+    (promoTradeRequired > 0 && !promoGameFinalized && stillBuildingVolume);
 
   return res.json({
     promo_locked: effectivePromoLocked,
