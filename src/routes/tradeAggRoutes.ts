@@ -69,7 +69,9 @@ function assertAddr(address: string) {
 function rangeToWindow(range: string) {
   const r = String(range || "ALL").toUpperCase().trim();
   const nowSec = Math.floor(Date.now() / 1000);
-  const farFuture = 4102444800;
+  // MULTI / league-winner pools often use a chain sentinel (e.g. 9999999999) for lock_time.
+  // Previous cap ~year 2100 excluded those games from trade-agg entirely.
+  const farFuture = 20_000_000_000;
 
   if (r === "D30") return { start: nowSec - 30 * 86400, end: nowSec };
   if (r === "D90") return { start: nowSec - 90 * 86400, end: nowSec };
