@@ -524,21 +524,16 @@ export async function upsertUserTradesAndGames(opts: {
     }
 
     // ── Update promo trade progress (fire-and-forget, never blocks) ──────────
-    // Only BUY trades count toward the promo unlock threshold.
+    // Uses net principal-at-risk, so BUY+SELL round trips do not count.
     // updatePromoProgress is a no-op for users who are not promo-locked.
     if (trades.length) {
-      const buyTrades = trades.filter((t) => t.type === "BUY");
-      if (buyTrades.length) {
-        // Sum gross_in per user (a single call may contain buys from multiple users)
-        const buyVolumeByUser = new Map<string, number>();
-        for (const t of buyTrades) {
-          const prev = buyVolumeByUser.get(t.user) ?? 0;
-          buyVolumeByUser.set(t.user, prev + parseFloat(t.grossInDec || "0"));
-        }
+      const exposureAffectingTrades = trades.filter(
+        (t) => t.type === "BUY" || t.type === "SELL"
+      );
+      if (exposureAffectingTrades.length) {
+        const affectedUsers = [...new Set(exposureAffectingTrades.map((t) => t.user))];
         Promise.all(
-          [...buyVolumeByUser.entries()].map(([addr, volume]) =>
-            updatePromoProgress(addr, volume)
-          )
+          affectedUsers.map((addr) => updatePromoProgress(addr))
         ).catch((err) =>
           console.error("[persistTrades] updatePromoProgress failed:", err)
         );

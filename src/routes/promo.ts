@@ -250,10 +250,61 @@ router.get('/lock-status', async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'DB error' });
   }
 
+  const promoTradeRequired = Number(data?.promo_trade_required ?? 0);
+  const promoTradeAccumulated = Number(data?.promo_trade_accumulated ?? 0);
+  const promoLocked = data?.promo_locked ?? false;
+
+  // Additional anti-abuse gate:
+  // even after a user reaches trade volume, keep withdrawals blocked while they
+  // still have promo-related BUY activity on unresolved games.
+  let promoGameFinalized = true;
+  if (promoTradeRequired > 0) {
+    const { data: buyTrades, error: tradesError } = await supabase
+      .from('user_trade_events')
+      .select('game_id')
+      .eq('user_address', address)
+      .eq('type', 'BUY')
+      .limit(300);
+
+    if (tradesError) {
+      console.error('[promo/lock-status trades]', tradesError);
+    } else if (buyTrades?.length) {
+      const gameIds = Array.from(
+        new Set(
+          buyTrades
+            .map((t: any) => String(t?.game_id ?? '').toLowerCase().trim())
+            .filter(Boolean)
+        )
+      );
+
+      if (gameIds.length) {
+        const { data: games, error: gamesError } = await supabase
+          .from('games')
+          .select('game_id, is_final')
+          .in('game_id', gameIds);
+
+        if (gamesError) {
+          console.error('[promo/lock-status games]', gamesError);
+        } else {
+          const isFinalByGameId = new Map(
+            (games ?? []).map((g: any) => [
+              String(g?.game_id ?? '').toLowerCase().trim(),
+              Boolean(g?.is_final),
+            ])
+          );
+          promoGameFinalized = gameIds.every((id) => isFinalByGameId.get(id) === true);
+        }
+      }
+    }
+  }
+
+  const effectivePromoLocked = promoLocked || (promoTradeRequired > 0 && !promoGameFinalized);
+
   return res.json({
-    promo_locked: data?.promo_locked ?? false,
-    promo_trade_required: Number(data?.promo_trade_required ?? 0),
-    promo_trade_accumulated: Number(data?.promo_trade_accumulated ?? 0),
+    promo_locked: effectivePromoLocked,
+    promo_trade_required: promoTradeRequired,
+    promo_trade_accumulated: promoTradeAccumulated,
+    promo_game_finalized: promoGameFinalized,
   });
 });
 
