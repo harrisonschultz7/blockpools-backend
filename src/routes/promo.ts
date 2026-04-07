@@ -253,16 +253,36 @@ router.get('/lock-status', async (req: Request, res: Response) => {
   const promoTradeRequired = Number(data?.promo_trade_required ?? 0);
   let promoTradeAccumulated = Number(data?.promo_trade_accumulated ?? 0);
   let promoLocked = data?.promo_locked ?? false;
+  let promoRedeemedAt: string | null = null;
+
+  if (promoTradeRequired > 0) {
+    const { data: redemptionRows, error: redemptionErr } = await supabase
+      .from('promo_redemptions')
+      .select('created_at')
+      .eq('user_address', address)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (redemptionErr) {
+      console.error('[promo/lock-status redemption]', redemptionErr);
+    } else {
+      promoRedeemedAt = redemptionRows?.[0]?.created_at ?? null;
+    }
+  }
 
   // Compute live net promo exposure so BUY then SELL reduces progress immediately:
   // net_open = SUM(BUY gross_in_dec) - SUM(SELL cost_basis_closed_dec), floored at 0.
   if (promoTradeRequired > 0) {
-    const { data: netRows, error: netErr } = await supabase
+    let netQuery = supabase
       .from('user_trade_events')
       .select('type, gross_in_dec, cost_basis_closed_dec')
       .eq('user_address', address)
       .in('type', ['BUY', 'SELL'])
       .limit(3000);
+    if (promoRedeemedAt) {
+      netQuery = netQuery.gte('inserted_at', promoRedeemedAt);
+    }
+    const { data: netRows, error: netErr } = await netQuery;
 
     if (netErr) {
       console.error('[promo/lock-status net-open]', netErr);
@@ -283,12 +303,16 @@ router.get('/lock-status', async (req: Request, res: Response) => {
   // still have promo-related BUY activity on unresolved games.
   let promoGameFinalized = true;
   if (promoTradeRequired > 0) {
-    const { data: buyTrades, error: tradesError } = await supabase
+    let buyTradesQuery = supabase
       .from('user_trade_events')
       .select('game_id')
       .eq('user_address', address)
       .eq('type', 'BUY')
       .limit(300);
+    if (promoRedeemedAt) {
+      buyTradesQuery = buyTradesQuery.gte('inserted_at', promoRedeemedAt);
+    }
+    const { data: buyTrades, error: tradesError } = await buyTradesQuery;
 
     if (tradesError) {
       console.error('[promo/lock-status trades]', tradesError);

@@ -16,7 +16,12 @@ export async function updatePromoProgress(userAddress: string): Promise<void> {
 
   await pool.query(
     `
-    WITH net_open AS (
+    WITH latest_redemption AS (
+      SELECT MAX(created_at) AS redeemed_at
+      FROM public.promo_redemptions
+      WHERE user_address = $1
+    ),
+    net_open AS (
       SELECT GREATEST(
         COALESCE(
           SUM(
@@ -32,6 +37,10 @@ export async function updatePromoProgress(userAddress: string): Promise<void> {
       )::numeric AS principal_at_risk
       FROM public.user_trade_events
       WHERE user_address = $1
+        AND (
+          (SELECT redeemed_at FROM latest_redemption) IS NULL
+          OR inserted_at >= (SELECT redeemed_at FROM latest_redemption)
+        )
     )
     UPDATE public.users
     SET
@@ -41,12 +50,11 @@ export async function updatePromoProgress(userAddress: string): Promise<void> {
       ),
       promo_locked = CASE
         WHEN (SELECT principal_at_risk FROM net_open) >= promo_trade_required THEN false
-        ELSE promo_locked
+        ELSE true
       END
     WHERE
       primary_address = $1
-      AND promo_locked = true
-      AND promo_trade_accumulated < promo_trade_required
+      AND promo_trade_required > 0
     `,
     [userAddress.toLowerCase()]
   );
