@@ -400,7 +400,9 @@ export async function refreshUserTradesPage(params: {
   const { start, end } = tradesWindowFromRange(params.range);
 
   const overfetch = Math.max(page * pageSize * 2, 120);
-  const first = Math.min(overfetch, 1000);
+  // Subgraph allows first <= 1000; fetch as many as possible so active wallets
+  // don't miss recent pools in the persist slice.
+  const first = Math.min(1000, Math.max(overfetch, 500));
 
   // Pull trades for persist + cache (no game.league allowlist — avoids missing multi/prop/winner pools)
   const data = await subgraphQuery<any>(Q_USER_TRADES_FOR_PERSIST, {

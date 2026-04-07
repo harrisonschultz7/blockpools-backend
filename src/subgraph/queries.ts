@@ -331,9 +331,10 @@ query UserActivityPage(
 /**
  * Same trade shape as UserActivityPage, but **no `league_in` filter** on `game_`.
  *
- * Used for Supabase persist + `/cache/user/:addr/trades` so multi-outcome / prop /
- * league-winner pools are not dropped when The Graph has `game.league` outside the
- * small DEFAULT_LEAGUES allowlist (e.g. UNKNOWN, typos, or new league codes).
+ * Range filters **trade `timestamp`**, not `game.lockTime`. League-winner / MULTI
+ * games often have missing or odd `lockTime` in the subgraph; filtering on
+ * `game.lockTime` silently dropped those trades from persist while ad-hoc queries
+ * (user + game id only) still showed them.
  */
 export const Q_USER_TRADES_FOR_PERSIST = `
 query UserTradesForPersist(
@@ -350,7 +351,8 @@ query UserTradesForPersist(
     skip: $skipTrades
     where: {
       user: $user
-      game_: { lockTime_gte: $start, lockTime_lte: $end }
+      timestamp_gte: $start
+      timestamp_lte: $end
     }
     orderBy: timestamp
     orderDirection: desc
