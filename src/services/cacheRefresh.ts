@@ -7,7 +7,7 @@ import {
   Q_USER_SUMMARY,
   Q_USER_BETS_PAGE,
   Q_USER_CLAIMS_AND_STATS,
-  Q_USER_ACTIVITY_PAGE,
+  Q_USER_TRADES_FOR_PERSIST,
 } from "../subgraph/queries";
 
 import { upsertUserTradesAndGames } from "./persistTrades";
@@ -396,23 +396,18 @@ export async function refreshUserTradesPage(params: {
   const page = Math.max(1, Number(params.page || 1));
   const pageSize = Math.max(1, Math.min(Number(params.pageSize || 25), 50));
 
-  const leaguesNorm = normalizeLeagues(params.leagues);
-  const leaguesForQuery = leaguesNorm ?? ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
-
   const { start, end } = tradesWindowFromRange(params.range);
 
   const overfetch = Math.max(page * pageSize * 2, 120);
   const first = Math.min(overfetch, 1000);
 
-  // Pull trades+bets for activity page
-  const data = await subgraphQuery<any>(Q_USER_ACTIVITY_PAGE, {
+  // Pull trades for persist + cache (no game.league allowlist — avoids missing multi/prop/winner pools)
+  const data = await subgraphQuery<any>(Q_USER_TRADES_FOR_PERSIST, {
     user: params.user.toLowerCase(),
-    leagues: leaguesForQuery,
     start: String(start),
     end: String(end),
     first,
     skipTrades: 0,
-    skipBets: 0,
   });
 
   const sourceBlock = data?._meta?.block?.number ?? null;

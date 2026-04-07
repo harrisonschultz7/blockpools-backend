@@ -328,8 +328,72 @@ query UserActivityPage(
 }
 `;
 
+/**
+ * Same trade shape as UserActivityPage, but **no `league_in` filter** on `game_`.
+ *
+ * Used for Supabase persist + `/cache/user/:addr/trades` so multi-outcome / prop /
+ * league-winner pools are not dropped when The Graph has `game.league` outside the
+ * small DEFAULT_LEAGUES allowlist (e.g. UNKNOWN, typos, or new league codes).
+ */
+export const Q_USER_TRADES_FOR_PERSIST = `
+query UserTradesForPersist(
+  $user: String!
+  $start: BigInt!
+  $end: BigInt!
+  $first: Int!
+  $skipTrades: Int!
+) {
+  _meta { block { number } }
+
+  trades(
+    first: $first
+    skip: $skipTrades
+    where: {
+      user: $user
+      game_: { lockTime_gte: $start, lockTime_lte: $end }
+    }
+    orderBy: timestamp
+    orderDirection: desc
+  ) {
+    id
+    type
+    timestamp
+    txHash
+
+    outcomeIndex
+    outcomeCode
+
+    spotPriceBps
+    avgPriceBps
+    grossInDec
+    grossOutDec
+    feeDec
+    netStakeDec
+    netOutDec
+    costBasisClosedDec
+    realizedPnlDec
+
+    game {
+      id
+      league
+      lockTime
+      isFinal
+      marketType
+      outcomesCount
+      resolutionType
+      winningOutcomeIndex
+      winnerTeamCode
+      teamACode
+      teamBCode
+      teamAName
+      teamBName
+    }
+  }
+}
+`;
+
 /* =========================================================
-   Backward-compatible exports (required by current backend)
+   Backward-compatible exports (required for current backend)
    - cacheRefresh.ts imports Q_USER_BETS_PAGE + Q_USER_CLAIMS_AND_STATS
    - masterMetrics.ts (legacy recent) imports Q_USER_BETS_WINDOW_PAGE
    ========================================================= */
