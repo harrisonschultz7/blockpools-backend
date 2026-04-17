@@ -30,7 +30,7 @@ const TEST_MODE = true;
 const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ALREADY_SENT = new Set([
+const ALREADY_SENT = new Set<string>([
 
 ]);
 
