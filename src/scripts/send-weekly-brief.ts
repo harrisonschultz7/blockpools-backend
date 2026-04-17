@@ -23,21 +23,23 @@ const TEMPLATE_ID = "93f918e5-06d4-4ec9-b29c-5c24e31a8425";
 
 const DELAY_MS = 700;
 
+// ── TEST MODE ────────────────────────────────────────────────────────────────
+// Set to true to send only to TEST_EMAIL instead of the full list.
+// Set to false when ready to blast everyone.
+const TEST_MODE = true;
+const TEST_EMAIL = "harrisonschultz1240@gmail.com";
+// ─────────────────────────────────────────────────────────────────────────────
+
 const ALREADY_SENT = new Set([
-  "catrachoalex83@gmail.com",
-  "abrahammorga512@gmail.com",
-  "mayflordomi@gmail.com",
-  "francokpomercado30@gmail.com",
-  "jordaniomouramatoss@gmail.com",
-  "sandre640@gmail.com",
-  "valentinobrawl2101@gmail.com",
-  "elpolloramirez1@outlook.com",
-  "polentaasesina@outlook.com",
-  "gerardodaniel8592@gmail.com",
-  "paypal780@yanemail.com",
+
 ]);
 
 async function getRecipients(): Promise<string[]> {
+  if (TEST_MODE) {
+    console.log(`TEST MODE — sending only to ${TEST_EMAIL}`);
+    return [TEST_EMAIL];
+  }
+
   const { data, error } = await supabase
     .from("users")
     .select("email")
