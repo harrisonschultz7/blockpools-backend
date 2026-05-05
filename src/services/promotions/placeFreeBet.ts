@@ -217,27 +217,40 @@ export async function placeFreeBet(
 
   // Odds guardrail (bps). Reject if the live price is outside the allowed
   // band. min/max may be null, in which case that side is unbounded.
-  let priceBps: number;
+  // Binary pools don't expose currentPriceBps — only fail hard when the
+  // campaign actually has bounds to enforce.
+  let priceBps: number | null = null;
+  const hasOddsBand = red.min_odds_bps != null || red.max_odds_bps != null;
+
   try {
     const raw = await poolContract.currentPriceBps(outcomeIndex);
     priceBps = Number(raw.toString());
   } catch (err: any) {
-    throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
-      reason: "price_read_failed",
-      detail: err?.message,
-    });
+    if (hasOddsBand) {
+      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
+        reason: "price_read_failed",
+        detail: err?.message,
+      });
+    }
+    console.warn(
+      "[placeFreeBet] currentPriceBps unavailable; skipping band check (no bounds on campaign)",
+      err?.message
+    );
   }
-  if (red.min_odds_bps != null && priceBps < Number(red.min_odds_bps)) {
-    throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
-      priceBps,
-      min: red.min_odds_bps,
-    });
-  }
-  if (red.max_odds_bps != null && priceBps > Number(red.max_odds_bps)) {
-    throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
-      priceBps,
-      max: red.max_odds_bps,
-    });
+
+  if (priceBps != null) {
+    if (red.min_odds_bps != null && priceBps < Number(red.min_odds_bps)) {
+      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
+        priceBps,
+        min: red.min_odds_bps,
+      });
+    }
+    if (red.max_odds_bps != null && priceBps > Number(red.max_odds_bps)) {
+      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
+        priceBps,
+        max: red.max_odds_bps,
+      });
+    }
   }
 
   const creditUsdc = String(red.credit_usdc ?? red.promo_credit_usdc);
