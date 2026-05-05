@@ -3,6 +3,16 @@ import { pool } from "../db";
 import { markUserHasTraded } from "../utils/markHasTraded";
 import { updatePromoProgress } from "../utils/updatePromoProgress";
 
+// === PROMO FRAMEWORK SIDECAR (gated, safe to remove) ============================
+// All references below are no-ops when PROMO_FRAMEWORK_ENABLED=false. To remove
+// the framework entirely: drop these imports and the three fenced blocks below.
+import { PROMO_FRAMEWORK_ENABLED } from "../config/promo";
+import {
+  applyBeneficiaryToFundingWalletTrade,
+  handlePromoTradeAttribution,
+} from "./promotions/handlePromoTradeAttribution";
+// === END PROMO FRAMEWORK SIDECAR IMPORTS =======================================
+
 type TradeType = "BUY" | "SELL" | "CLAIM";
 
 // Keep side only for legacy semantics (CLAIM bucket / old UI)
@@ -367,6 +377,42 @@ export async function upsertUserTradesAndGames(opts: {
 
   if (!trades.length && !games.length) return { tradesUpserted: 0, gamesUpserted: 0 };
 
+  // === PROMO FRAMEWORK PRE-INSERT HOOK (sidecar — safe to remove) ============
+  // For each funding-wallet BUY, look up the matching open redemption and
+  // capture both beneficiary_address (for stats attribution via
+  // user_trade_events.effective_user_address) and promo_redemption_id (for
+  // direct FK linkage). The post-insert UPDATE below applies them to the
+  // freshly-inserted trade row.
+  // Failures here MUST NOT block trade ingestion.
+  const promoAttribution: Record<
+    string,
+    { beneficiary: string; redemptionId: string }
+  > = {};
+  if (PROMO_FRAMEWORK_ENABLED) {
+    for (const t of trades) {
+      try {
+        const proxy: any = {
+          user_address: t.user,
+          type: t.type,
+          tx_hash: t.txHash,
+          game_id: t.gameId,
+          beneficiary_address: null,
+          promo_redemption_id: null,
+        };
+        await applyBeneficiaryToFundingWalletTrade(proxy);
+        if (proxy.beneficiary_address && proxy.promo_redemption_id) {
+          promoAttribution[t.id] = {
+            beneficiary: String(proxy.beneficiary_address).toLowerCase(),
+            redemptionId: String(proxy.promo_redemption_id),
+          };
+        }
+      } catch (err) {
+        console.error("[persistTrades] promo pre-insert hook failed (non-blocking):", err);
+      }
+    }
+  }
+  // === END PROMO PRE-INSERT HOOK =============================================
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -516,6 +562,34 @@ export async function upsertUserTradesAndGames(opts: {
 
     await client.query("COMMIT");
 
+    // === PROMO FRAMEWORK ATTRIBUTION UPDATE (sidecar — safe to remove) ========
+    // Stamp beneficiary_address + promo_redemption_id on funding-wallet BUY
+    // rows we identified in the pre-insert hook above. Runs AFTER commit so a
+    // failure here can never roll back the trade insert. effective_user_address
+    // is a generated column in Postgres so it auto-fills from beneficiary.
+    const attributionEntries = Object.entries(promoAttribution);
+    if (PROMO_FRAMEWORK_ENABLED && attributionEntries.length) {
+      try {
+        const updValues: any[] = [];
+        const updChunks: string[] = [];
+        attributionEntries.forEach(([tradeId, info], i) => {
+          updValues.push(tradeId, info.beneficiary, info.redemptionId);
+          updChunks.push(`($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3}::uuid)`);
+        });
+        await pool.query(
+          `UPDATE public.user_trade_events ute
+              SET beneficiary_address = v.beneficiary_address,
+                  promo_redemption_id = v.promo_redemption_id
+             FROM (VALUES ${updChunks.join(",")}) AS v(id, beneficiary_address, promo_redemption_id)
+            WHERE ute.id = v.id`,
+          updValues
+        );
+      } catch (err) {
+        console.error("[persistTrades] promo attribution update failed (non-blocking):", err);
+      }
+    }
+    // === END PROMO ATTRIBUTION UPDATE ========================================
+
     // ── Mark traders in users table (fire-and-forget, never blocks) ──────────
     if (trades.length) {
       const uniqueAddresses = [...new Set(trades.map((t) => t.user))];
@@ -539,6 +613,25 @@ export async function upsertUserTradesAndGames(opts: {
         );
       }
     }
+
+    // === PROMO FRAMEWORK POST-INSERT HOOK (sidecar — safe to remove) =========
+    // Lets the new framework react to real-money trades — unlocking
+    // pending_qualification redemptions for first_trade / referee_first_trade
+    // promotions. Fire-and-forget; never blocks.
+    if (PROMO_FRAMEWORK_ENABLED && trades.length) {
+      Promise.all(
+        trades.map((t) =>
+          handlePromoTradeAttribution({
+            user_address: t.user,
+            type: t.type,
+            beneficiary_address: promoAttribution[t.id]?.beneficiary ?? null,
+          })
+        )
+      ).catch((err) =>
+        console.error("[persistTrades] promo post-insert hook failed (non-blocking):", err)
+      );
+    }
+    // === END PROMO POST-INSERT HOOK ==========================================
 
     return { tradesUpserted: trades.length, gamesUpserted: games.length };
   } catch (e) {

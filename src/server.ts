@@ -34,8 +34,12 @@ import standingsRouter, { startStandingsCron } from "./routes/standings";
 // ✅ Chart data from Supabase (league winner price history)
 import chartRouter from "./routes/chart";
 
-// ✅ Promo code redemption
+// ✅ Promo code redemption (legacy direct-credit flow)
 import promoRouter from "./routes/promo";
+
+// ✅ Promo framework (sidecar — gated by PROMO_FRAMEWORK_ENABLED env flag.
+//    Returns 503 for every request when the flag is off; safe to leave mounted.)
+import promotionsRouter from "./routes/promotionsRouter";
 
 const PORT = Number(process.env.PORT || 3001);
 
@@ -126,6 +130,7 @@ export function makeServer() {
 
   app.use("/api/admin", adminSweepsRouter);
   app.use("/api/promo", promoRouter);
+  app.use("/api/promotions", promotionsRouter);
 
   // ── Bare /api mounts (catch-all — must come last) ─────────────────────────────
   app.use("/api", wallRouter);
