@@ -22,13 +22,20 @@ import {
 import { getFundingWallet } from "./findFundingWallet";
 import { hasBetFundedEntry, writeLedgerEntry } from "./promotionFunding";
 
-// Minimal pool ABI — only what we need to read the price and place the buy.
-// Matches blockpools-leaderboard/abis/gamePoolMulti.json.
+// Minimal pool ABI covering both pool variants in this codebase:
+//   - Multi-outcome (gamePoolMulti): buy(uint8 outcome, uint256, uint256)
+//   - Binary (gamePool):              buyTeamA(uint256, uint256) / buyTeamB(...)
+// We branch on games.market_type to pick the right method.
 const POOL_ABI = [
+  // multi
   "function buy(uint8 outcome, uint256 grossAmount, uint256 minSharesOut)",
   "function currentPriceBps(uint8 outcome) view returns (uint256)",
-  "function isLocked() view returns (bool)",
   "function isResolved() view returns (bool)",
+  // binary
+  "function buyTeamA(uint256 grossAmount, uint256 minSharesOut)",
+  "function buyTeamB(uint256 grossAmount, uint256 minSharesOut)",
+  // shared
+  "function isLocked() view returns (bool)",
 ];
 
 const ERC20_APPROVE_ABI = [
@@ -143,7 +150,7 @@ export async function placeFreeBet(
   // pool address). If both eligibility lists are null the campaign accepts
   // any pool — we still require the pool to exist in `games`.
   const gameQ = await pool.query(
-    `SELECT game_id, league, is_final, lock_time
+    `SELECT game_id, league, is_final, lock_time, market_type
        FROM public.games WHERE lower(game_id) = $1`,
     [poolAddress]
   );
@@ -151,6 +158,7 @@ export async function placeFreeBet(
   if (!game) {
     throw new PlaceFreeBetException("POOL_INELIGIBLE", { reason: "game_not_found" });
   }
+  const marketType = String(game.market_type || "").toUpperCase();
 
   const eligibleLeagues: string[] | null = red.eligible_leagues;
   const eligiblePools: string[] | null = red.eligible_pool_addresses;
@@ -217,25 +225,35 @@ export async function placeFreeBet(
 
   // Odds guardrail (bps). Reject if the live price is outside the allowed
   // band. min/max may be null, in which case that side is unbounded.
-  // Binary pools don't expose currentPriceBps — only fail hard when the
-  // campaign actually has bounds to enforce.
+  // Binary pools don't expose currentPriceBps — skip the read entirely if
+  // we're on a binary pool, or if no bounds are set on the campaign.
   let priceBps: number | null = null;
   const hasOddsBand = red.min_odds_bps != null || red.max_odds_bps != null;
+  const supportsPriceRead = marketType !== "BINARY";
 
-  try {
-    const raw = await poolContract.currentPriceBps(outcomeIndex);
-    priceBps = Number(raw.toString());
-  } catch (err: any) {
-    if (hasOddsBand) {
-      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
-        reason: "price_read_failed",
-        detail: err?.message,
-      });
+  if (supportsPriceRead) {
+    try {
+      const raw = await poolContract.currentPriceBps(outcomeIndex);
+      priceBps = Number(raw.toString());
+    } catch (err: any) {
+      if (hasOddsBand) {
+        throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
+          reason: "price_read_failed",
+          detail: err?.message,
+        });
+      }
+      console.warn(
+        "[placeFreeBet] currentPriceBps unavailable; skipping band check (no bounds on campaign)",
+        err?.message
+      );
     }
-    console.warn(
-      "[placeFreeBet] currentPriceBps unavailable; skipping band check (no bounds on campaign)",
-      err?.message
-    );
+  } else if (hasOddsBand) {
+    // Binary pool with odds band on the campaign — we can't enforce it.
+    // Refuse rather than silently bypass.
+    throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
+      reason: "binary_pool_does_not_support_odds_band",
+      marketType,
+    });
   }
 
   if (priceBps != null) {
@@ -282,12 +300,36 @@ export async function placeFreeBet(
   }
 
   // Place the buy. minSharesOut = 0 for now — we already gated on price band
-  // a few lines up. Tighten later if MEV/front-running is observed.
+  // (when applicable) above. Tighten later via a quoteBuyTeam{A,B}/quoteBuy
+  // call + slippage if MEV/front-running is observed.
+  //
+  // Branch by market_type:
+  //   - BINARY  → buyTeamA(amount, minSharesOut) for outcome 0,
+  //               buyTeamB(amount, minSharesOut) for outcome 1.
+  //   - else    → buy(uint8 outcome, amount, minSharesOut) (multi).
   let txHash: string;
   try {
-    const tx = await poolContract.buy(outcomeIndex, grossAmount, 0, {
-      gasLimit: PROMO_BUY_GAS_LIMIT,
-    });
+    let tx;
+    if (marketType === "BINARY") {
+      if (outcomeIndex === 0) {
+        tx = await poolContract.buyTeamA(grossAmount, 0, {
+          gasLimit: PROMO_BUY_GAS_LIMIT,
+        });
+      } else if (outcomeIndex === 1) {
+        tx = await poolContract.buyTeamB(grossAmount, 0, {
+          gasLimit: PROMO_BUY_GAS_LIMIT,
+        });
+      } else {
+        throw new PlaceFreeBetException("POOL_INELIGIBLE", {
+          reason: "binary_pool_only_supports_outcome_0_or_1",
+          outcomeIndex,
+        });
+      }
+    } else {
+      tx = await poolContract.buy(outcomeIndex, grossAmount, 0, {
+        gasLimit: PROMO_BUY_GAS_LIMIT,
+      });
+    }
     const receipt = await tx.wait(PROMO_TX_CONFIRMATIONS);
     if (!receipt || receipt.status !== 1) {
       throw new PlaceFreeBetException("ON_CHAIN_TX_FAILED", { txHash: tx.hash });

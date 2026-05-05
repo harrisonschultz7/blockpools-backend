@@ -32,11 +32,17 @@ import {
 import { getFundingWallet } from "./findFundingWallet";
 import { writeLedgerEntry } from "./promotionFunding";
 
-// Pool ABI subset for settlement.
+// Pool ABI subset for settlement, covering both pool variants:
+//   - Multi:  shares(address, uint8) view returns (uint256)
+//   - Binary: sharesTeamAByUser(address) / sharesTeamBByUser(address)
 const POOL_ABI = [
   "function claimWinnings()",
   "function isResolved() view returns (bool)",
+  // multi
   "function shares(address user, uint8 outcome) view returns (uint256)",
+  // binary
+  "function sharesTeamAByUser(address user) view returns (uint256)",
+  "function sharesTeamBByUser(address user) view returns (uint256)",
 ];
 
 export type SettleFreeBetResult =
@@ -65,7 +71,8 @@ export async function settleFreeBet(
       r.promotion_id,
       g.is_final,
       g.winning_outcome_index,
-      g.resolution_type
+      g.resolution_type,
+      g.market_type
     FROM public.promo_redemptions r
     LEFT JOIN public.games g ON lower(g.game_id) = lower(r.pool_address)
     WHERE r.id = $1
@@ -90,6 +97,7 @@ export async function settleFreeBet(
   const userOutcome = Number(row.outcome_index);
   const winningOutcome = row.winning_outcome_index;
   const resolutionType = String(row.resolution_type || "").toUpperCase();
+  const marketType = String(row.market_type || "").toUpperCase();
 
   const isRefund = resolutionType === "REFUND";
   const isWin =
@@ -107,17 +115,29 @@ export async function settleFreeBet(
   const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
 
   // Read shares BEFORE the claim so we know how big the payout will be. Each
-  // winning share pays $1 in our pool design.
+  // winning share pays $1 in our pool design. Branch by market_type:
+  //   - BINARY → sharesTeamAByUser / sharesTeamBByUser
+  //   - else   → shares(address, uint8)
   let sharesHeld: BigNumber;
   try {
-    sharesHeld = await poolContract.shares(wallet.address, userOutcome);
+    if (marketType === "BINARY") {
+      if (userOutcome === 0) {
+        sharesHeld = await poolContract.sharesTeamAByUser(wallet.address);
+      } else if (userOutcome === 1) {
+        sharesHeld = await poolContract.sharesTeamBByUser(wallet.address);
+      } else {
+        throw new Error(`binary outcome out of range: ${userOutcome}`);
+      }
+    } else {
+      sharesHeld = await poolContract.shares(wallet.address, userOutcome);
+    }
   } catch (err: any) {
-    // Some older pool variants don't expose shares() with this signature.
-    // Fall back to assuming the credit doubled (worst-case under-payout for
-    // user) — flag for reconciliation.
+    // Some older pool variants don't expose either signature. Fall back to
+    // assuming the credit doubled (worst-case under-payout for user) — flag
+    // for reconciliation.
     console.warn(
-      "[settleFreeBet] shares() read failed; conservative payout fallback",
-      { redemptionId, err: err?.message }
+      "[settleFreeBet] shares read failed; conservative payout fallback",
+      { redemptionId, marketType, err: err?.message }
     );
     sharesHeld = parseUnits(creditUsdc, USDC_DECIMALS);
   }
