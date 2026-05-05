@@ -17,7 +17,7 @@ export async function updatePromoProgress(userAddress: string): Promise<void> {
   await pool.query(
     `
     WITH latest_redemption AS (
-      SELECT MAX(redeemed_at) AS redeemed_at
+      SELECT MAX(claimed_at) AS claimed_at
       FROM public.promo_redemptions
       WHERE user_address = $1
     ),
@@ -38,8 +38,8 @@ export async function updatePromoProgress(userAddress: string): Promise<void> {
       FROM public.user_trade_events
       WHERE user_address = $1
         AND (
-          (SELECT redeemed_at FROM latest_redemption) IS NULL
-          OR inserted_at >= (SELECT redeemed_at FROM latest_redemption)
+          (SELECT claimed_at FROM latest_redemption) IS NULL
+          OR inserted_at >= (SELECT claimed_at FROM latest_redemption)
         )
     )
     UPDATE public.users
