@@ -21,6 +21,7 @@ import {
 } from "../../config/promo";
 import { getFundingWallet } from "./findFundingWallet";
 import { hasBetFundedEntry, writeLedgerEntry } from "./promotionFunding";
+import { triggerFundingWalletAttributionRefresh } from "./handlePromoTradeAttribution";
 
 // Minimal pool ABI covering both pool variants in this codebase:
 //   - Multi-outcome (gamePoolMulti): buy(uint8 outcome, uint256, uint256)
@@ -405,6 +406,19 @@ export async function placeFreeBet(
   } finally {
     client.release();
   }
+
+  // Fire-and-forget: pull the funding wallet's freshly-confirmed BUY from the
+  // subgraph and persist it. Stamps beneficiary_address + promo_redemption_id
+  // on the trade row via persistTrades' pre-insert hook so the bet lands in
+  // user-facing stats immediately. Retries with backoff to absorb subgraph
+  // indexing lag. Never blocks placeFreeBet's response — the tx hash is
+  // already returned to the caller.
+  triggerFundingWalletAttributionRefresh(txHash, redemptionId).catch((err) => {
+    console.error(
+      "[placeFreeBet] background attribution refresh threw (non-blocking)",
+      { redemptionId, txHash, err }
+    );
+  });
 
   return {
     redemptionId,

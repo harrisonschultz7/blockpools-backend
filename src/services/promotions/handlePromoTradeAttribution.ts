@@ -19,8 +19,13 @@
 // NOT block trade ingestion.
 
 import { pool } from "../../db";
-import { isPromoFundingWallet, PROMO_FRAMEWORK_ENABLED } from "../../config/promo";
+import {
+  isPromoFundingWallet,
+  PROMO_FRAMEWORK_ENABLED,
+  PROMO_FUNDING_WALLET_ADDRESS,
+} from "../../config/promo";
 import { evaluatePromoEligibility } from "./evaluatePromoEligibility";
+import { refreshUserTradesPage } from "../cacheRefresh";
 
 // Loose shape so the persistTrades file doesn't need to import our types.
 export type AttributionTradeRow = {
@@ -131,4 +136,85 @@ export async function handlePromoTradeAttribution(
       err
     );
   }
+}
+
+// ── Funding-wallet attribution refresh ───────────────────────────────────────
+//
+// Called fire-and-forget from placeFreeBet immediately after a successful
+// on-chain buy. Pulls the funding wallet's latest trades from the subgraph
+// and persists them, which triggers the pre-insert hook to stamp
+// beneficiary_address / promo_redemption_id on the new trade row.
+//
+// The subgraph has a small indexing lag, so we retry with backoff. Once the
+// row appears with the attribution stamped, we stop. If after all attempts
+// the trade still isn't indexed, future place-bets (or the next manual pull)
+// will eventually catch it — the pre-insert hook keys off the redemption row,
+// which doesn't go anywhere.
+//
+// Never throws — failures are non-blocking and logged.
+export async function triggerFundingWalletAttributionRefresh(
+  txHash: string,
+  redemptionId: string
+): Promise<void> {
+  if (!PROMO_FRAMEWORK_ENABLED) return;
+  if (!PROMO_FUNDING_WALLET_ADDRESS) return;
+  if (!txHash) return;
+
+  // Backoff schedule. Subgraph latency on Arbitrum is usually <30s.
+  const delaysMs = [3_000, 10_000, 30_000, 60_000];
+
+  const txHashLower = String(txHash).toLowerCase();
+
+  for (let i = 0; i < delaysMs.length; i++) {
+    await new Promise((r) => setTimeout(r, delaysMs[i]));
+
+    try {
+      await refreshUserTradesPage({
+        user: PROMO_FUNDING_WALLET_ADDRESS,
+        leagues: [], // empty = no league filter on the persist path
+        range: "ALL",
+        page: 1,
+        pageSize: 50,
+      });
+    } catch (err: any) {
+      console.warn(
+        `[triggerFundingWalletAttributionRefresh] refresh attempt ${i + 1}/${
+          delaysMs.length
+        } failed (non-blocking):`,
+        err?.message ?? err
+      );
+      continue;
+    }
+
+    // Did our trade land with the attribution stamped?
+    try {
+      const r = await pool.query(
+        `SELECT 1
+           FROM public.user_trade_events
+          WHERE lower(tx_hash)         = $1
+            AND beneficiary_address    IS NOT NULL
+            AND promo_redemption_id    = $2
+          LIMIT 1`,
+        [txHashLower, redemptionId]
+      );
+      if ((r.rowCount ?? 0) > 0) {
+        console.log(
+          `[triggerFundingWalletAttributionRefresh] attributed redemption=${redemptionId} on attempt ${
+            i + 1
+          }`
+        );
+        return;
+      }
+    } catch (err: any) {
+      console.warn(
+        `[triggerFundingWalletAttributionRefresh] verification query failed (non-blocking):`,
+        err?.message ?? err
+      );
+    }
+  }
+
+  console.warn(
+    `[triggerFundingWalletAttributionRefresh] tx not attributed after ${delaysMs.length} attempts; ` +
+      `redemption=${redemptionId} txHash=${txHashLower}. The next place-bet or manual /cache pull will pick it up.`
+  );
 }
