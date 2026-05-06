@@ -22,13 +22,19 @@
 
 import "dotenv/config";
 
+import * as fs from "fs";
+import * as path from "path";
 import { JsonRpcProvider } from "@ethersproject/providers";
 import { Contract } from "@ethersproject/contracts";
 
 import { pool } from "../db";
-// tsconfig has resolveJsonModule: true and the build copies JSON files into
-// dist/, so a direct import resolves at runtime via dist/data/games.json.
-import gamesJsonRaw from "../data/games.json";
+// Default fallback — the bundled games.json the backend ships with.
+import bundledGamesJson from "../data/games.json";
+
+// Path override: when set, read games.json from this file at runtime instead
+// of using the bundled copy. Lets the VPS point at the frontend repo's
+// games.json so there's a single source of truth.
+const GAMES_JSON_PATH = (process.env.GAMES_JSON_PATH || "").trim();
 
 const RPC_URL =
   process.env.RPC_URL ||
@@ -89,7 +95,30 @@ type JsonGame = {
 };
 
 function loadGamesJson(): JsonGame[] {
-  const raw = gamesJsonRaw as unknown as Record<string, JsonGame[]>;
+  let raw: Record<string, JsonGame[]>;
+  let source = "bundled";
+
+  // Prefer the runtime path override so the cron stays in sync with whatever
+  // the frontend ships, without duplicating the file in two repos.
+  if (GAMES_JSON_PATH) {
+    try {
+      const abs = path.isAbsolute(GAMES_JSON_PATH)
+        ? GAMES_JSON_PATH
+        : path.resolve(process.cwd(), GAMES_JSON_PATH);
+      const txt = fs.readFileSync(abs, "utf8");
+      raw = JSON.parse(txt) as Record<string, JsonGame[]>;
+      source = abs;
+    } catch (err: any) {
+      console.warn(
+        `[refreshGamesAndScores] GAMES_JSON_PATH=${GAMES_JSON_PATH} unreadable, ` +
+          `falling back to bundled games.json: ${err?.message ?? err}`
+      );
+      raw = bundledGamesJson as unknown as Record<string, JsonGame[]>;
+    }
+  } else {
+    raw = bundledGamesJson as unknown as Record<string, JsonGame[]>;
+  }
+
   const out: JsonGame[] = [];
   for (const [topLeague, arr] of Object.entries(raw)) {
     if (!Array.isArray(arr)) continue;
@@ -99,6 +128,7 @@ function loadGamesJson(): JsonGame[] {
       out.push({ ...g, league: g.league || topLeague });
     }
   }
+  console.log(`[refreshGamesAndScores] loaded ${out.length} pool(s) from ${source}`);
   return out;
 }
 
