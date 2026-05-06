@@ -165,10 +165,22 @@ function extractMatchStatus(
     candidates.push(...arr);
   }
 
-  // Soccer shape: data.scores.category.match[] (same but nested under tournament)
+  // Soccer shape #1 (legacy): data.scores.tournament[].match
   const tournaments = data?.scores?.tournament ?? [];
   const tArr = Array.isArray(tournaments) ? tournaments : [tournaments];
   for (const t of tArr) {
+    const ms = t?.match ?? [];
+    candidates.push(...(Array.isArray(ms) ? ms : [ms]));
+  }
+
+  // Soccer shape #2 (UCL / EPL via Goalserve commentaries feed):
+  //   data.commentaries.tournament.match  (single object, not array)
+  // This is the shape we hit in production today — add it explicitly.
+  const commentaryTournaments = data?.commentaries?.tournament ?? [];
+  const ctArr = Array.isArray(commentaryTournaments)
+    ? commentaryTournaments
+    : [commentaryTournaments];
+  for (const t of ctArr) {
     const ms = t?.match ?? [];
     candidates.push(...(Array.isArray(ms) ? ms : [ms]));
   }
