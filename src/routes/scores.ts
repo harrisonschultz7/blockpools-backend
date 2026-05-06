@@ -319,8 +319,15 @@ router.get("/live", async (req: Request, res: Response) => {
 
     const lockTime = Number(lockTimeStr) || 0;
 
+    // Cache-bypass escape hatch for the refreshGamesAndScores cron. When
+    // ?force=1 is passed we skip both tier-1 (Postgres) and tier-2 (memory)
+    // caches and always hit Goalserve. The fresh result still gets written
+    // back to game_score_cache below, so subsequent demand-driven requests
+    // get a warm hit. Demand path (frontend ticker) never sets force=1.
+    const forceFresh = String(req.query.force ?? "") === "1";
+
     // ── Tier 1: Postgres — final games + recent non-final snapshots ─────────
-    if (contractAddress) {
+    if (!forceFresh && contractAddress) {
       const pgHit = await pgCacheGet(contractAddress);
       if (pgHit) {
         res.setHeader("X-Score-Cache", pgHit.header);
@@ -338,10 +345,12 @@ router.get("/live", async (req: Request, res: Response) => {
     for (const url of urls) {
       try {
         // ── Tier 2: In-memory cache — deduplicate concurrent live polls ──
-        const memHit = memGet(url);
-        if (memHit) {
-          res.setHeader("X-Score-Cache", "memory-live");
-          return res.json(memHit);
+        if (!forceFresh) {
+          const memHit = memGet(url);
+          if (memHit) {
+            res.setHeader("X-Score-Cache", "memory-live");
+            return res.json(memHit);
+          }
         }
 
         const data = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
