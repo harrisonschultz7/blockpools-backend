@@ -137,20 +137,31 @@ function isFinalStatus(status: string): boolean {
   return FINAL_STATUSES.has(String(status || "").toLowerCase().trim());
 }
 
+type MatchShape = "scores" | "soccer-tournament" | "soccer-commentaries" | "games";
+
 function extractMatchStatus(
   data: any,
   teamAName: string,
   teamBName: string
-): { found: boolean; isFinal: boolean } {
-  if (!data || typeof data !== "object") return { found: false, isFinal: false };
+): {
+  found: boolean;
+  isFinal: boolean;
+  /** The single match object that matched, or null. */
+  match: any | null;
+  /** Which envelope shape the match came from (so we can rewrap it for cache). */
+  shape: MatchShape | null;
+} {
+  if (!data || typeof data !== "object")
+    return { found: false, isFinal: false, match: null, shape: null };
 
-  // Collect all matches/events from the payload (structure varies by sport)
-  const candidates: any[] = [];
+  // Collect all matches/events from the payload, tagging each with the
+  // shape it came from so we can rewrap just the matched one for cache.
+  const candidates: Array<{ m: any; shape: MatchShape }> = [];
 
-  // MLB / NFL: games.game — single game is often an object, not an array (Goalserve JSON)
+  // MLB / NFL: games.game — single game is often an object, not an array
   const gg = data?.games?.game;
   if (gg != null) {
-    candidates.push(...(Array.isArray(gg) ? gg : [gg]));
+    for (const m of Array.isArray(gg) ? gg : [gg]) candidates.push({ m, shape: "games" });
   }
 
   // NFL / NBA / NHL / MLB shape: data.scores.category.match[] or data.scores.match[]
@@ -162,7 +173,7 @@ function extractMatchStatus(
   for (const cat of categories) {
     const matches = cat?.match ?? cat?.game ?? cat?.event ?? [];
     const arr = Array.isArray(matches) ? matches : [matches];
-    candidates.push(...arr);
+    for (const m of arr) candidates.push({ m, shape: "scores" });
   }
 
   // Soccer shape #1 (legacy): data.scores.tournament[].match
@@ -170,28 +181,28 @@ function extractMatchStatus(
   const tArr = Array.isArray(tournaments) ? tournaments : [tournaments];
   for (const t of tArr) {
     const ms = t?.match ?? [];
-    candidates.push(...(Array.isArray(ms) ? ms : [ms]));
+    for (const m of Array.isArray(ms) ? ms : [ms])
+      candidates.push({ m, shape: "soccer-tournament" });
   }
 
   // Soccer shape #2 (UCL / EPL via Goalserve commentaries feed):
-  //   data.commentaries.tournament.match  (single object, not array)
-  // This is the shape we hit in production today — add it explicitly.
+  //   data.commentaries.tournament.match
   const commentaryTournaments = data?.commentaries?.tournament ?? [];
   const ctArr = Array.isArray(commentaryTournaments)
     ? commentaryTournaments
     : [commentaryTournaments];
   for (const t of ctArr) {
     const ms = t?.match ?? [];
-    candidates.push(...(Array.isArray(ms) ? ms : [ms]));
+    for (const m of Array.isArray(ms) ? ms : [ms])
+      candidates.push({ m, shape: "soccer-commentaries" });
   }
 
   const aLower = teamAName.toLowerCase();
   const bLower = teamBName.toLowerCase();
 
-  for (const m of candidates) {
+  for (const { m, shape } of candidates) {
     if (!m || typeof m !== "object") continue;
 
-    // Try to identify home/away team names from various Goalserve field names
     const home = String(
       m?.localteam?.name ??
         m?.localteam?.["@name"] ??
@@ -216,12 +227,41 @@ function extractMatchStatus(
       (home.includes(bLower) || away.includes(bLower) || bLower.includes(home));
 
     if (matchesGame) {
-      const status = String(m?.status ?? m?.statuscode ?? m?.state ?? "").toLowerCase().trim();
-      return { found: true, isFinal: isFinalStatus(status) };
+      const status = String(
+        m?.status ?? m?.["@status"] ?? m?.statuscode ?? m?.state ?? ""
+      )
+        .toLowerCase()
+        .trim();
+      return {
+        found: true,
+        isFinal: isFinalStatus(status),
+        match: m,
+        shape,
+      };
     }
   }
 
-  return { found: false, isFinal: false };
+  return { found: false, isFinal: false, match: null, shape: null };
+}
+
+/**
+ * Rebuild a minimal envelope around a single matched match, in the same
+ * shape the daily Goalserve feed uses. This is what we cache so each pool's
+ * row contains ONLY its own game (not the full league-day feed). Frontend
+ * parsers walk the same paths they always have.
+ */
+function buildSingleMatchEnvelope(match: any, shape: MatchShape): any {
+  switch (shape) {
+    case "games":
+      return { games: { game: match } };
+    case "soccer-tournament":
+      return { scores: { tournament: { match } } };
+    case "soccer-commentaries":
+      return { commentaries: { tournament: { match } } };
+    case "scores":
+    default:
+      return { scores: { category: { match } } };
+  }
 }
 
 // ── Goalserve URL helpers (unchanged from original) ─────────────────────────
@@ -368,26 +408,40 @@ router.get("/live", async (req: Request, res: Response) => {
         const data = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
 
         // ── Determine if this game is final ──────────────────────────────
-        const { found, isFinal } = extractMatchStatus(data, teamAName, teamBName);
+        const { found, isFinal, match, shape } = extractMatchStatus(
+          data,
+          teamAName,
+          teamBName
+        );
+
+        // Build the cache payload: a minimal envelope containing ONLY this
+        // pool's matched match. Without this, every pool that hits the same
+        // league-day Goalserve URL would cache the full daily feed, and the
+        // frontend's pickMatch (which returns match[0] for arrays) would
+        // render every pool as the same first match.
+        const cachePayload =
+          found && match && shape ? buildSingleMatchEnvelope(match, shape) : data;
 
         if (isFinal && contractAddress) {
           // Write to Postgres — this game will never hit Goalserve again
-          void pgCacheSet(contractAddress, league, data, true);
+          void pgCacheSet(contractAddress, league, cachePayload, true);
           // Also evict from memory cache so next request hits Postgres
           const memKey = url;
           delete _memCache[memKey];
         } else {
-          // Not final — cache in memory only (55s TTL)
+          // Not final — cache the full daily feed in memory (55s TTL) so
+          // concurrent live polls for sibling pools de-dupe; cache only the
+          // matched match in Postgres so the ticker can render correctly.
           memSet(url, data);
 
-          // If we found the game but it's not final yet, still persist to
-          // Postgres as non-final so we have a record (optional but useful)
           if (found && contractAddress) {
-            void pgCacheSet(contractAddress, league, data, false);
+            void pgCacheSet(contractAddress, league, cachePayload, false);
           }
         }
 
         res.setHeader("X-Score-Cache", isFinal ? "goalserve-final" : "goalserve-live");
+        // Demand-driven callers still get the full Goalserve response
+        // (unchanged contract for existing API consumers).
         return res.json(data);
       } catch (e: any) {
         lastError = e?.message || "fetch failed";
