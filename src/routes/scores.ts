@@ -130,11 +130,17 @@ async function pgCacheSet(
 
 const FINAL_STATUSES = new Set([
   "final", "ft", "f/ot", "f/so", "f/2ot", "f/3ot",
-  "finished", "aet", "ap", "full time", "ended",
+  "finished", "aet", "ap", "full time", "full-time", "ended",
+  "after extra time", "after penalties",
 ]);
 
 function isFinalStatus(status: string): boolean {
-  return FINAL_STATUSES.has(String(status || "").toLowerCase().trim());
+  // Normalize: lowercase, trim, collapse whitespace, strip surrounding spaces.
+  const s = String(status || "").toLowerCase().trim().replace(/\s+/g, " ");
+  if (FINAL_STATUSES.has(s)) return true;
+  // Also accept hyphenated forms by collapsing hyphens to spaces and re-checking.
+  const noHyphen = s.replace(/-/g, " ").replace(/\s+/g, " ").trim();
+  return FINAL_STATUSES.has(noHyphen);
 }
 
 type MatchShape = "scores" | "soccer-tournament" | "soccer-commentaries" | "games";
