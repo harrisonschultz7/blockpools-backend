@@ -27,6 +27,28 @@ type RangeKey = "ALL" | "D30" | "D90";
 type LeagueKey = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL";
 
 /* =========================
+   Excluded addresses
+========================= */
+
+// Wallets that must never appear on the leaderboard or in single-user
+// stats lookups. The promo funding wallet holds and trades on behalf of
+// users via the bonus-credit flow — its volume already attributes to the
+// users via beneficiary_address, so including it here would double-count.
+//
+// Add new system addresses (treasury, market-makers, etc.) by lower-casing
+// them and dropping them in this array. The SQL helpers compare against
+// LOWER(user_address) so case doesn't matter, but the literals MUST be
+// lowercase.
+const EXCLUDED_LEADERBOARD_ADDRESSES: string[] = [
+  "0x8b05f283f46f757959e87239922d78e108bbbf2c", // promo funding wallet
+];
+
+function isExcludedFromLeaderboard(addr: string | null | undefined): boolean {
+  if (!addr) return false;
+  return EXCLUDED_LEADERBOARD_ADDRESSES.includes(String(addr).toLowerCase());
+}
+
+/* =========================
    Helpers
 ========================= */
 
@@ -136,6 +158,9 @@ async function getCandidateUsersFromDb(params: {
 
   // ✅ Candidate selection = users with most recent TRADE EVENT in window
   // (NOT game lock_time)
+  //
+  // We exclude system addresses (e.g. promo funding wallet) here so they
+  // never reach the aggregation step.
   const sql = `
     SELECT
       LOWER(e.user_address) AS user_id,
@@ -145,12 +170,19 @@ async function getCandidateUsersFromDb(params: {
     WHERE e.timestamp >= $1
       AND e.timestamp <= $2
       AND g.league = ANY($3::text[])
+      AND LOWER(e.user_address) <> ALL($5::text[])
     GROUP BY LOWER(e.user_address)
     ORDER BY last_ts DESC
     LIMIT $4
   `;
 
-  const res = await pool.query(sql, [params.start, params.end, params.leagues, max]);
+  const res = await pool.query(sql, [
+    params.start,
+    params.end,
+    params.leagues,
+    max,
+    EXCLUDED_LEADERBOARD_ADDRESSES,
+  ]);
   return (res.rows || []).map((r: any) => asLower(r.user_id)).filter(Boolean);
 }
 
@@ -306,6 +338,13 @@ export async function getLeaderboardUsers(params: {
   let users: string[];
 
   if (params.userFilter) {
+    // Block direct stats lookups for system addresses (promo funding wallet,
+    // etc.) so e.g. /api/leaderboard/users?user=0x8B05... returns no rows.
+    if (isExcludedFromLeaderboard(params.userFilter)) {
+      const out = { asOf: new Date().toISOString(), rows: [] as LeaderboardRowApi[] };
+      cacheSet(key, out, 60_000);
+      return out;
+    }
     users = [params.userFilter.toLowerCase()];
   } else {
     const candidateUsers = await getCandidateUsersFromDb({
@@ -554,6 +593,17 @@ export async function getUserRecent(params: {
   // unchanged behavior (legacy)
   const user = asLower(params.user);
   const limit = Math.max(1, Math.min(params.limit || 10, 50));
+
+  // Same exclusion guard as getLeaderboardUsers — system addresses (promo
+  // funding wallet, etc.) must not surface recent activity in this endpoint.
+  if (isExcludedFromLeaderboard(user)) {
+    return {
+      asOf: new Date().toISOString(),
+      user,
+      rows: [],
+      claimByGame: {},
+    };
+  }
 
   const anchorTs = params.anchorTs ?? Math.floor(Date.now() / 1000);
   const range = params.range ?? "ALL";
