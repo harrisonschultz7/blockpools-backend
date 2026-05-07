@@ -72,7 +72,10 @@ export async function settleFreeBet(
       g.is_final,
       g.winning_outcome_index,
       g.resolution_type,
-      g.market_type
+      g.market_type,
+      g.league,
+      g.team_a_code,
+      g.team_b_code
     FROM public.promo_redemptions r
     LEFT JOIN public.games g ON lower(g.game_id) = lower(r.pool_address)
     WHERE r.id = $1
@@ -245,6 +248,56 @@ export async function settleFreeBet(
         amountUsdc: creditUsdc,
       },
       client
+    );
+
+    // ── Synthetic CLAIM row in user_trade_events ──────────────────────────
+    // The on-chain Claim event is emitted under the funding wallet's
+    // address and aggregates payouts across ALL free bets on this pool, so
+    // it can't be cleanly attributed to one user. We insert our own row
+    // keyed to the user instead — gives the frontend's existing trade
+    // history queries a clean CLAIM to render alongside the BUY.
+    //
+    // Shape matches the existing CLAIM convention used by persistTrades
+    // when the subgraph indexes a normal Claim event:
+    //   - gross_out_dec = net_out_dec = full contract payout
+    //   - cost_basis_closed_dec = 0, realized_pnl_dec = 0
+    //     (PnL is computed by trade-agg from BUY.gross_in vs CLAIM.gross_out)
+    //   - outcome_index = NULL, outcome_code = NULL
+    //     (matches binary AND multi/three-way payouts identically — no
+    //      hardcoded DRAW or team-code mapping needed)
+    //
+    // Idempotent via deterministic id + ON CONFLICT DO NOTHING.
+    const fullPayoutUsdc = formatUnits(sharesHeld, USDC_DECIMALS);
+
+    await client.query(
+      `
+      INSERT INTO public.user_trade_events
+        (id, user_address, game_id, league, type, side,
+         outcome_index, outcome_code,
+         timestamp, tx_hash,
+         spot_price_bps, avg_price_bps,
+         gross_in_dec, gross_out_dec, fee_dec, net_stake_dec, net_out_dec,
+         cost_basis_closed_dec, realized_pnl_dec,
+         beneficiary_address, promo_redemption_id)
+      VALUES
+        ($1, $2, $3, $4, 'CLAIM', 'C',
+         null, null,
+         extract(epoch from now())::bigint, $5,
+         null, null,
+         0, $6::numeric, 0, 0, $6::numeric,
+         0, 0,
+         $2, $7::uuid)
+      ON CONFLICT (id) DO NOTHING
+      `,
+      [
+        `claim-promo-${redemptionId}`,
+        userAddress,                  // $2 — user_address AND beneficiary
+        poolAddress,
+        row.league || null,
+        payoutTxHash || "",           // $5 — keep for Arbiscan traceability
+        fullPayoutUsdc,               // $6 — gross_out AND net_out (full contract payout)
+        redemptionId,                 // $7
+      ]
     );
 
     await client.query("COMMIT");
