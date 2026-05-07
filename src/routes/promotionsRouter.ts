@@ -211,6 +211,75 @@ router.get("/me/activity", async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/promotions/positions?address=0x... ──────────────────────────────
+//
+// Open promo positions for the right-rail betslip. A position is "open" while
+// the redemption is in 'placed' state — i.e. funding wallet has bought shares
+// but the game hasn't settled yet. After settlement, the synthetic CLAIM row
+// in user_trade_events represents the same position in regular trade history,
+// so we drop it from this list.
+//
+// The funding wallet holds the on-chain shares, so the user's normal
+// betsCache (which reads on-chain holdings for the connected address) doesn't
+// see these positions. This endpoint gives the frontend everything it needs
+// to render a read-only promo card.
+router.get("/positions", async (req: Request, res: Response) => {
+  const address = String(req.query.address || "").toLowerCase().trim();
+  if (!ADDR_RE.test(address)) {
+    return res.status(400).json({ error: "Invalid address" });
+  }
+
+  try {
+    const r = await pool.query(
+      `
+      SELECT
+        r.id                AS redemption_id,
+        r.status            AS redemption_status,
+        r.credit_usdc,
+        r.pool_address,
+        r.outcome_index     AS redemption_outcome_index,
+        r.placed_at,
+        r.expires_at,
+        e.id                AS trade_id,
+        e.tx_hash,
+        e.timestamp         AS trade_timestamp,
+        e.gross_in_dec,
+        e.net_stake_dec,
+        e.avg_price_bps,
+        e.spot_price_bps,
+        e.outcome_index     AS trade_outcome_index,
+        e.outcome_code,
+        g.game_id,
+        g.league,
+        g.team_a_name,
+        g.team_b_name,
+        g.team_a_code,
+        g.team_b_code,
+        g.market_type,
+        g.lock_time,
+        g.is_final,
+        g.winning_outcome_index,
+        g.market_question,
+        g.market_short
+      FROM public.promo_redemptions r
+      JOIN public.user_trade_events e
+        ON e.promo_redemption_id = r.id
+       AND e.type = 'BUY'
+      LEFT JOIN public.games g
+        ON lower(g.game_id) = lower(r.pool_address)
+      WHERE lower(r.user_address) = $1
+        AND r.status = 'placed'
+      ORDER BY e.timestamp DESC
+      `,
+      [address]
+    );
+    return res.json({ positions: r.rows });
+  } catch (err) {
+    console.error("[promotionsRouter/positions]", err);
+    return res.status(500).json({ error: "DB error" });
+  }
+});
+
 // ── POST /api/promotions/place-bet ───────────────────────────────────────────
 //
 // Body: { redemptionId, poolAddress, outcomeIndex, userAddress }
