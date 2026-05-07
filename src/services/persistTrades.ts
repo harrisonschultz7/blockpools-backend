@@ -6,7 +6,7 @@ import { updatePromoProgress } from "../utils/updatePromoProgress";
 // === PROMO FRAMEWORK SIDECAR (gated, safe to remove) ============================
 // All references below are no-ops when PROMO_FRAMEWORK_ENABLED=false. To remove
 // the framework entirely: drop these imports and the three fenced blocks below.
-import { PROMO_FRAMEWORK_ENABLED } from "../config/promo";
+import { PROMO_FRAMEWORK_ENABLED, isPromoFundingWallet } from "../config/promo";
 import {
   applyBeneficiaryToFundingWalletTrade,
   handlePromoTradeAttribution,
@@ -296,6 +296,22 @@ export async function upsertUserTradesAndGames(opts: {
     })
     .filter((t: PersistTradeRow) => {
       if (!t.id || !t.gameId || t.timestamp <= 0) return false;
+
+      // === PROMO FRAMEWORK FILTER (sidecar — safe to remove) ==================
+      // Drop on-chain CLAIM events made BY the funding wallet. settleFreeBet
+      // already inserted a canonical CLAIM row attributed to the actual user
+      // (via beneficiary_address / effective_user_address). Letting the chain
+      // indexer also persist a funding-wallet-attributed duplicate would
+      // double-count promo payouts in any aggregate that touches the funding
+      // address.
+      if (
+        PROMO_FRAMEWORK_ENABLED &&
+        t.type === "CLAIM" &&
+        isPromoFundingWallet(t.user)
+      ) {
+        return false;
+      }
+      // === END PROMO FRAMEWORK FILTER =========================================
 
       // ✅ CLAIM rows are allowed without outcomeIndex/outcomeCode.
       if (t.type === "CLAIM") return true;
