@@ -154,7 +154,11 @@ router.get("/me", async (req: Request, res: Response) => {
         p.name           AS promotion_name,
         p.description    AS promotion_description,
         p.type           AS promotion_type,
-        p.placement_window_hours
+        p.placement_window_hours,
+        p.eligible_leagues,
+        p.eligible_pool_addresses,
+        p.min_odds_bps,
+        p.max_odds_bps
       FROM public.promo_redemptions r
       JOIN public.promotions p ON p.id = r.promotion_id
       WHERE lower(r.user_address) = $1
