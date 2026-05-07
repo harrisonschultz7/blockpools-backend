@@ -222,7 +222,12 @@ async function handleTradeAgg(req: any, res: any) {
           MAX(e.timestamp)::bigint AS last_activity_ts
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
-        WHERE lower(e.user_address) = lower($1)
+        -- effective_user_address = COALESCE(beneficiary_address, user_address)
+        -- so promo (free-bet) trades attributed to this user via the funding
+        -- wallet's beneficiary stamp surface in the per-game listing. Other
+        -- stats endpoints (leaderboard, masterMetrics, expert status) still
+        -- key on user_address by design — promo bets do NOT pollute those.
+        WHERE lower(e.effective_user_address) = lower($1)
           AND COALESCE(g.lock_time, 0) >= $2 AND COALESCE(g.lock_time, 0) <= $3
           AND ($4 = 'ALL' OR g.league = $4)
           AND e.type IN ('BUY','SELL')
@@ -323,7 +328,12 @@ async function handleTradeAgg(req: any, res: any) {
           COALESCE(SUM(e.net_out_dec::numeric), 0)::numeric AS claim_amount
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
-        WHERE lower(e.user_address) = lower($1)
+        -- effective_user_address = COALESCE(beneficiary_address, user_address)
+        -- so promo (free-bet) trades attributed to this user via the funding
+        -- wallet's beneficiary stamp surface in the per-game listing. Other
+        -- stats endpoints (leaderboard, masterMetrics, expert status) still
+        -- key on user_address by design — promo bets do NOT pollute those.
+        WHERE lower(e.effective_user_address) = lower($1)
           AND COALESCE(g.lock_time, 0) >= $2 AND COALESCE(g.lock_time, 0) <= $3
           AND ($4 = 'ALL' OR g.league = $4)
           AND e.type = 'CLAIM'
@@ -457,7 +467,12 @@ async function handleTradeAgg(req: any, res: any) {
           MAX(e.timestamp)::bigint AS last_activity_ts
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
-        WHERE lower(e.user_address) = lower($1)
+        -- effective_user_address = COALESCE(beneficiary_address, user_address)
+        -- so promo (free-bet) trades attributed to this user via the funding
+        -- wallet's beneficiary stamp surface in the per-game listing. Other
+        -- stats endpoints (leaderboard, masterMetrics, expert status) still
+        -- key on user_address by design — promo bets do NOT pollute those.
+        WHERE lower(e.effective_user_address) = lower($1)
           AND COALESCE(g.lock_time, 0) >= $2 AND COALESCE(g.lock_time, 0) <= $3
           AND ($4 = 'ALL' OR g.league = $4)
           AND e.type IN ('BUY','SELL')
@@ -567,7 +582,12 @@ async function handleTradeAgg(req: any, res: any) {
           MAX(e.timestamp)::bigint AS last_claim_ts
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
-        WHERE lower(e.user_address) = lower($1)
+        -- effective_user_address = COALESCE(beneficiary_address, user_address)
+        -- so promo (free-bet) trades attributed to this user via the funding
+        -- wallet's beneficiary stamp surface in the per-game listing. Other
+        -- stats endpoints (leaderboard, masterMetrics, expert status) still
+        -- key on user_address by design — promo bets do NOT pollute those.
+        WHERE lower(e.effective_user_address) = lower($1)
           AND COALESCE(g.lock_time, 0) >= $2 AND COALESCE(g.lock_time, 0) <= $3
           AND ($4 = 'ALL' OR g.league = $4)
           AND e.type = 'CLAIM'
