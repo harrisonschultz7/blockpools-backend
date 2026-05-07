@@ -696,6 +696,9 @@ async function handleTradeAgg(req: any, res: any) {
     // same pool but a different outcome doesn't get flagged.
     const promoMap = new Map<string, { creditUsdc: number; redemptionId: string }>();
     try {
+      // ::text cast on status — Postgres throws if any literal in IN(...) isn't
+      // in the promo_redemption_status enum. Casting to text sidesteps enum
+      // validation so this list is forgiving if the enum gains/loses values.
       const promoRes = await client.query(
         `
         SELECT
@@ -707,7 +710,7 @@ async function handleTradeAgg(req: any, res: any) {
         WHERE lower(user_address) = lower($1)
           AND pool_address IS NOT NULL
           AND outcome_index IS NOT NULL
-          AND status IN ('placed','settled_win','settled_loss','settled_void','expired','voided')
+          AND status::text IN ('placed','settled_win','settled_loss','expired','voided')
         GROUP BY lower(pool_address), outcome_index
         `,
         [address]
