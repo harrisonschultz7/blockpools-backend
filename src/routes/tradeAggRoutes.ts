@@ -688,6 +688,43 @@ async function handleTradeAgg(req: any, res: any) {
 
     const out = await client.query(sql, params);
 
+    // === PROMO FRAMEWORK SIDECAR (safe to remove) ===========================
+    // Tag rows that came from a bonus-trade redemption so the frontend can
+    // render an "i" icon on the user's own profile. Keyed by
+    // (pool_address, outcome_index) — matches exactly the row the funding
+    // wallet bought via the redemption, so a regular self-funded trade on the
+    // same pool but a different outcome doesn't get flagged.
+    const promoMap = new Map<string, { creditUsdc: number; redemptionId: string }>();
+    try {
+      const promoRes = await client.query(
+        `
+        SELECT
+          lower(pool_address) AS pool_address,
+          outcome_index,
+          MAX(credit_usdc::numeric) AS credit_usdc,
+          MAX(id::text)              AS redemption_id
+        FROM public.promo_redemptions
+        WHERE lower(user_address) = lower($1)
+          AND pool_address IS NOT NULL
+          AND outcome_index IS NOT NULL
+          AND status IN ('placed','settled_win','settled_loss','settled_void','expired','voided')
+        GROUP BY lower(pool_address), outcome_index
+        `,
+        [address]
+      );
+      for (const pr of promoRes.rows || []) {
+        const key = `${String(pr.pool_address).toLowerCase()}:${Number(pr.outcome_index)}`;
+        promoMap.set(key, {
+          creditUsdc: Number(pr.credit_usdc),
+          redemptionId: String(pr.redemption_id),
+        });
+      }
+    } catch (e: any) {
+      // Don't break trade history if the promo lookup fails — just skip the tag.
+      console.error("[tradeAggRoutes] promo lookup failed (non-blocking):", e?.message ?? e);
+    }
+    // === END PROMO FRAMEWORK SIDECAR ========================================
+
     const rows: TradeAggRow[] = (out.rows || []).map((r: any) => {
       const teamACode = r.team_a_code ? String(r.team_a_code) : undefined;
       const teamBCode = r.team_b_code ? String(r.team_b_code) : undefined;
@@ -804,6 +841,15 @@ async function handleTradeAgg(req: any, res: any) {
       const lastClaimTsRaw = safeNum(r.last_claim_ts);
       const lastActivityTs = claimAlloc > 0 ? Math.max(lastActivityTsRaw, lastClaimTsRaw) : lastActivityTsRaw;
 
+      // === PROMO FRAMEWORK SIDECAR (safe to remove) =========================
+      const promoKey = outcomeIndex != null
+        ? `${String(r.game_id).toLowerCase()}:${outcomeIndex}`
+        : null;
+      const promoMatch = promoKey ? promoMap.get(promoKey) : undefined;
+      const isPromo = !!promoMatch;
+      const promoCreditUsdc = promoMatch ? promoMatch.creditUsdc : undefined;
+      // === END PROMO FRAMEWORK SIDECAR =====================================
+
       return {
         gameId: String(r.game_id),
         league: String(r.league || "—"),
@@ -843,6 +889,11 @@ async function handleTradeAgg(req: any, res: any) {
 
         action,
         lastActivityTs: Number(lastActivityTs || 0),
+
+        // === PROMO FRAMEWORK SIDECAR (safe to remove) ======================
+        isPromo,
+        promoCreditUsdc,
+        // === END PROMO FRAMEWORK SIDECAR ===================================
       };
     });
 
