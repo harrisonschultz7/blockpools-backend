@@ -386,6 +386,160 @@ async function syncMissingGames(provider: JsonRpcProvider): Promise<{
   return { inspected: all.length, inserted, failed };
 }
 
+// ── Finalization sync ───────────────────────────────────────────────────────
+//
+// Scans pools that are past lock_time and still flagged is_final=false, reads
+// their resolution state on-chain, and flips the games row to is_final=true
+// when the contract reports a winner.
+//
+// Without this step, the freebetSettlementBot can't tell which redemptions
+// to settle — it filters on `games.is_final = true` and that flag is otherwise
+// never written by any recurring backend process. (Demand-driven flows like
+// persistTrades only fire when a user pulls trades, which doesn't happen for
+// the funding wallet.)
+//
+// RPC cost: 1 read per unfinalized post-lock pool. Typically 0-20 reads per
+// run. Pools older than the cutoff (default 7 days) are skipped to avoid
+// spinning forever on broken contracts.
+
+const FINALIZATION_LOOKBACK_DAYS = Number(
+  process.env.REFRESH_GAMES_FINALIZATION_LOOKBACK_DAYS || 7
+);
+
+const POOL_RESOLUTION_ABI = [
+  "function winningTeam() view returns (uint8)",
+  "function isResolved() view returns (bool)",
+  "function winningOutcomeIndex() view returns (uint8)",
+];
+
+type ResolutionResult = {
+  isFinal: boolean;
+  winningOutcomeIndex: number | null;
+  /** 'A' / 'B' for binary; null for multi or tie. */
+  winnerSide: "A" | "B" | null;
+};
+
+async function readResolution(
+  addr: string,
+  provider: JsonRpcProvider
+): Promise<ResolutionResult> {
+  const c = new Contract(addr, POOL_RESOLUTION_ABI, provider);
+  // Try multi shape first — isResolved + winningOutcomeIndex.
+  try {
+    const resolved = await c.isResolved();
+    if (resolved === true) {
+      try {
+        const idx = Number((await c.winningOutcomeIndex()).toString());
+        return { isFinal: true, winningOutcomeIndex: idx, winnerSide: null };
+      } catch {
+        return { isFinal: true, winningOutcomeIndex: null, winnerSide: null };
+      }
+    }
+  } catch {
+    // isResolved doesn't exist on this contract — it's a binary pool. Fall
+    // through to winningTeam().
+  }
+  // Binary pool path.
+  try {
+    const wt = Number((await c.winningTeam()).toString());
+    if (wt === 1) return { isFinal: true, winningOutcomeIndex: 0, winnerSide: "A" };
+    if (wt === 2) return { isFinal: true, winningOutcomeIndex: 1, winnerSide: "B" };
+    if (wt === 3) return { isFinal: true, winningOutcomeIndex: 2, winnerSide: null };
+    // wt === 0 → unresolved
+  } catch {
+    // No resolution methods at all — give up.
+  }
+  return { isFinal: false, winningOutcomeIndex: null, winnerSide: null };
+}
+
+async function syncFinalizedPools(provider: JsonRpcProvider): Promise<{
+  inspected: number;
+  finalized: number;
+  failed: number;
+}> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const earliestLock = nowSec - FINALIZATION_LOOKBACK_DAYS * 86400;
+
+  const r = await pool.query<{
+    game_id: string;
+    team_a_code: string | null;
+    team_b_code: string | null;
+  }>(
+    `SELECT game_id, team_a_code, team_b_code
+       FROM public.games
+      WHERE COALESCE(is_final, false) = false
+        AND lock_time IS NOT NULL
+        AND lock_time < $1::bigint
+        AND lock_time > $2::bigint
+      ORDER BY lock_time DESC`,
+    [nowSec, earliestLock]
+  );
+
+  const candidates = r.rows;
+  if (!candidates.length) {
+    return { inspected: 0, finalized: 0, failed: 0 };
+  }
+
+  let finalized = 0;
+  let failed = 0;
+  let cursor = 0;
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(RPC_CONCURRENCY, candidates.length) },
+      async () => {
+        while (cursor < candidates.length) {
+          const i = cursor++;
+          const row = candidates[i];
+          try {
+            const res = await readResolution(row.game_id, provider);
+            if (!res.isFinal) continue;
+
+            // Map winner_side to the right team code when binary.
+            let winner_team_code: string | null = null;
+            if (res.winnerSide === "A") winner_team_code = row.team_a_code;
+            if (res.winnerSide === "B") winner_team_code = row.team_b_code;
+
+            const upd = await pool.query(
+              `UPDATE public.games
+                  SET is_final              = true,
+                      winning_outcome_index = $1,
+                      winner_side           = $2,
+                      winner_team_code      = COALESCE($3, winner_team_code),
+                      resolution_type       = 'RESOLVED',
+                      updated_at            = now()
+                WHERE lower(game_id) = lower($4)
+                  AND COALESCE(is_final, false) = false`,
+              [
+                res.winningOutcomeIndex,
+                res.winnerSide,
+                winner_team_code,
+                row.game_id,
+              ]
+            );
+            if ((upd.rowCount ?? 0) > 0) {
+              finalized++;
+              console.log(
+                `[refreshGamesAndScores] finalized ${row.game_id} ` +
+                  `outcome=${res.winningOutcomeIndex} side=${res.winnerSide ?? "-"}`
+              );
+            }
+          } catch (err: any) {
+            failed++;
+            console.warn(
+              `[refreshGamesAndScores] finalize failed ${row.game_id}: ${
+                err?.message ?? err
+              }`
+            );
+          }
+        }
+      }
+    )
+  );
+
+  return { inspected: candidates.length, finalized, failed };
+}
+
 async function refreshScoreCache(): Promise<{
   considered: number;
   refreshed: number;
@@ -484,6 +638,14 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   }
 
+  let finalStats = { inspected: 0, finalized: 0, failed: 0 };
+  try {
+    finalStats = await syncFinalizedPools(provider);
+  } catch (err) {
+    console.error("[refreshGamesAndScores] syncFinalizedPools failed", err);
+    process.exitCode = 1;
+  }
+
   let scoreStats = { considered: 0, refreshed: 0, failed: 0 };
   try {
     scoreStats = await refreshScoreCache();
@@ -496,6 +658,7 @@ async function main(): Promise<void> {
   console.log(
     `[refreshGamesAndScores] done in ${elapsed}s — ` +
       `games inspected=${gamesStats.inspected} inserted=${gamesStats.inserted} failed=${gamesStats.failed} | ` +
+      `final inspected=${finalStats.inspected} finalized=${finalStats.finalized} failed=${finalStats.failed} | ` +
       `scores considered=${scoreStats.considered} refreshed=${scoreStats.refreshed} failed=${scoreStats.failed}`
   );
 }
