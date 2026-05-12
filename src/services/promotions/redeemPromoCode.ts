@@ -187,10 +187,12 @@ export async function redeemPromoCode(
       insertSql = `
         INSERT INTO public.promo_redemptions
           (promotion_id, user_address, referrer_address,
-           status, credit_usdc, claimed_at, qualified_at, expires_at)
+           status, credit_usdc, claimed_at, qualified_at, expires_at,
+           is_repeatable)
         VALUES
           ($1, $2, $3, 'eligible', $4,
-           now(), now(), now() + ($5 || ' hours')::interval)
+           now(), now(), now() + ($5 || ' hours')::interval,
+           $6)
         RETURNING id, expires_at
       `;
       insertArgs = [
@@ -199,14 +201,17 @@ export async function redeemPromoCode(
         referrerAddress,
         String(promo.credit_usdc),
         String(promo.placement_window_hours ?? 168),
+        Boolean(promo.is_repeatable),
       ];
     } else {
       insertSql = `
         INSERT INTO public.promo_redemptions
           (promotion_id, user_address, referrer_address,
-           status, credit_usdc, claimed_at)
+           status, credit_usdc, claimed_at,
+           is_repeatable)
         VALUES
-          ($1, $2, $3, 'pending_qualification', $4, now())
+          ($1, $2, $3, 'pending_qualification', $4, now(),
+           $5)
         RETURNING id, expires_at
       `;
       insertArgs = [
@@ -214,6 +219,7 @@ export async function redeemPromoCode(
         userAddress,
         referrerAddress,
         String(promo.credit_usdc),
+        Boolean(promo.is_repeatable),
       ];
     }
 
