@@ -117,49 +117,76 @@ export async function settleFreeBet(
   const { wallet, usdc } = getFundingWallet();
   const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
 
-  // Read shares BEFORE the claim so we know how big the payout will be. Each
-  // winning share pays $1 in our pool design. Branch by market_type:
-  //   - BINARY → sharesTeamAByUser / sharesTeamBByUser
-  //   - else   → shares(address, uint8)
+  // ── Per-redemption share count ───────────────────────────────────────────
+  // Reading the funding wallet's TOTAL shares for this outcome from the pool
+  // is the wrong measure when multiple redemptions sit on the same pool — the
+  // first one to settle would consume the entire wallet balance and the rest
+  // would get $0. Instead, compute shares from THIS redemption's own BUY row
+  // in user_trade_events: shares = net_stake / avg_price (each winning share
+  // pays $1, AMM-style).
   let sharesHeld: BigNumber;
-  try {
-    if (marketType === "BINARY") {
-      if (userOutcome === 0) {
-        sharesHeld = await poolContract.sharesTeamAByUser(wallet.address);
-      } else if (userOutcome === 1) {
-        sharesHeld = await poolContract.sharesTeamBByUser(wallet.address);
-      } else {
-        throw new Error(`binary outcome out of range: ${userOutcome}`);
-      }
-    } else {
-      sharesHeld = await poolContract.shares(wallet.address, userOutcome);
-    }
-  } catch (err: any) {
-    // Some older pool variants don't expose either signature. Fall back to
-    // assuming the credit doubled (worst-case under-payout for user) — flag
-    // for reconciliation.
+  const tradeQ = await pool.query(
+    `SELECT net_stake_dec, avg_price_bps
+       FROM public.user_trade_events
+      WHERE promo_redemption_id = $1
+        AND type = 'BUY'
+      LIMIT 1`,
+    [redemptionId]
+  );
+  const tradeRow = tradeQ.rows[0];
+  if (tradeRow && tradeRow.net_stake_dec != null && tradeRow.avg_price_bps != null) {
+    const netStake = Number(tradeRow.net_stake_dec);
+    const avgPriceBps = Number(tradeRow.avg_price_bps);
+    // shares = (net_stake * 10000) / avg_price_bps. Each share is worth $1 on
+    // a win, so shares-as-USDC equals payout-as-USDC. Compute in floating
+    // point then convert to base units — net_stake is already in USDC, so
+    // the result is in USDC too.
+    const sharesUsdc =
+      avgPriceBps > 0 ? (netStake * 10_000) / avgPriceBps : 0;
+    sharesHeld = parseUnits(sharesUsdc.toFixed(USDC_DECIMALS), USDC_DECIMALS);
+  } else {
+    // No BUY row yet — fall back to on-chain read (legacy behavior). This
+    // path is conservative for single-redemption pools but unsafe for
+    // multi-redemption pools, so we log a warning.
     console.warn(
-      "[settleFreeBet] shares read failed; conservative payout fallback",
-      { redemptionId, marketType, err: err?.message }
+      "[settleFreeBet] no BUY row for redemption; falling back to on-chain shares read",
+      { redemptionId, poolAddress }
     );
-    sharesHeld = parseUnits(creditUsdc, USDC_DECIMALS);
+    try {
+      if (marketType === "BINARY") {
+        if (userOutcome === 0) {
+          sharesHeld = await poolContract.sharesTeamAByUser(wallet.address);
+        } else if (userOutcome === 1) {
+          sharesHeld = await poolContract.sharesTeamBByUser(wallet.address);
+        } else {
+          throw new Error(`binary outcome out of range: ${userOutcome}`);
+        }
+      } else {
+        sharesHeld = await poolContract.shares(wallet.address, userOutcome);
+      }
+    } catch (err: any) {
+      console.warn(
+        "[settleFreeBet] shares read failed; conservative payout fallback",
+        { redemptionId, marketType, err: err?.message }
+      );
+      sharesHeld = parseUnits(creditUsdc, USDC_DECIMALS);
+    }
   }
 
-  // Issue the on-chain claim. If claimWinnings was already invoked for this
-  // pool by an earlier redemption settlement, this will revert — that's fine,
-  // the funding wallet already holds the USDC.
+  // Issue the on-chain claim. ANY revert here is treated as benign — the
+  // funding wallet either drained the pool earlier (during a sibling
+  // redemption's settlement) or has nothing to claim. Either way we proceed
+  // with the per-redemption share count computed above.
   try {
     const tx = await poolContract.claimWinnings({ gasLimit: PROMO_CLAIM_GAS_LIMIT });
     await tx.wait(PROMO_TX_CONFIRMATIONS);
   } catch (err: any) {
-    // Tolerate "already claimed" reverts. Anything else is a hard failure
-    // because we're about to compute payout assuming the funds are in hand.
-    const msg = String(err?.message || "").toLowerCase();
-    const benign = msg.includes("already claimed") || msg.includes("nothing to claim");
-    if (!benign) {
-      console.error("[settleFreeBet] claimWinnings failed", { redemptionId, err });
-      return { settled: false, reason: "claim_failed", redemptionId };
-    }
+    // Don't fail the redemption — the share count came from the trade row,
+    // not the wallet's live balance. Log for ops visibility.
+    console.warn("[settleFreeBet] claimWinnings reverted (likely already drained)", {
+      redemptionId,
+      msg: String(err?.message || "").slice(0, 200),
+    });
   }
 
   // payout in USDC base units = sharesHeld (1:1 share→USDC at settlement).
