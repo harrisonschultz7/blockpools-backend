@@ -51,6 +51,11 @@ router.post("/redeem", async (req: Request, res: Response) => {
       userAddress,
       referrerAddress: referrerAddress || null,
     });
+    // Audit trail — surface every successful redeem in the journal so we can
+    // grep by code / address / redemptionId later. Cheap one-liner.
+    console.log(
+      `[promotionsRouter/redeem] ok code=${code} user=${userAddress} redemptionId=${(result as any)?.redemptionId} status=${(result as any)?.status}`
+    );
     return res.status(200).json({ ok: true, ...result });
   } catch (err: any) {
     if (err?.code) {
@@ -63,8 +68,10 @@ router.post("/redeem", async (req: Request, res: Response) => {
         PROMO_EXHAUSTED: 409,
         ALREADY_REDEEMED: 409,
         INVALID_ADDRESS: 400,
+        NOT_NEW_USER: 403,
       };
       const status = map[code] ?? 400;
+      console.warn(`[promotionsRouter/redeem] fail code=${code} user=${userAddress}`);
       return res.status(status).json({ error: code });
     }
     console.error("[promotionsRouter/redeem]", err);
@@ -313,6 +320,11 @@ router.post("/place-bet", async (req: Request, res: Response) => {
       outcomeIndex: Math.trunc(oi),
       userAddress,
     });
+    // Audit trail for successful placements — useful for tracing why a
+    // bonus trade did/didn't reach the chain when a user reports issues.
+    console.log(
+      `[promotionsRouter/place-bet] ok redemptionId=${redemptionId} user=${userAddress} pool=${poolAddress} outcome=${oi} txHash=${(result as any)?.txHash}`
+    );
     return res.status(200).json({ ok: true, ...result });
   } catch (err: any) {
     if (err instanceof PlaceFreeBetException) {
@@ -328,6 +340,9 @@ router.post("/place-bet", async (req: Request, res: Response) => {
         ON_CHAIN_TX_FAILED: 502,
       };
       const status = map[err.code] ?? 400;
+      console.warn(
+        `[promotionsRouter/place-bet] fail code=${err.code} redemptionId=${redemptionId} user=${userAddress} pool=${poolAddress} outcome=${oi}`
+      );
       return res.status(status).json({ error: err.code, detail: err.detail });
     }
     console.error("[promotionsRouter/place-bet]", err);

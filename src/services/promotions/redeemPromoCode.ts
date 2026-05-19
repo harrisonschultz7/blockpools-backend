@@ -19,7 +19,8 @@ export type RedeemError =
   | "PROMO_EXHAUSTED"
   | "ALREADY_REDEEMED"
   | "INVALID_ADDRESS"
-  | "REFERRER_REQUIRED";
+  | "REFERRER_REQUIRED"
+  | "NOT_NEW_USER";
 
 export class RedeemPromoError extends Error {
   code: RedeemError;
@@ -141,6 +142,35 @@ export async function redeemPromoCode(
 
     const unlockCondition = String(promo.unlock_condition || "none").toLowerCase();
 
+    // ── 'new_user' gate ────────────────────────────────────────────────────
+    // Only allow this redemption if the user's profile was created AFTER the
+    // promo's starts_at. Used by sign-up-bonus campaigns like SIGNUP10 so
+    // existing members can't claim a new-member-only promo.
+    if (unlockCondition === "new_user") {
+      const userQ = await client.query(
+        `SELECT created_at
+           FROM public.users
+          WHERE LOWER(primary_address) = $1
+          LIMIT 1`,
+        [userAddress]
+      );
+      const userRow = userQ.rows[0];
+      const userCreatedAt = userRow?.created_at
+        ? new Date(userRow.created_at)
+        : null;
+      const promoStartsAt = promo.starts_at ? new Date(promo.starts_at) : null;
+
+      // Reject if:
+      //   - no profile exists for this wallet (must sign up first), OR
+      //   - profile predates the promo's launch
+      const promoStartMs = promoStartsAt ? promoStartsAt.getTime() : 0;
+      const userMs = userCreatedAt ? userCreatedAt.getTime() : 0;
+      if (!userCreatedAt || userMs < promoStartMs) {
+        await client.query("ROLLBACK");
+        throw new RedeemPromoError("NOT_NEW_USER");
+      }
+    }
+
     // Decide whether the redemption should be eligible immediately or wait for
     // a qualifying event. Four supported conditions:
     //   - 'none'                 → eligible immediately
@@ -149,9 +179,11 @@ export async function redeemPromoCode(
     //                              to do a real-money BUY
     //   - 'referee_signup'       → eligible if the referee already has a user
     //                              record; else pending until they sign up
+    //   - 'new_user'             → handled above; falls through to immediate
+    //                              eligibility (same path as 'none').
     let goesEligibleImmediately = false;
 
-    if (unlockCondition === "none") {
+    if (unlockCondition === "none" || unlockCondition === "new_user") {
       goesEligibleImmediately = true;
     } else if (unlockCondition === "referee_signup") {
       if (!referrerAddress) {
