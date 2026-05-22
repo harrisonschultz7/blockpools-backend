@@ -180,6 +180,136 @@ router.get("/me", async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/promotions/me/progress?address=0x... ────────────────────────────
+//
+// Compact progress report for ONE wallet against their current
+// pending_qualification redemption (typically the bet-to-unlock signup
+// bonus). Used by the profile page to render an inline progress bar.
+//
+// Response shape:
+//   {
+//     hasPending: boolean,
+//     redemption?: {
+//       id, code, promotionName, creditUsdc, claimedAt, expiresAt,
+//       unlockMinTradeUsdc, accumulatedUsdc, remainingUsdc, percent
+//     }
+//   }
+//
+// "Accumulated" is computed using the SAME aggregation as
+// evaluatePromoEligibility (sum BUY net_stake − sum SELL cost_basis_closed,
+// per game+outcome, ONLY where the game is_final=true and the trade is not
+// a free-bet trade). We take the MAX held-net-stake across all settled
+// (game,outcome) buckets — i.e. the user's best single settled position
+// that could unlock the promo. This matches what the qualifier looks for.
+router.get("/me/progress", async (req: Request, res: Response) => {
+  const address = String(req.query.address || "").toLowerCase().trim();
+  if (!ADDR_RE.test(address)) {
+    return res.status(400).json({ error: "Invalid address" });
+  }
+
+  try {
+    // Find the most recent pending_qualification redemption for the user.
+    const redQ = await pool.query(
+      `
+      SELECT
+        r.id,
+        r.claimed_at,
+        r.expires_at,
+        r.credit_usdc,
+        p.code,
+        p.name                  AS promotion_name,
+        p.unlock_condition,
+        p.unlock_min_trade_usdc
+      FROM public.promo_redemptions r
+      JOIN public.promotions p ON p.id = r.promotion_id
+      WHERE lower(r.user_address) = $1
+        AND r.status = 'pending_qualification'
+      ORDER BY r.claimed_at DESC NULLS LAST
+      LIMIT 1
+      `,
+      [address]
+    );
+
+    if (!redQ.rows.length) {
+      return res.json({ hasPending: false });
+    }
+    const red = redQ.rows[0];
+    const minTrade = Number(red.unlock_min_trade_usdc ?? 0);
+
+    // Compute held net stake per (game, outcome) twice:
+    //   - SETTLED bucket (g.is_final = true)   → counts toward unlock
+    //   - PENDING bucket (g.is_final = false)  → in-flight; shown as striped
+    //
+    // We pick the MAX held position from each bucket. Mirrors the exact
+    // qualification rule used by evaluatePromoEligibility for the settled
+    // bucket; the pending bucket is purely UI signal so users know their
+    // in-flight bet is being tracked.
+    const progQ = await pool.query(
+      `
+      WITH per_outcome AS (
+        SELECT
+          e.game_id,
+          e.outcome_index,
+          g.is_final,
+          SUM(CASE WHEN e.type = 'BUY'
+                   THEN COALESCE(e.net_stake_dec, 0)
+                   ELSE 0 END)::numeric AS bought,
+          SUM(CASE WHEN e.type = 'SELL'
+                   THEN COALESCE(e.cost_basis_closed_dec, 0)
+                   ELSE 0 END)::numeric AS sold
+        FROM public.user_trade_events e
+        JOIN public.games g ON lower(g.game_id) = lower(e.game_id)
+        WHERE lower(e.user_address) = $1
+          AND e.beneficiary_address IS NULL
+          AND e.inserted_at >= $2
+        GROUP BY e.game_id, e.outcome_index, g.is_final
+      )
+      SELECT
+        COALESCE(MAX(CASE WHEN is_final = true  THEN bought - sold END), 0)::numeric AS best_settled,
+        COALESCE(MAX(CASE WHEN is_final = false THEN bought - sold END), 0)::numeric AS best_pending
+      FROM per_outcome
+      `,
+      [address, red.claimed_at]
+    );
+    const accumulated = Math.max(0, Number(progQ.rows[0]?.best_settled ?? 0));
+    const pending = Math.max(0, Number(progQ.rows[0]?.best_pending ?? 0));
+    const remaining = Math.max(0, minTrade - accumulated);
+    const percent =
+      minTrade > 0 ? Math.min(100, Math.round((accumulated / minTrade) * 100)) : 0;
+    // Pending fill is shown ON TOP of the settled fill, but never exceeds the
+    // remaining unfilled portion of the bar — so settled + pending stripes
+    // visually max out at 100%.
+    const pendingPercent =
+      minTrade > 0
+        ? Math.max(
+            0,
+            Math.min(100 - percent, Math.round((pending / minTrade) * 100))
+          )
+        : 0;
+
+    return res.json({
+      hasPending: true,
+      redemption: {
+        id: red.id,
+        code: red.code,
+        promotionName: red.promotion_name,
+        creditUsdc: Number(red.credit_usdc),
+        claimedAt: red.claimed_at,
+        expiresAt: red.expires_at,
+        unlockMinTradeUsdc: minTrade,
+        accumulatedUsdc: accumulated,
+        pendingUsdc: pending,
+        remainingUsdc: remaining,
+        percent,
+        pendingPercent,
+      },
+    });
+  } catch (err) {
+    console.error("[promotionsRouter/me/progress]", err);
+    return res.status(500).json({ error: "DB error" });
+  }
+});
+
 // ── GET /api/promotions/me/activity?address=0x... ────────────────────────────
 //
 // Focused free-bet activity history (claim → place → settle) for a wallet.
