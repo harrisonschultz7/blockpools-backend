@@ -213,6 +213,8 @@ router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
         u.instagram_handle,
         u.avatar_url,
         u.email,
+        u.bio,
+        u.favorite_team,
         u.welcome_email_sent,
         u.created_at,
         u.updated_at,
@@ -331,14 +333,46 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
       ? req.user.eoaAddress.toLowerCase()
       : null;
 
-    const { username, display_name, x_handle, instagram_handle, avatar_url, email } =
-      req.body || {};
+    const {
+      username,
+      display_name,
+      x_handle,
+      instagram_handle,
+      avatar_url,
+      email,
+      bio,
+      favorite_team,
+    } = req.body || {};
 
     console.log(`[POST /api/profile] body — username: ${username}, email: ${email}`);
 
     if (!username || typeof username !== "string") {
       return res.status(400).json({ error: "username is required" });
     }
+
+    // ── Normalize the two new personalization fields ────────────────────────
+    // Treat `undefined` (field not in body) as "don't touch" by passing the
+    // existing column value back into the UPSERT via COALESCE. Treat empty
+    // string / null as an explicit clear so the user can wipe their bio or
+    // un-pick their favorite team without a separate endpoint.
+    const bioInput: string | null | undefined =
+      typeof bio === "string"
+        ? // 280-char cap mirrors the frontend. Normalize empty → NULL so the
+          // "no bio yet" prompt on the profile page can use a single check.
+          (bio.trim().slice(0, 280) || null)
+        : bio === null
+        ? null
+        : undefined;
+
+    // favorite_team comes through as "<sport>:<CODE>" or null. We don't try
+    // to validate the team here (sport lists evolve over time) — the frontend
+    // picker is the source of truth, and unknown values just render no pill.
+    const favoriteTeamInput: string | null | undefined =
+      typeof favorite_team === "string"
+        ? favorite_team.trim().slice(0, 32) || null
+        : favorite_team === null
+        ? null
+        : undefined;
 
     const now = new Date().toISOString();
 
@@ -363,6 +397,21 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
       `[POST /api/profile] isNewUser: ${isNewUser}, emailToSave: ${emailToSave ?? "null"}`
     );
 
+    // For bio / favorite_team we use a sentinel-aware param: `null` means
+    // "the caller passed null/empty → clear", and `undefined` means "field
+    // absent from the request body → keep whatever's in the DB". We can't
+    // express "leave column alone" via EXCLUDED.* directly, so the UPDATE
+    // branch falls back to users.bio / users.favorite_team when the new
+    // value is NULL *and* the caller's intent was "don't touch".
+    //
+    // We encode the caller's intent in two extra params:
+    //   $11 = bio value (string or null)
+    //   $12 = bio touched? (true if caller sent the field at all)
+    //   $13 = favorite_team value (string or null)
+    //   $14 = favorite_team touched? (true if caller sent the field at all)
+    const bioTouched = bioInput !== undefined;
+    const favoriteTeamTouched = favoriteTeamInput !== undefined;
+
     const result = await pool.query(
       `
       INSERT INTO users (
@@ -375,10 +424,12 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         instagram_handle,
         avatar_url,
         email,
+        bio,
+        favorite_team,
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11, $13, $10, $10)
       ON CONFLICT (id) DO UPDATE SET
         primary_address  = EXCLUDED.primary_address,
         eoa_address      = EXCLUDED.eoa_address,
@@ -388,6 +439,8 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         instagram_handle = EXCLUDED.instagram_handle,
         avatar_url       = EXCLUDED.avatar_url,
         email            = COALESCE(EXCLUDED.email, users.email),
+        bio              = CASE WHEN $12 THEN $11 ELSE users.bio END,
+        favorite_team    = CASE WHEN $14 THEN $13 ELSE users.favorite_team END,
         updated_at       = EXCLUDED.updated_at
       RETURNING
         id,
@@ -399,21 +452,27 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
         instagram_handle,
         avatar_url,
         email,
+        bio,
+        favorite_team,
         welcome_email_sent,
         created_at,
         updated_at
       `,
       [
-        userId,
-        primaryAddress,
-        eoaAddress,
-        username,
-        display_name ?? null,
-        x_handle ?? null,
-        instagram_handle ?? null,
-        avatar_url ?? null,
-        emailToSave,
-        now,
+        userId,                                  // $1
+        primaryAddress,                          // $2
+        eoaAddress,                              // $3
+        username,                                // $4
+        display_name ?? null,                    // $5
+        x_handle ?? null,                        // $6
+        instagram_handle ?? null,                // $7
+        avatar_url ?? null,                      // $8
+        emailToSave,                             // $9
+        now,                                     // $10
+        bioInput ?? null,                        // $11
+        bioTouched,                              // $12
+        favoriteTeamInput ?? null,               // $13
+        favoriteTeamTouched,                     // $14
       ]
     );
 
@@ -483,6 +542,8 @@ router.post(
           x_handle,
           instagram_handle,
           avatar_url,
+          bio,
+          favorite_team,
           created_at,
           updated_at
         `,
@@ -524,6 +585,8 @@ router.post("/by-addresses", async (req: AuthedRequest, res: Response) => {
         u.x_handle,
         u.instagram_handle,
         u.avatar_url,
+        u.bio,
+        u.favorite_team,
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
@@ -569,6 +632,8 @@ router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response
         u.x_handle,
         u.instagram_handle,
         u.avatar_url,
+        u.bio,
+        u.favorite_team,
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
@@ -638,6 +703,8 @@ router.post("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: Res
         u.x_handle,
         u.instagram_handle,
         u.avatar_url,
+        u.bio,
+        u.favorite_team,
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
@@ -691,6 +758,8 @@ router.delete("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: R
         u.x_handle,
         u.instagram_handle,
         u.avatar_url,
+        u.bio,
+        u.favorite_team,
         u.created_at,
         u.updated_at,
         (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount",
@@ -772,6 +841,8 @@ router.get("/:profileId/followers", async (req: AuthedRequest, res: Response) =>
         u.x_handle,
         u.instagram_handle,
         u.avatar_url,
+        u.bio,
+        u.favorite_team,
         u.created_at,
         u.updated_at
       FROM user_follows f
@@ -816,6 +887,8 @@ router.get("/:profileId/following", async (req: AuthedRequest, res: Response) =>
         u.x_handle,
         u.instagram_handle,
         u.avatar_url,
+        u.bio,
+        u.favorite_team,
         u.created_at,
         u.updated_at
       FROM user_follows f
