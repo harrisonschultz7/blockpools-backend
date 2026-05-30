@@ -21,6 +21,17 @@ const router = Router();
 // Cap per request so a malformed/abusive client can't push a huge batch.
 const MAX_EVENTS = 50;
 
+// Convert a client epoch-ms timestamp to an ISO string, guarding against
+// missing/garbage values and absurd clocks (before 2020 or far in the future).
+function occurredAtIso(ms: unknown): string | null {
+  if (!Number.isFinite(ms as number)) return null;
+  const n = Number(ms);
+  const MIN = 1577836800000; // 2020-01-01
+  const MAX = Date.now() + 60_000; // allow 60s clock skew
+  if (n < MIN || n > MAX) return null;
+  return new Date(n).toISOString();
+}
+
 router.post("/track", async (req: Request, res: Response) => {
   try {
     const events = Array.isArray(req.body?.events) ? req.body.events : [];
@@ -36,6 +47,12 @@ router.post("/track", async (req: Request, res: Response) => {
       page_path: String(e.pagePath ?? "").slice(0, 300),
       duration_ms: Number.isFinite(e.durationMs) ? Math.round(e.durationMs) : null,
       metadata: e.metadata ?? null,
+      // Real client event time (epoch ms) — preserves true ordering/timing that
+      // created_at (set at batch-insert time) collapses. Reject implausible
+      // values (> ~now, or before 2020) so a bad client clock can't poison data.
+      occurred_at: occurredAtIso(e.occurredAt),
+      locale: e.locale ? String(e.locale).slice(0, 20) : null,
+      device: e.device ? String(e.device).slice(0, 20) : null,
     }));
 
     const { error } = await supabaseAdmin().from("analytics_events").insert(rows);

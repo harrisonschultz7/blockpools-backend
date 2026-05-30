@@ -45,6 +45,10 @@ import promotionsRouter from "./routes/promotionsRouter";
 //   POST /api/analytics/track
 import analyticsRouter from "./routes/analytics";
 
+// ✅ Analytics dashboard read API (admin-gated aggregation over analytics_* views)
+//   GET /api/analytics/admin/*
+import analyticsAdminRouter from "./routes/analyticsAdmin";
+
 const PORT = Number(process.env.PORT || 3001);
 
 // Behind Nginx/Cloudflare, this ensures req.protocol/host are derived from forwarded headers.
@@ -135,6 +139,11 @@ export function makeServer() {
   app.use("/api/admin", adminSweepsRouter);
   app.use("/api/promo", promoRouter);
   app.use("/api/promotions", promotionsRouter);
+
+  // ✅ Analytics dashboard read API — admin-gated. Mount the more specific
+  //    /admin path BEFORE the ingest router so it is matched first.
+  //   GET /api/analytics/admin/*
+  app.use("/api/analytics/admin", analyticsAdminRouter);
 
   // ✅ Analytics ingest — specific sub-path, mounted before the bare /api mounts
   //   POST /api/analytics/track  body: { events: [...] }
