@@ -274,7 +274,128 @@ router.get(
   }),
 );
 
-// ── 9) Single session trail (drill-down detail) ──────────────────────────────
+// ── 9) User journeys: step-indexed path analysis (origin → … → drop-off) ─────
+//
+// Per session we build the ordered sequence of "milestone" steps (each page
+// category + the key in-page actions), collapse consecutive repeats, cap at
+// maxSteps, and append a terminal node: 'Exit' if the journey actually ended,
+// 'More…' if it was truncated. We then aggregate every session into a
+// step-indexed graph (node key = "<step> <label>") so the same label at
+// different depths is a distinct node — that gives the left-to-right flow with
+// explicit drop-off at each stage. Also returns the most common full paths.
+router.get(
+  "/journey",
+  guarded(async (req, res) => {
+    const since = sinceFromDays(req);
+    const connected = connectedParam(req);
+    const device = deviceParam(req);
+    let maxSteps = Number(req.query.maxSteps);
+    if (!Number.isFinite(maxSteps)) maxSteps = 5;
+    maxSteps = Math.min(Math.max(Math.trunc(maxSteps), 2), 8);
+
+    const { rows } = await pool.query(
+      `select session_id, step_label
+       from (
+         select e.session_id, e.event_ts, e.id,
+           case
+             when e.event_type = 'page_view' then
+               case e.page_category
+                 when 'landing'      then 'Landing'
+                 when 'marketplace'  then 'Marketplace'
+                 when 'market_detail' then 'Market'
+                 when 'leaderboard'  then 'Leaderboard'
+                 when 'profile'      then 'Profile'
+                 when 'positions'    then 'Positions'
+                 when 'groups'       then 'Groups'
+                 else 'Other page'
+               end
+             when e.action_category = 'market_open'   then 'Open market'
+             when e.action_category = 'league_filter' then 'League filter'
+             when e.action_category = 'trade_intent'  then 'Trade panel'
+             when e.action_category = 'auth'          then 'Sign-in'
+             else null
+           end as step_label
+         from public.analytics_events_enriched e
+         join public.analytics_session_summary ss on ss.session_id = e.session_id
+         where e.event_ts >= $1
+           and ($2::boolean is null or ss.connected = $2)
+           and ($3::text is null or e.device = $3)
+       ) t
+       where step_label is not null
+       order by session_id, event_ts, id`,
+      [since, connected, device],
+    );
+
+    // Group rows into ordered per-session paths, collapsing consecutive repeats.
+    const sessions: string[][] = [];
+    let curId: string | null = null;
+    let cur: string[] = [];
+    for (const r of rows as { session_id: string; step_label: string }[]) {
+      if (r.session_id !== curId) {
+        if (cur.length) sessions.push(cur);
+        cur = [];
+        curId = r.session_id;
+      }
+      if (cur[cur.length - 1] !== r.step_label) cur.push(r.step_label);
+    }
+    if (cur.length) sessions.push(cur);
+
+    const totalSessions = sessions.length;
+    const keyOf = (step: number, label: string) => `${step} ${label}`;
+
+    const nodeMap = new Map<
+      string,
+      { key: string; step: number; label: string; count: number }
+    >();
+    const linkMap = new Map<
+      string,
+      { source: string; target: string; value: number }
+    >();
+    const pathMap = new Map<string, { steps: string[]; count: number }>();
+
+    for (const path of sessions) {
+      const real = path.slice(0, maxSteps);
+      const terminal = path.length > maxSteps ? "More…" : "Exit";
+      const full = [...real, terminal];
+
+      full.forEach((label, i) => {
+        const k = keyOf(i, label);
+        const nd = nodeMap.get(k) || { key: k, step: i, label, count: 0 };
+        nd.count++;
+        nodeMap.set(k, nd);
+      });
+      for (let i = 0; i < full.length - 1; i++) {
+        const s = keyOf(i, full[i]);
+        const t = keyOf(i + 1, full[i + 1]);
+        const lk = `${s}${t}`;
+        const e = linkMap.get(lk) || { source: s, target: t, value: 0 };
+        e.value++;
+        linkMap.set(lk, e);
+      }
+      const ps = full.join(" → ");
+      const pe = pathMap.get(ps) || { steps: full, count: 0 };
+      pe.count++;
+      pathMap.set(ps, pe);
+    }
+
+    const pct = (c: number) =>
+      totalSessions ? Math.round((c / totalSessions) * 1000) / 10 : 0;
+
+    res.json({
+      since,
+      totalSessions,
+      maxSteps,
+      nodes: [...nodeMap.values()].map((nd) => ({ ...nd, pct: pct(nd.count) })),
+      links: [...linkMap.values()],
+      topPaths: [...pathMap.values()]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 12)
+        .map((p) => ({ steps: p.steps, count: p.count, pct: pct(p.count) })),
+    });
+  }),
+);
+
+// ── 10) Single session trail (drill-down detail) ─────────────────────────────
 router.get(
   "/session/:id",
   guarded(async (req, res) => {
