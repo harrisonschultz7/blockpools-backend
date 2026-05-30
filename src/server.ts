@@ -41,6 +41,10 @@ import promoRouter from "./routes/promo";
 //    Returns 503 for every request when the flag is off; safe to leave mounted.)
 import promotionsRouter from "./routes/promotionsRouter";
 
+// ✅ First-party click & navigation analytics ingest (best-effort, never 5xx)
+//   POST /api/analytics/track
+import analyticsRouter from "./routes/analytics";
+
 const PORT = Number(process.env.PORT || 3001);
 
 // Behind Nginx/Cloudflare, this ensures req.protocol/host are derived from forwarded headers.
@@ -131,6 +135,10 @@ export function makeServer() {
   app.use("/api/admin", adminSweepsRouter);
   app.use("/api/promo", promoRouter);
   app.use("/api/promotions", promotionsRouter);
+
+  // ✅ Analytics ingest — specific sub-path, mounted before the bare /api mounts
+  //   POST /api/analytics/track  body: { events: [...] }
+  app.use("/api/analytics", analyticsRouter);
 
   // ── Bare /api mounts (catch-all — must come last) ─────────────────────────────
   app.use("/api", wallRouter);
