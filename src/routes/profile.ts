@@ -483,22 +483,42 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     // Send welcome email on first-time profile creation — atomically claim
     // the flag first so concurrent requests can't both trigger a send.
-    if (isNewUser && savedProfile.email && !savedProfile.welcome_email_sent) {
-      const claim = await pool.query(
-        `UPDATE users SET welcome_email_sent = true
-         WHERE id = $1 AND welcome_email_sent = false
-         RETURNING id`,
-        [userId]
-      );
-      if (claim.rows.length > 0) {
-        await sendWelcomeEmail(userId, savedProfile.email, "profile-upsert");
+    //
+    // IMPORTANT: this is a best-effort SIDE EFFECT. The profile has already been
+    // committed above, so a failure here (email provider down, bad API key,
+    // network blip) must NEVER fail the request — otherwise a brand-new user
+    // sees "Internal server error" even though their profile saved fine. We
+    // therefore swallow any error and still return the saved profile.
+    try {
+      if (isNewUser && savedProfile.email && !savedProfile.welcome_email_sent) {
+        const claim = await pool.query(
+          `UPDATE users SET welcome_email_sent = true
+           WHERE id = $1 AND welcome_email_sent = false
+           RETURNING id`,
+          [userId]
+        );
+        if (claim.rows.length > 0) {
+          await sendWelcomeEmail(userId, savedProfile.email, "profile-upsert");
+        } else {
+          console.log(`[Welcome Email] Flag already claimed — skipping for userId: ${userId}`);
+        }
       } else {
-        console.log(`[Welcome Email] Flag already claimed — skipping for userId: ${userId}`);
+        console.log(
+          `[Welcome Email] Skipped — isNewUser: ${isNewUser}, email: ${savedProfile.email ?? "null"}, already_sent: ${savedProfile.welcome_email_sent}`
+        );
       }
-    } else {
-      console.log(
-        `[Welcome Email] Skipped — isNewUser: ${isNewUser}, email: ${savedProfile.email ?? "null"}, already_sent: ${savedProfile.welcome_email_sent}`
-      );
+    } catch (emailErr) {
+      // Non-fatal: log and continue. If the send failed we also roll the flag
+      // back so a later attempt can retry the welcome email.
+      console.error("[POST /api/profile] welcome email failed (non-fatal)", emailErr);
+      try {
+        await pool.query(
+          `UPDATE users SET welcome_email_sent = false WHERE id = $1`,
+          [userId]
+        );
+      } catch {
+        /* ignore rollback failure */
+      }
     }
 
     const publicBaseUrl = getPublicBaseUrl(req);
