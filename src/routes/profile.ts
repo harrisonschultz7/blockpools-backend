@@ -244,6 +244,37 @@ router.get("/me", authPrivyOptionalWallet, async (req: AuthedRequest, res: Respo
 });
 
 /**
+ * GET /api/profile/username-available?username=foo
+ *
+ * Lightweight pre-check so the wizard can tell a user a handle is taken when
+ * they leave the identity slide — instead of failing at the end with a 409.
+ * Public (no auth): it only reveals existence of a username, nothing sensitive.
+ * Matches the column exactly so it mirrors the unique constraint that would
+ * actually reject the insert.
+ */
+router.get("/username-available", async (req: AuthedRequest, res: Response) => {
+  try {
+    const raw = String(req.query.username ?? "").trim();
+    if (
+      raw.length < 3 ||
+      raw.length > 20 ||
+      !/^[a-zA-Z0-9_]+$/.test(raw)
+    ) {
+      return res.status(400).json({ available: false, error: "Invalid username" });
+    }
+    const { rows } = await pool.query(
+      `SELECT 1 FROM users WHERE username = $1 LIMIT 1`,
+      [raw]
+    );
+    return res.json({ available: rows.length === 0 });
+  } catch (err) {
+    console.error("[GET /api/profile/username-available] error", err);
+    // Don't block the user on a check failure — the 409 at save still guards.
+    return res.json({ available: true });
+  }
+});
+
+/**
  * POST /api/profile/sync-email
  *
  * Called fire-and-forget on every login from the frontend (TopAccountBar +
