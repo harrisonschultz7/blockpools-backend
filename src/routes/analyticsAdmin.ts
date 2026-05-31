@@ -108,6 +108,96 @@ router.get(
   }),
 );
 
+// ── 1b) New-visitor health KPIs ──────────────────────────────────────────────
+// Quick-hit numbers for the header: unique visitors, sign-in click rate among
+// new visitors, the most common page a session is on right before it exits,
+// bounce rate, marketplace reach, depth and median time on site.
+router.get(
+  "/kpis",
+  guarded(async (req, res) => {
+    const since = sinceFromDays(req);
+    const connected = connectedParam(req);
+    const device = deviceParam(req);
+
+    const [agg, signin, exitPages, visitors] = await Promise.all([
+      pool.query(
+        `select
+           count(*)::int                                                          as sessions,
+           (count(*) filter (where not connected))::int                          as new_visitors,
+           (count(*) filter (where connected))::int                              as connected_visitors,
+           (count(*) filter (where page_views <= 1))::int                        as bounce_sessions,
+           round(avg(page_views), 2)                                             as avg_pages,
+           round(avg(clicks), 2)                                                 as avg_clicks,
+           round(percentile_cont(0.5) within group (order by session_seconds))::int as median_seconds,
+           (count(*) filter (where reached_marketplace))::int                    as reached_marketplace,
+           (count(*) filter (where reached_market))::int                         as reached_market,
+           (count(*) filter (where clicked_auth))::int                           as clicked_auth_sessions,
+           (count(*) filter (where clicked_auth and not connected))::int         as clicked_auth_new,
+           (count(*) filter (where trade_intent))::int                           as trade_intent_sessions
+         from public.analytics_session_summary
+         where started_at >= $1
+           and ($2::boolean is null or connected = $2)
+           and ($3::text is null or device = $3)`,
+        [since, connected, device],
+      ),
+      pool.query(
+        `select count(*)::int as signin_clicks
+         from public.analytics_events_enriched
+         where event_type = 'click' and action_category = 'auth' and event_ts >= $1
+           and ($2::boolean is null or (wallet_address is not null) = $2)
+           and ($3::text is null or device = $3)`,
+        [since, connected, device],
+      ),
+      pool.query(
+        `with last_pv as (
+           select distinct on (e.session_id)
+             e.session_id, e.page_category, e.page_path
+           from public.analytics_events_enriched e
+           join public.analytics_session_summary ss on ss.session_id = e.session_id
+           where e.event_type = 'page_view' and e.event_ts >= $1
+             and ($2::boolean is null or ss.connected = $2)
+             and ($3::text is null or e.device = $3)
+           order by e.session_id, e.event_ts desc, e.id desc
+         )
+         select page_category, page_path, count(*)::int as sessions
+         from last_pv
+         group by 1, 2
+         order by 3 desc
+         limit 8`,
+        [since, connected, device],
+      ),
+      // Unique + returning visitors keyed by the persistent visitor_id (falls
+      // back to session_id for rows logged before visitor_id existed).
+      // "Returning" = a visitor seen across more than one session in the window.
+      pool.query(
+        `with v as (
+           select coalesce(e.visitor_id, e.session_id) as vid,
+                  count(distinct e.session_id) as sessions
+           from public.analytics_events_enriched e
+           join public.analytics_session_summary ss on ss.session_id = e.session_id
+           where e.event_ts >= $1
+             and ($2::boolean is null or ss.connected = $2)
+             and ($3::text is null or e.device = $3)
+           group by 1
+         )
+         select count(*)::int as unique_visitors,
+                (count(*) filter (where sessions > 1))::int as returning_visitors
+         from v`,
+        [since, connected, device],
+      ),
+    ]);
+
+    res.json({
+      since,
+      ...agg.rows[0],
+      signin_clicks: signin.rows[0]?.signin_clicks ?? 0,
+      unique_visitors: visitors.rows[0]?.unique_visitors ?? 0,
+      returning_visitors: visitors.rows[0]?.returning_visitors ?? 0,
+      exit_pages: exitPages.rows,
+    });
+  }),
+);
+
 // ── 2) Acquisition funnel ────────────────────────────────────────────────────
 router.get(
   "/funnel",

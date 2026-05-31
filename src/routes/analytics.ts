@@ -39,6 +39,7 @@ router.post("/track", async (req: Request, res: Response) => {
 
     const rows = events.slice(0, MAX_EVENTS).map((e: any) => ({
       session_id: String(e.sessionId ?? ""),
+      visitor_id: e.visitorId ? String(e.visitorId).slice(0, 64) : null,
       wallet_address: e.walletAddress
         ? String(e.walletAddress).toLowerCase()
         : null,
