@@ -523,8 +523,20 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     const publicBaseUrl = getPublicBaseUrl(req);
     return res.json(normalizeProfileRow(savedProfile, publicBaseUrl));
-  } catch (err) {
+  } catch (err: any) {
     console.error("[POST /api/profile] error", err);
+    // A taken username is a unique-constraint violation (pg code 23505 on
+    // users_username_key). The upsert only resolves conflicts on `id`, so a
+    // *different* user picking an existing handle lands here. Return a clear
+    // 409 the wizard can show instead of a scary "Internal server error".
+    if (
+      err?.code === "23505" &&
+      String(err?.constraint || "").toLowerCase().includes("username")
+    ) {
+      return res
+        .status(409)
+        .json({ error: "That username is already taken. Please choose another." });
+    }
     return res.status(500).json({ error: "Internal server error" });
   }
 });
