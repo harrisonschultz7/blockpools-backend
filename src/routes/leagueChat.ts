@@ -16,7 +16,7 @@ const privy = new PrivyClient(
   process.env.PRIVY_APP_SECRET!
 );
 
-const VALID_LEAGUES = ["UCL", "NBA", "NHL", "EPL", "MLB", "NFL"] as const;
+const VALID_LEAGUES = ["UCL", "NBA", "NHL", "EPL", "MLB", "NFL", "WC"] as const;
 const VALID_CHANNELS = ["public", "expert"] as const;
 const EXPERT_ROI_THRESHOLD = 10; // percent (10 = +10%)
 const EXPERT_MIN_TRADES = 3;     // settled BUY trades required
@@ -270,6 +270,29 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
   });
 
   return res.json({ posts: enriched, hasMore });
+});
+
+// ── GET /api/league-chat/:league/count ───────────────────────────────────────
+// Public (no auth): total number of chat entries in a league's channel. Powers
+// the market-page "X Active" indicator, so it must work for logged-out visitors.
+router.get("/:league/count", async (req: Request, res: Response) => {
+  const league = (req.params.league || "").toUpperCase();
+  if (!VALID_LEAGUES.includes(league as any))
+    return res.status(400).json({ error: "Invalid league" });
+
+  const channel = (req.query.channel as string) || "public";
+  if (!VALID_CHANNELS.includes(channel as any))
+    return res.status(400).json({ error: "Invalid channel" });
+
+  const { count, error } = await supabase
+    .from("league_chat_posts")
+    .select("*", { count: "exact", head: true })
+    .eq("league", league)
+    .eq("channel", channel)
+    .eq("is_deleted", false);
+
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ league, channel, count: count ?? 0 });
 });
 
 // ── POST /api/league-chat/:league/posts ─────────────────────────────────────
