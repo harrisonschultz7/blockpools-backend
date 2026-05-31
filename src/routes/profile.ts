@@ -8,7 +8,11 @@
  */
 import { Router, Response, NextFunction } from "express";
 import { pool } from "../db";
-import { authPrivy, AuthedRequest } from "../middleware/authPrivy";
+import {
+  authPrivy,
+  authPrivyOptionalWallet,
+  AuthedRequest,
+} from "../middleware/authPrivy";
 import multer from "multer";
 import path from "path";
 import { PrivyClient } from "@privy-io/server-auth";
@@ -195,7 +199,7 @@ router.get(
 /**
  * GET /api/profile/me
  */
-router.get("/me", authPrivy, async (req: AuthedRequest, res: Response) => {
+router.get("/me", authPrivyOptionalWallet, async (req: AuthedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
@@ -321,14 +325,16 @@ router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) 
  *   - Saves email to DB
  *   - Fires welcome email if not already sent
  */
-router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
+router.post("/", authPrivyOptionalWallet, async (req: AuthedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
     const userId = req.user.id;
     console.log(`[POST /api/profile] HIT — userId: ${userId}`);
 
-    const primaryAddress = req.user.primaryAddress.toLowerCase();
+    // May be "" when the smart wallet is still provisioning — store NULL and let
+    // it backfill on a later request rather than blocking profile creation.
+    const primaryAddress = (req.user.primaryAddress || "").toLowerCase() || null;
     const eoaAddress = req.user.eoaAddress
       ? req.user.eoaAddress.toLowerCase()
       : null;
@@ -431,8 +437,10 @@ router.post("/", authPrivy, async (req: AuthedRequest, res: Response) => {
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $11, $13, $10, $10)
       ON CONFLICT (id) DO UPDATE SET
-        primary_address  = EXCLUDED.primary_address,
-        eoa_address      = EXCLUDED.eoa_address,
+        -- Don't wipe an address we already have if this save happened before the
+        -- smart wallet finished provisioning (primary_address arrives as NULL).
+        primary_address  = COALESCE(EXCLUDED.primary_address, users.primary_address),
+        eoa_address      = COALESCE(EXCLUDED.eoa_address, users.eoa_address),
         username         = EXCLUDED.username,
         display_name     = EXCLUDED.display_name,
         x_handle         = EXCLUDED.x_handle,

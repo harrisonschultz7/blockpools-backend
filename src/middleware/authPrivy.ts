@@ -29,16 +29,21 @@ export interface AuthedRequest extends Request {
 }
 
 /**
- * Auth middleware:
- * - Verifies Privy auth token
- * - Attaches req.user with DID + addresses
- * - Upserts/refreshes users.primary_address and users.eoa_address on every request
- *   so identity-dependent features (Wall, etc.) always have addresses available.
+ * Core auth routine.
+ *
+ * @param requireWallet When true (default), a Privy user with no smart/EOA
+ *   wallet is rejected with 400. When false, the request is allowed through
+ *   with `req.user.primaryAddress = ""` — used by the profile onboarding routes
+ *   so a brand-new user can set up their profile (which is keyed by the Privy
+ *   DID, not a wallet) while the smart wallet is still being provisioned in the
+ *   background. The address is backfilled automatically on the next request
+ *   once it appears.
  */
-export async function authPrivy(
+async function runAuth(
   req: AuthedRequest,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
+  requireWallet: boolean
 ) {
   try {
     const authHeader =
@@ -68,16 +73,18 @@ export async function authPrivy(
       : null;
 
     const primaryAddress = smartAddress ?? eoaAddress;
-    if (!primaryAddress) {
+    if (!primaryAddress && requireWallet) {
       return res
         .status(400)
         .json({ error: "No wallet or smart wallet address on Privy user" });
     }
 
-    // Attach to request first (even if DB write fails)
+    // Attach to request first (even if DB write fails). When the wallet isn't
+    // ready yet (wallet-optional path), primaryAddress is "" — consumers that
+    // need a real address should treat the empty string as "not yet".
     req.user = {
       id: privyUser.id, // Privy DID (did:privy:...)
-      primaryAddress,
+      primaryAddress: primaryAddress ?? "",
       smartAddress,
       eoaAddress,
     };
@@ -92,7 +99,9 @@ export async function authPrivy(
         INSERT INTO users (id, primary_address, eoa_address, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $4)
         ON CONFLICT (id) DO UPDATE SET
-          primary_address = EXCLUDED.primary_address,
+          -- COALESCE so the wallet-optional path (primary_address NULL while the
+          -- smart wallet provisions) never wipes an address we already have.
+          primary_address = COALESCE(EXCLUDED.primary_address, users.primary_address),
           eoa_address     = COALESCE(EXCLUDED.eoa_address, users.eoa_address),
           updated_at      = EXCLUDED.updated_at
         `,
@@ -113,4 +122,30 @@ export async function authPrivy(
     console.error("[authPrivy] error verifying token", err);
     return res.status(401).json({ error: "Invalid or expired auth token" });
   }
+}
+
+/**
+ * Standard auth — requires a provisioned wallet. Use everywhere except the
+ * profile onboarding routes.
+ */
+export function authPrivy(
+  req: AuthedRequest,
+  res: Response,
+  next: NextFunction
+) {
+  return runAuth(req, res, next, true);
+}
+
+/**
+ * Wallet-optional auth — for profile onboarding (GET /me, POST /). Lets a
+ * just-signed-in user load and save their profile before the smart wallet has
+ * finished provisioning; the address backfills on the next authenticated
+ * request once it exists.
+ */
+export function authPrivyOptionalWallet(
+  req: AuthedRequest,
+  res: Response,
+  next: NextFunction
+) {
+  return runAuth(req, res, next, false);
 }
