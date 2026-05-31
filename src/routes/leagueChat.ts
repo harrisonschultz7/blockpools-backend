@@ -175,6 +175,75 @@ async function computeLiveRoiBulk(
   return result;
 }
 
+// ── Canonical live ROI (bulk, ALL leagues) ──────────────────────────────────
+//
+// Same math as computeLiveRoiBulk but across every league, for the ROI badge
+// shown next to chat authors. We want the badge to reflect a user's overall
+// 30-day trading performance, not just their record in the chat's league.
+
+async function computeLiveRoiBulkAllLeagues(
+  addresses: string[]
+): Promise<Map<string, { roi_30d: number | null; trades_30d: number; is_expert: boolean }>> {
+  if (!addresses.length) return new Map();
+
+  const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
+
+  const sql = `
+    WITH filtered AS (
+      SELECT
+        LOWER(e.user_address) AS user_address,
+        e.type,
+        g.is_final,
+        g.resolution_type,
+        COALESCE(e.gross_in_dec::numeric,         0) AS gross_in,
+        COALESCE(e.net_out_dec::numeric,           0) AS net_out,
+        COALESCE(e.cost_basis_closed_dec::numeric, 0) AS cost_basis_closed
+      FROM public.user_trade_events e
+      JOIN public.games g ON g.game_id = e.game_id
+      WHERE LOWER(e.user_address) = ANY($1::text[])
+        AND e.timestamp >= $2
+        AND g.league = ANY($3::text[])
+    )
+    SELECT
+      user_address,
+      (
+        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type = 'NORMAL'), 0)
+        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
+      )::numeric AS total_traded,
+      COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
+      COUNT(*)   FILTER (WHERE type = 'BUY' AND is_final = true)::int            AS trades_settled
+    FROM filtered
+    GROUP BY user_address
+  `;
+
+  const { rows } = await pool.query(sql, [
+    addresses.map((a) => a.toLowerCase()),
+    windowSec,
+    Array.from(VALID_LEAGUES),
+  ]);
+
+  const result = new Map<string, { roi_30d: number | null; trades_30d: number; is_expert: boolean }>();
+
+  for (const row of rows) {
+    const totalTraded   = Number(row.total_traded)   || 0;
+    const totalReturn   = Number(row.total_return)   || 0;
+    const tradesSettled = Number(row.trades_settled) || 0;
+
+    const roi_30d = totalTraded > 0
+      ? (totalReturn / totalTraded - 1) * 100
+      : null;
+
+    const is_expert =
+      roi_30d !== null &&
+      roi_30d >= EXPERT_ROI_THRESHOLD &&
+      tradesSettled >= EXPERT_MIN_TRADES;
+
+    result.set(row.user_address.toLowerCase(), { roi_30d, trades_30d: tradesSettled, is_expert });
+  }
+
+  return result;
+}
+
 // ── GET /api/league-chat/:league/posts ──────────────────────────────────────
 
 router.get("/:league/posts", async (req: Request, res: Response) => {
@@ -221,12 +290,13 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
   const hasMore = posts!.length > limit;
   const items = hasMore ? posts!.slice(0, limit) : posts!;
 
-  // ✅ Live canonical ROI — matches profile page exactly
+  // ✅ Live canonical ROI — the badge next to each author shows their overall
+  // 30-day ROI across ALL leagues (not just this chat's league).
   const authorAddresses = [
     ...new Set(items.map((p: any) => p.author?.primary_address?.toLowerCase()).filter(Boolean)),
   ] as string[];
 
-  const roiMap = await computeLiveRoiBulk(authorAddresses, league);
+  const roiMap = await computeLiveRoiBulkAllLeagues(authorAddresses);
 
   // Liked-by-me
   const postIds = items.map((p: any) => p.id);
