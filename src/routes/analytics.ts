@@ -54,6 +54,9 @@ router.post("/track", async (req: Request, res: Response) => {
       occurred_at: occurredAtIso(e.occurredAt),
       locale: e.locale ? String(e.locale).slice(0, 20) : null,
       device: e.device ? String(e.device).slice(0, 20) : null,
+      // Embedded in-app browser name (Facebook/Instagram/TikTok…), null for a
+      // normal browser — lets us measure sign-in friction for Meta-ad WebViews.
+      in_app_browser: e.inAppBrowser ? String(e.inAppBrowser).slice(0, 40) : null,
     }));
 
     const { error } = await supabaseAdmin().from("analytics_events").insert(rows);
