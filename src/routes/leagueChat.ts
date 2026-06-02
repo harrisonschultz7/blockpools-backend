@@ -258,8 +258,11 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
   const limit = Math.min(Number(req.query.limit) || 25, 50);
   const cursor = req.query.cursor as string | undefined;
 
+  // Public read: signed-out (cold) users can READ the conversation as social
+  // proof. Posting / liking / commenting still require auth — enforced on the
+  // POST/like/comment routes — so `auth` may be null here. Guard the
+  // liked-by-me lookup below accordingly.
   const auth = await getVerifiedUser(req.headers.authorization);
-  if (!auth) return res.status(401).json({ error: "Unauthorized" });
 
   let query = supabase
     .from("league_chat_posts")
@@ -298,14 +301,18 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
 
   const roiMap = await computeLiveRoiBulkAllLeagues(authorAddresses);
 
-  // Liked-by-me
+  // Liked-by-me — only meaningful for a signed-in viewer; signed-out reads skip
+  // it (every post shows as not-liked).
   const postIds = items.map((p: any) => p.id);
-  const { data: myLikes } = await supabase
-    .from("league_chat_likes")
-    .select("post_id")
-    .eq("user_id", auth.userId)
-    .in("post_id", postIds);
-  const likedSet = new Set((myLikes || []).map((l: any) => l.post_id));
+  let likedSet = new Set<string>();
+  if (auth) {
+    const { data: myLikes } = await supabase
+      .from("league_chat_likes")
+      .select("post_id")
+      .eq("user_id", auth.userId)
+      .in("post_id", postIds);
+    likedSet = new Set((myLikes || []).map((l: any) => l.post_id));
+  }
 
   const enriched = items.map((post: any) => {
     const authorAddr = post.author?.primary_address?.toLowerCase();
