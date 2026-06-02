@@ -320,6 +320,36 @@ router.get(
   }),
 );
 
+// ── 6b) Ad creatives: unique visitors per ad (utm_content) ───────────────────
+// Ties on-site reach back to the Meta ad that drove it. UTM params are captured
+// once per session in metadata->entry: utm_content = ad/creative id,
+// utm_campaign = campaign id, utm_source = platform (fb/ig/th). Counts unique
+// visitors (persistent visitor_id, falling back to session_id) per creative so
+// you can see which creative actually brings people in. Rows without a
+// utm_content (organic / direct) are excluded.
+router.get(
+  "/creatives",
+  guarded(async (req, res) => {
+    const since = sinceFromDays(req);
+    const { rows } = await pool.query(
+      `select
+         e.metadata->'entry'->>'utm_content'  as creative,
+         e.metadata->'entry'->>'utm_campaign' as campaign,
+         e.metadata->'entry'->>'utm_source'   as source,
+         count(distinct coalesce(e.visitor_id, e.session_id)) as visitors,
+         count(distinct e.session_id)                          as sessions
+       from public.analytics_events_enriched e
+       where e.event_ts >= $1
+         and e.metadata->'entry'->>'utm_content' is not null
+       group by 1, 2, 3
+       order by visitors desc
+       limit 200`,
+      [since],
+    );
+    res.json({ since, creatives: rows });
+  }),
+);
+
 // ── 7) Heatmap: click coordinates for one page ───────────────────────────────
 router.get(
   "/heatmap",
