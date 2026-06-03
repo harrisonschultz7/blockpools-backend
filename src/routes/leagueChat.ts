@@ -309,7 +309,7 @@ router.get("/:league/posts", async (req: Request, res: Response) => {
     const { data: myLikes } = await supabase
       .from("league_chat_likes")
       .select("post_id")
-      .eq("user_id", auth.userId)
+      .eq("profile_id", auth.userId)
       .in("post_id", postIds);
     likedSet = new Set((myLikes || []).map((l: any) => l.post_id));
   }
@@ -489,21 +489,29 @@ async function handleComment(req: Request, res: Response) {
 async function handleLike(req: Request, res: Response) {
   const auth = await getVerifiedUser(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
-  await supabase
+  const { error } = await supabase
     .from("league_chat_likes")
-    .upsert({ post_id: req.params.postId, user_id: auth.userId }, { onConflict: "post_id,user_id" });
-  return res.json({ ok: true });
+    .upsert({ post_id: req.params.postId, profile_id: auth.userId }, { onConflict: "post_id,profile_id" });
+  if (error) {
+    console.error("[league-chat] like upsert failed:", error.message);
+    return res.status(500).json({ error: error.message });
+  }
+  return res.json({ ok: true, liked: true });
 }
 
 async function handleUnlike(req: Request, res: Response) {
   const auth = await getVerifiedUser(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "Unauthorized" });
-  await supabase
+  const { error } = await supabase
     .from("league_chat_likes")
     .delete()
     .eq("post_id", req.params.postId)
-    .eq("user_id", auth.userId);
-  return res.json({ ok: true });
+    .eq("profile_id", auth.userId);
+  if (error) {
+    console.error("[league-chat] unlike delete failed:", error.message);
+    return res.status(500).json({ error: error.message });
+  }
+  return res.json({ ok: true, liked: false });
 }
 
 // Frontend calls /:league/posts/:postId/comments — also keep legacy /posts/:postId/comments
