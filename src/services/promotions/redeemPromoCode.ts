@@ -20,7 +20,8 @@ export type RedeemError =
   | "ALREADY_REDEEMED"
   | "INVALID_ADDRESS"
   | "REFERRER_REQUIRED"
-  | "NOT_NEW_USER";
+  | "NOT_NEW_USER"
+  | "ALREADY_HAS_REFERRAL_BONUS";
 
 export class RedeemPromoError extends Error {
   code: RedeemError;
@@ -142,11 +143,32 @@ export async function redeemPromoCode(
 
     const unlockCondition = String(promo.unlock_condition || "none").toLowerCase();
 
-    // ── 'new_user' gate ────────────────────────────────────────────────────
+    // ── 'new_user' / 'new_user_first_trade' gate ───────────────────────────
     // Only allow this redemption if the user's profile was created AFTER the
-    // promo's starts_at. Used by sign-up-bonus campaigns like SIGNUP10 so
-    // existing members can't claim a new-member-only promo.
-    if (unlockCondition === "new_user") {
+    // promo's starts_at. Applies to both:
+    //   - 'new_user'             → immediate eligibility once gate passes
+    //   - 'new_user_first_trade' → defers to 'first_trade' qualification
+    //                              (bet-to-unlock for new users)
+    if (
+      unlockCondition === "new_user" ||
+      unlockCondition === "new_user_first_trade"
+    ) {
+      // No-stacking guard: a user who already holds a referral redemption
+      // cannot also claim the one-time signup bonus. First bonus wins.
+      const refQ = await client.query(
+        `SELECT 1
+           FROM public.promo_redemptions
+          WHERE lower(user_address) = $1
+            AND referral_invite_id IS NOT NULL
+            AND status NOT IN ('expired', 'voided')
+          LIMIT 1`,
+        [userAddress]
+      );
+      if ((refQ.rowCount ?? 0) > 0) {
+        await client.query("ROLLBACK");
+        throw new RedeemPromoError("ALREADY_HAS_REFERRAL_BONUS");
+      }
+
       const userQ = await client.query(
         `SELECT created_at
            FROM public.users
@@ -185,6 +207,11 @@ export async function redeemPromoCode(
 
     if (unlockCondition === "none" || unlockCondition === "new_user") {
       goesEligibleImmediately = true;
+    } else if (unlockCondition === "new_user_first_trade") {
+      // Hybrid: new-user check already passed above. Now defer to the
+      // first_trade path so the credit only unlocks after the user makes a
+      // qualifying real-money BUY (≥ unlock_min_trade_usdc).
+      goesEligibleImmediately = false;
     } else if (unlockCondition === "referee_signup") {
       if (!referrerAddress) {
         await client.query("ROLLBACK");

@@ -41,11 +41,14 @@ export async function evaluatePromoEligibility(
       r.referrer_address,
       r.status,
       r.claimed_at,
+      r.qualify_by,
+      r.referral_invite_id,
       p.id            AS promotion_id,
       p.type          AS promotion_type,
       p.unlock_condition,
       p.unlock_min_trade_usdc,
-      p.placement_window_hours
+      p.placement_window_hours,
+      p.starts_at     AS promotion_starts_at
     FROM public.promo_redemptions r
     JOIN public.promotions p ON p.id = r.promotion_id
     WHERE r.id = $1
@@ -60,6 +63,20 @@ export async function evaluatePromoEligibility(
 
   const unlockCondition = String(row.unlock_condition || "").toLowerCase();
   const minTrade = Number(row.unlock_min_trade_usdc ?? 0);
+
+  // ── mutual_referral_trade ────────────────────────────────────────────────
+  // Two-sided: the referrer AND the invited friend must EACH independently
+  // reach minTrade (held-to-settlement) before either side's redemption flips
+  // to eligible. When both clear, both redemptions of the pair flip together.
+  //
+  // Anchors differ by role:
+  //   - Friend (referee): counted from the pair's claimed_at (their join).
+  //   - Referrer:         counted from the campaign's starts_at — a one-time
+  //                       gate, so the referrer trades $20 once and it counts
+  //                       for every friend they refer.
+  if (unlockCondition === "mutual_referral_trade") {
+    return evaluateMutualReferral(row, minTrade);
+  }
 
   let watchAddress: string;
   if (
@@ -183,4 +200,154 @@ export async function evaluatePromoEligibility(
   );
 
   return { unlocked: true, redemptionId };
+}
+
+// ── Shared qualifier ─────────────────────────────────────────────────────────
+//
+// Cumulative held-to-settlement USDC for one wallet since `since`:
+//   per (settled game, outcome): GREATEST(sum BUY gross_in_dec − sum SELL
+//   cost_basis_closed_dec, 0), summed across all settled buckets. Own-money
+//   only (beneficiary_address IS NULL) so free bets never count toward
+//   unlocking another free bet. This matches the single-address qualifier used
+//   above for first_trade / referee_first_trade.
+async function cumulativeHeldToSettlement(
+  address: string,
+  since: string | Date
+): Promise<number> {
+  const q = await pool.query(
+    `
+    WITH per_outcome AS (
+      SELECT
+        e.game_id,
+        e.outcome_index,
+        SUM(CASE WHEN e.type = 'BUY'
+                 THEN COALESCE(e.gross_in_dec, 0)
+                 ELSE 0 END)::numeric AS bought,
+        SUM(CASE WHEN e.type = 'SELL'
+                 THEN COALESCE(e.cost_basis_closed_dec, 0)
+                 ELSE 0 END)::numeric AS sold
+      FROM public.user_trade_events e
+      JOIN public.games g ON lower(g.game_id) = lower(e.game_id)
+      WHERE lower(e.user_address) = $1
+        AND e.beneficiary_address IS NULL
+        AND e.inserted_at        >= $2
+        AND g.is_final            = true
+      GROUP BY e.game_id, e.outcome_index
+    )
+    SELECT COALESCE(SUM(GREATEST(bought - sold, 0)), 0)::numeric AS held
+    FROM per_outcome
+    `,
+    [String(address).toLowerCase(), since]
+  );
+  return Number(q.rows[0]?.held ?? 0);
+}
+
+// ── mutual_referral_trade evaluator ──────────────────────────────────────────
+async function evaluateMutualReferral(
+  row: any,
+  minTrade: number
+): Promise<EvaluateResult> {
+  const inviteId = row.referral_invite_id;
+  if (inviteId == null) {
+    return { unlocked: false, reason: "referral_invite_missing" };
+  }
+
+  // Hard stop on the 30-day mutual-trade deadline. (expirePromoRedemptions
+  // also sweeps these, but guard here so a late trade can't sneak an unlock.)
+  if (row.qualify_by && new Date(row.qualify_by).getTime() < Date.now()) {
+    return { unlocked: false, reason: "qualify_window_passed" };
+  }
+
+  // Resolve the canonical roles from the invite: inviter = referrer (A),
+  // accepted/redeemed = friend (B). referrer_address on the redemption can be
+  // either party depending on which side this row is, so we don't trust it for
+  // role assignment.
+  const pairQ = await pool.query(
+    `
+    SELECT
+      lower(ua.primary_address) AS inviter_address,
+      lower(ub.primary_address) AS referee_address
+    FROM public.invites i
+    LEFT JOIN public.users ua ON ua.id = i.inviter_user_id
+    LEFT JOIN public.users ub
+      ON ub.id = COALESCE(i.redeemed_by_user_id, i.accepted_by_user_id)
+    WHERE i.id = $1
+    `,
+    [Number(inviteId)]
+  );
+  const pair = pairQ.rows[0];
+  const inviterAddr = pair?.inviter_address as string | null;
+  const refereeAddr = pair?.referee_address as string | null;
+  if (!inviterAddr || !refereeAddr) {
+    return { unlocked: false, reason: "referral_pair_unresolved" };
+  }
+
+  // Referrer gate: one-time, from campaign start. Friend gate: from the pair's
+  // claimed_at (their join time).
+  const referrerHeld = await cumulativeHeldToSettlement(
+    inviterAddr,
+    row.promotion_starts_at
+  );
+  const refereeHeld = await cumulativeHeldToSettlement(
+    refereeAddr,
+    row.claimed_at
+  );
+
+  if (referrerHeld < minTrade || refereeHeld < minTrade) {
+    return {
+      unlocked: false,
+      reason: `mutual_below_threshold(referrer=${referrerHeld},referee=${refereeHeld},min=${minTrade})`,
+    };
+  }
+
+  // Both sides cleared → flip every still-pending redemption of the pair to
+  // eligible at once, arming each one's placement window. The per-side
+  // qualifying amount is stamped from that side's held total.
+  const upd = await pool.query(
+    `
+    UPDATE public.promo_redemptions
+       SET status                       = 'eligible',
+           qualified_at                 = now(),
+           expires_at                   = now() + ($1 || ' hours')::interval,
+           qualifying_trade_amount_usdc = CASE
+             WHEN lower(user_address) = $2 THEN $3::numeric
+             ELSE $4::numeric
+           END
+     WHERE referral_invite_id = $5
+       AND status = 'pending_qualification'
+     RETURNING id, user_address
+    `,
+    [
+      String(row.placement_window_hours ?? 168),
+      inviterAddr,
+      String(referrerHeld),
+      String(refereeHeld),
+      Number(inviteId),
+    ]
+  );
+
+  if (upd.rowCount === 0) {
+    return { unlocked: false, reason: "already_unlocked_concurrently" };
+  }
+
+  for (const r of upd.rows) {
+    await pool.query(
+      `INSERT INTO public.promo_eligibility_events
+         (redemption_id, event_type, event_data)
+       VALUES ($1, 'qualified', $2::jsonb)`,
+      [
+        r.id,
+        JSON.stringify({
+          unlockCondition: "mutual_referral_trade",
+          inviteId: Number(inviteId),
+          inviterAddress: inviterAddr,
+          refereeAddress: refereeAddr,
+          referrerHeldUsdc: String(referrerHeld),
+          refereeHeldUsdc: String(refereeHeld),
+        }),
+      ]
+    );
+  }
+
+  return { unlocked: true, redemptionId: String(row.id) };
 }

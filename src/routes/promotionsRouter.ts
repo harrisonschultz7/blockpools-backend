@@ -69,6 +69,8 @@ router.post("/redeem", async (req: Request, res: Response) => {
         ALREADY_REDEEMED: 409,
         INVALID_ADDRESS: 400,
         NOT_NEW_USER: 403,
+        REFERRER_REQUIRED: 400,
+        ALREADY_HAS_REFERRAL_BONUS: 409,
       };
       const status = map[code] ?? 400;
       console.warn(`[promotionsRouter/redeem] fail code=${code} user=${userAddress}`);

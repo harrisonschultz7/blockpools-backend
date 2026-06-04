@@ -52,6 +52,35 @@ async function main() {
       console.log("[expirePromoRedemptions] nothing to expire");
     }
 
+    // Referral pairs that never both-qualified within the 30-day window. These
+    // sit in 'pending_qualification' with a qualify_by deadline; once it passes
+    // the pair can no longer unlock, so void it.
+    const qexp = await client.query(
+      `
+      UPDATE public.promo_redemptions
+         SET status = 'expired'
+       WHERE status = 'pending_qualification'
+         AND qualify_by IS NOT NULL
+         AND qualify_by < now()
+       RETURNING id
+      `
+    );
+    if (qexp.rowCount && qexp.rowCount > 0) {
+      const qids = qexp.rows.map((r: any) => r.id);
+      await client.query(
+        `
+        INSERT INTO public.promo_eligibility_events
+          (redemption_id, event_type, event_data)
+        SELECT unnest($1::uuid[]), 'expired',
+               '{"reason":"qualify_window_passed"}'::jsonb
+        `,
+        [qids]
+      );
+      console.log(
+        `[expirePromoRedemptions] expired ${qids.length} referral pending redemption(s) past qualify_by`
+      );
+    }
+
     await client.query("COMMIT");
   } catch (err) {
     try {

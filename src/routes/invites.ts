@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { pool } from "../db";
 import { authPrivy, AuthedRequest } from "../middleware/authPrivy";
 import { sendInviteEmail } from "../services/emailService";
+import { createReferralRedemptions } from "../services/promotions/createReferralRedemptions";
 
 const router = Router();
 
@@ -180,12 +181,21 @@ router.post("/invites/accept", authPrivy, async (req: AuthedRequest, res: Respon
              accepted_at = coalesce(accepted_at, now()),
              accepted_by_user_id = coalesce(accepted_by_user_id, $2)
        where token_hash = $1
-       returning inviter_user_id, status, accepted_at, accepted_by_user_id
+       returning id, inviter_user_id, status, accepted_at, accepted_by_user_id
       `,
       [tokenHash, inviteeUserId]
     );
 
     if (!rows[0]) return res.status(404).json({ error: "Invite not found" });
+
+    // Referral promo: create the pending redemption pair (idempotent,
+    // non-blocking). No-op when the framework is off or the friend's wallet
+    // isn't resolvable yet — the backfill cron retries those.
+    try {
+      await createReferralRedemptions(rows[0].id);
+    } catch (e) {
+      console.error("[invites/accept] referral pair creation failed (non-blocking)", e);
+    }
 
     return res.json({
       ok: true,
@@ -224,13 +234,21 @@ router.post("/invites/redeem", authPrivy, async (req: AuthedRequest, res: Respon
              redeemed_by_user_id = $2
        where token_hash = $1
          and status in ('sent','pending','accepted')
-       returning inviter_user_id, status, redeemed_at, redeemed_by_user_id
+       returning id, inviter_user_id, status, redeemed_at, redeemed_by_user_id
       `,
       [tokenHash, inviteeUserId]
     );
 
     if (!rows[0]) {
       return res.status(409).json({ error: "Invite already redeemed or not found" });
+    }
+
+    // Referral promo: create the pending redemption pair (idempotent,
+    // non-blocking).
+    try {
+      await createReferralRedemptions(rows[0].id);
+    } catch (e) {
+      console.error("[invites/redeem] referral pair creation failed (non-blocking)", e);
     }
 
     return res.json({
