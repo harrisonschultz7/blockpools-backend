@@ -5,6 +5,7 @@
 // consistent for the lifetime of a process.
 
 import "dotenv/config";
+import { Wallet } from "@ethersproject/wallet";
 
 function envBool(name: string, dflt = false): boolean {
   const v = (process.env[name] || "").toLowerCase().trim();
@@ -21,8 +22,34 @@ export const PROMO_FRAMEWORK_ENABLED = envBool("PROMO_FRAMEWORK_ENABLED", false)
 // Single hot wallet that places all free-bet trades and receives all settlements
 // for those trades. The user never holds these shares, which is what enforces
 // "winnings only — stake is never withdrawable USDC" structurally.
-export const PROMO_FUNDING_WALLET_ADDRESS = envStr("PROMO_FUNDING_WALLET_ADDRESS").toLowerCase();
-export const PROMO_FUNDING_WALLET_PRIVATE_KEY = envStr("PROMO_FUNDING_WALLET_PRIVATE_KEY");
+//
+// Single source of truth for the promo wallet: we reuse the SAME wallet the
+// legacy /api/promo route already uses, so there's only one private key in the
+// env. Resolution order for the key:
+//   1. PROMO_FUNDING_WALLET_PRIVATE_KEY  (explicit, if you ever want a separate wallet)
+//   2. PROMO_HOT_WALLET_PRIVATE_KEY      (the existing/regular-promotions wallet)
+// The address is derived from that key unless PROMO_FUNDING_WALLET_ADDRESS is
+// explicitly set — so you don't have to maintain the address separately.
+export const PROMO_FUNDING_WALLET_PRIVATE_KEY =
+  envStr("PROMO_FUNDING_WALLET_PRIVATE_KEY") ||
+  envStr("PROMO_HOT_WALLET_PRIVATE_KEY");
+
+function deriveAddressFromKey(pk: string): string {
+  if (!pk) return "";
+  try {
+    const k = pk.startsWith("0x") ? pk : `0x${pk}`;
+    return new Wallet(k).address.toLowerCase();
+  } catch {
+    // Malformed key → leave empty; assertPromoConfig() will surface the problem
+    // loudly at the first on-chain action rather than crashing module load.
+    return "";
+  }
+}
+
+export const PROMO_FUNDING_WALLET_ADDRESS = (
+  envStr("PROMO_FUNDING_WALLET_ADDRESS") ||
+  deriveAddressFromKey(PROMO_FUNDING_WALLET_PRIVATE_KEY)
+).toLowerCase();
 
 // Same RPC the settlement bot uses. Defaults defer to the bot's RPC_URL so we
 // don't need a second key in the env file.
