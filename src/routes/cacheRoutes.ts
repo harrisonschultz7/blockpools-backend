@@ -17,6 +17,7 @@ import {
   refreshUserTradesPage,
   bustUserCache,
 } from "../services/cacheRefresh";
+import { upsertUserTradesAndGames } from "../services/persistTrades";
 
 function clampPageSize(v: any) {
   const n = parseInt(String(v || "25"), 10);
@@ -33,7 +34,7 @@ function assertAddr(address: string) {
   return /^0x[a-f0-9]{40}$/.test(address);
 }
 
-const DEFAULT_LEAGUES = ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
+const DEFAULT_LEAGUES = ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL", "WC"];
 
 export const cacheRoutes = Router();
 
@@ -51,6 +52,71 @@ cacheRoutes.post("/user/:address/bust", async (req, res) => {
 
   const cleared = bustUserCache(address);
   res.json({ ok: true, busted: address, cleared });
+});
+
+// ------------------------------------------------------------
+// Direct-write a CLAIM row immediately on-confirm.
+// POST /cache/user/:address/record-claim
+// Body: { txHash, contract|gameId, payoutUsd|amountDec, timestamp?, league? }
+//
+// Why: the profile Trade History + winnings read from the DB
+// (public.user_trade_events), which is normally fed by the subgraph
+// pull running ~30min behind chain. Writing the CLAIM row here makes
+// the win show immediately after the claim tx confirms.
+//
+// Dedup: this row uses id `claim-direct-<txHash>`. The subgraph backfill
+// (refreshUserTradesPage) skips any subgraph claim whose txHash already
+// has a CLAIM row in the DB, so the same claim is never persisted twice
+// and per-game winnings (SUM(net_out_dec)) are never double-counted.
+// ------------------------------------------------------------
+cacheRoutes.post("/user/:address/record-claim", async (req, res) => {
+  const address = normAddr(String(req.params.address));
+  if (!assertAddr(address)) return res.status(400).json({ ok: false, error: "Invalid address" });
+
+  const b = (req.body || {}) as Record<string, unknown>;
+  const txHash = b.txHash ? String(b.txHash) : null;
+  const gameId = b.contract
+    ? String(b.contract).toLowerCase()
+    : b.gameId
+      ? String(b.gameId).toLowerCase()
+      : "";
+  const payout =
+    b.payoutUsd != null ? String(b.payoutUsd) : b.amountDec != null ? String(b.amountDec) : "0";
+  const tsNum = Number(b.timestamp);
+  const timestamp = Number.isFinite(tsNum) && tsNum > 0 ? Math.trunc(tsNum) : Math.floor(Date.now() / 1000);
+  const league = b.league != null ? String(b.league) : null;
+
+  if (!txHash || !gameId) {
+    return res.status(400).json({ ok: false, error: "txHash and contract/gameId are required" });
+  }
+
+  const row = {
+    id: `claim-direct-${txHash.toLowerCase()}`,
+    type: "CLAIM",
+    side: null,
+    timestamp,
+    txHash,
+    spotPriceBps: null,
+    avgPriceBps: null,
+    grossInDec: "0",
+    grossOutDec: payout,
+    feeDec: "0",
+    netStakeDec: "0",
+    netOutDec: payout,
+    costBasisClosedDec: "0",
+    realizedPnlDec: "0",
+    game: { id: gameId, league },
+    __source: "claim-direct",
+  };
+
+  try {
+    await upsertUserTradesAndGames({ user: address, tradeRows: [row] });
+    bustUserCache(address);
+    return res.json({ ok: true, id: row.id });
+  } catch (e: any) {
+    console.log(`[record-claim] err: ${String(e?.message || e)}`);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
 });
 
 // ------------------------------------------------------------

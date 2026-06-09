@@ -11,6 +11,7 @@ import {
 } from "../subgraph/queries";
 
 import { upsertUserTradesAndGames } from "./persistTrades";
+import { pool } from "../db";
 
 type CacheEntry = {
   payload: any;
@@ -290,7 +291,7 @@ export async function refreshLeaderboard(params: {
   const first = params.pageSize;
 
   const leaguesNorm = normalizeLeagues(params.leagues);
-  const leaguesForQuery = leaguesNorm ?? ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
+  const leaguesForQuery = leaguesNorm ?? ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL", "WC"];
 
   type Row = {
     user: { id: string };
@@ -514,7 +515,40 @@ export async function refreshUserTradesPage(params: {
       };
     });
 
+    // Reconcile vs direct-write claims: when a claim tx confirms, the frontend
+    // immediately writes a placeholder CLAIM row (id `claim-direct-<txHash>`)
+    // so the win shows without waiting ~30min for the subgraph. Once the
+    // subgraph indexes that same claim, DELETE the placeholder and let the
+    // authoritative subgraph row persist (id `claim-claim-<txHash>-<logIndex>`).
+    //
+    // Why delete-then-upsert (not ON CONFLICT): the two rows have different ids,
+    // so ON CONFLICT(id) would NOT collapse them and the per-game claims
+    // SUM(net_out_dec) would DOUBLE-COUNT winnings. Deleting the placeholder
+    // first guarantees exactly one CLAIM row per tx, AND upgrades the frontend's
+    // estimated payout + timestamp to the exact on-chain values (enrichment).
     if (claimRows.length) {
+      try {
+        const txHashes = Array.from(
+          new Set(
+            claimRows
+              .map((r: any) => (r.txHash ? String(r.txHash).toLowerCase() : ""))
+              .filter(Boolean)
+          )
+        );
+        if (txHashes.length) {
+          await pool.query(
+            `DELETE FROM public.user_trade_events
+               WHERE lower(user_address) = lower($1)
+                 AND type = 'CLAIM'
+                 AND id LIKE 'claim-direct-%'
+                 AND lower(tx_hash) = ANY($2::text[])`,
+            [params.user, txHashes]
+          );
+        }
+      } catch (e: any) {
+        console.log(`[persistClaims reconcile] err: ${String(e?.message || e)}`);
+      }
+
       await upsertUserTradesAndGames({ user: params.user, tradeRows: claimRows });
     }
   } catch (e: any) {
