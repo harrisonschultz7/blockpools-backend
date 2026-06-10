@@ -277,7 +277,7 @@ export async function sendInviteEmail(opts: {
                 </td>
               </tr>
               <tr>
-                <td align="center" style="font-size:16px;line-height:1.5;color:#e6e6e6;padding-bottom:30px;">
+                <td align="center" style="font-size:17px;line-height:1.5;font-weight:600;color:#facc15;padding-bottom:32px;">
                   The best and most fair place to trade sports.
                 </td>
               </tr>
@@ -296,8 +296,23 @@ export async function sendInviteEmail(opts: {
                 </td>
               </tr>
               <tr>
-                <td align="center" style="font-size:14px;font-weight:600;color:#e6e6e6;letter-spacing:0.01em;">
-                  Highest Payouts &nbsp;·&nbsp; Market-Driven Odds &nbsp;·&nbsp; Transparent Trades
+                <td style="padding-top:8px;border-top:1px solid rgba(255,255,255,0.08);"></td>
+              </tr>
+              <tr>
+                <td align="center" style="padding-top:22px;">
+                  <table cellpadding="0" cellspacing="0" border="0" role="presentation" align="center">
+                    <tr>
+                      <td style="padding:4px 5px;">
+                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">Highest Payouts</span>
+                      </td>
+                      <td style="padding:4px 5px;">
+                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">Market-Driven Odds</span>
+                      </td>
+                      <td style="padding:4px 5px;">
+                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">Transparent Trades</span>
+                      </td>
+                    </tr>
+                  </table>
                 </td>
               </tr>
             </table>
