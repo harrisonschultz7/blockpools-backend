@@ -19,6 +19,8 @@ import { PrivyClient } from "@privy-io/server-auth";
 import { Resend } from "resend";
 
 import { buildProfilePortfolio } from "../services/profilePortfolio";
+import { PROMO_FRAMEWORK_ENABLED } from "../config/promo";
+import { createReferralRedemptions } from "../services/promotions/createReferralRedemptions";
 
 const router = Router();
 
@@ -519,6 +521,35 @@ router.post("/", authPrivyOptionalWallet, async (req: AuthedRequest, res: Respon
     console.log(
       `[POST /api/profile] savedProfile.email: ${savedProfile.email}, welcome_email_sent: ${savedProfile.welcome_email_sent}`
     );
+
+    // Referral promo: a brand-new account's smart wallet is only known to the
+    // backend once this upsert records primary_address — which frequently
+    // happens in a SECOND /api/profile call, after the invite was already
+    // redeemed. createReferralRedemptions needs BOTH wallets, so it would have
+    // been skipped at redeem time (referee wallet still null). Re-trigger it
+    // here the moment the wallet lands, for any redeemed invite where this user
+    // is the referee — so the pair forms on first signup, with no second link
+    // click and no waiting for the hourly backfill cron. Idempotent + guarded;
+    // fire-and-forget so it can never affect the profile response.
+    if (PROMO_FRAMEWORK_ENABLED && savedProfile.primary_address) {
+      pool
+        .query(
+          `SELECT id FROM public.invites
+            WHERE COALESCE(redeemed_by_user_id, accepted_by_user_id) = $1`,
+          [userId]
+        )
+        .then((inv) => {
+          for (const r of inv.rows) {
+            createReferralRedemptions(r.id).catch(() => {});
+          }
+        })
+        .catch((e) =>
+          console.error(
+            "[POST /api/profile] referral pair trigger failed (non-blocking)",
+            e
+          )
+        );
+    }
 
     // Send welcome email on first-time profile creation — atomically claim
     // the flag first so concurrent requests can't both trigger a send.
