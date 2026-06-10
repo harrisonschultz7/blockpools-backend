@@ -9,15 +9,11 @@
  *   set -a && source /etc/blockpools/backend.env && set +a
  *   npx ts-node src/scripts/send-weekly-brief.ts
  */
+import "dotenv/config";
 import { Resend } from "resend";
 import { createClient } from "@supabase/supabase-js";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 const TEMPLATE_ID = "93f918e5-06d4-4ec9-b29c-5c24e31a8425";
 
@@ -26,7 +22,7 @@ const DELAY_MS = 700;
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send only to TEST_EMAIL instead of the full list.
 // Set to false when ready to blast everyone.
-const TEST_MODE = false;
+const TEST_MODE = true;
 const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -39,6 +35,12 @@ async function getRecipients(): Promise<string[]> {
     console.log(`TEST MODE — sending only to ${TEST_EMAIL}`);
     return [TEST_EMAIL];
   }
+
+  // Created here (not at module load) so TEST_MODE runs without Supabase env vars.
+  const supabase = createClient(
+    process.env.SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
 
   const { data, error } = await supabase
     .from("users")
