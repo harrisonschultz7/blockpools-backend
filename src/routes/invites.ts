@@ -2,7 +2,7 @@
 import { Router, Response } from "express";
 import crypto from "crypto";
 import { pool } from "../db";
-import { authPrivy, AuthedRequest } from "../middleware/authPrivy";
+import { authPrivy, authPrivyOptionalWallet, AuthedRequest } from "../middleware/authPrivy";
 import { sendInviteEmail } from "../services/emailService";
 import { createReferralRedemptions } from "../services/promotions/createReferralRedemptions";
 
@@ -161,7 +161,13 @@ router.get("/invites/preview/:token", async (req, res) => {
  *
  * This is the critical piece for attribution: it links token_hash -> accepted_by_user_id.
  */
-router.post("/invites/accept", authPrivy, async (req: AuthedRequest, res: Response) => {
+// Wallet-OPTIONAL: a referred user accepts/redeems the moment they authenticate
+// (often right after the OTP, BEFORE the smart wallet finishes provisioning).
+// Only the Privy user id is needed to link the invite; requiring a wallet here
+// caused "No wallet or smart wallet address on Privy user" and dropped the
+// referral. The pair (which needs the wallet) is created later when the wallet
+// lands — see the trigger in routes/profile.ts.
+router.post("/invites/accept", authPrivyOptionalWallet, async (req: AuthedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
@@ -216,7 +222,9 @@ router.post("/invites/accept", authPrivy, async (req: AuthedRequest, res: Respon
  *
  * Keep this if you want a second “finalization” step (e.g., after profile creation).
  */
-router.post("/invites/redeem", authPrivy, async (req: AuthedRequest, res: Response) => {
+// Wallet-OPTIONAL — see note on /invites/accept above. Redeem only needs the
+// Privy user id; the wallet may not exist yet at OTP time.
+router.post("/invites/redeem", authPrivyOptionalWallet, async (req: AuthedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
