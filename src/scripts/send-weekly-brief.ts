@@ -22,12 +22,14 @@ const DELAY_MS = 700;
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send only to TEST_EMAIL instead of the full list.
 // Set to false when ready to blast everyone.
-const TEST_MODE = true;
+const TEST_MODE = false;
 const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ALREADY_SENT = new Set<string>([
-
+  "jaimeoliveira271@gmail.com",
+  "joilsoalves3@gmail.com",
+  "goey214@gmail.com",
 ]);
 
 async function getRecipients(): Promise<string[]> {
@@ -54,7 +56,7 @@ async function getRecipients(): Promise<string[]> {
 
   return (data ?? [])
     .map((row: { email: string }) => row.email)
-    .filter((email: string) => !ALREADY_SENT.has(email));
+    .filter((email: string) => !ALREADY_SENT.has(email.trim().toLowerCase()));
 }
 
 async function run() {
