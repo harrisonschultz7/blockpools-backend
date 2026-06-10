@@ -253,7 +253,15 @@ export async function sendInviteEmail(opts: {
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width" />
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+      <style type="text/css">
+        /* Force Inter across all clients that respect <style> blocks. */
+        body, table, td, div, p, a, span, strong {
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
+        }
+      </style>
     </head>
     <body style="margin:0;padding:0;background:#3F4EA3;background-image:linear-gradient(180deg,#3F4EA3 0%,#2C2A55 100%);font-family:Inter,Arial,sans-serif;color:#ffffff;">
       <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">You've been invited to join BlockPools.</div>
