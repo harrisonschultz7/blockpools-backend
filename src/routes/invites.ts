@@ -62,14 +62,14 @@ router.post("/invites/email", authPrivy, async (req: AuthedRequest, res: Respons
     try {
       const { rows: p } = await pool.query(
         `select coalesce(display_name, username) as label
-           from profiles
-          where user_id = $1
+           from users
+          where id = $1
           limit 1`,
         [inviterUserId]
       );
       inviterLabel = p?.[0]?.label || undefined;
     } catch {
-      // safe to ignore if profiles table doesn't exist / differs
+      // safe to ignore if the lookup fails
     }
 
     // Insert first (audit trail). Mark 'sent' only if email succeeds.

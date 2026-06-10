@@ -223,7 +223,10 @@ export async function sendWelcomeEmail(opts: { to: string; username: string }) {
 }
 
 /**
- * Simple 3-line invite (plus optional fallback link).
+ * Brand-consistent invite email. Intentionally minimal to match the BlockPools
+ * transactional/marketing style (indigo gradient, Inter, gold accent):
+ *   logo + name  →  one headline  →  gold "Accept Invite" button  →  fallback
+ *   link  →  one tagline line.
  */
 export async function sendInviteEmail(opts: {
   to: string;
@@ -233,67 +236,83 @@ export async function sendInviteEmail(opts: {
   const fromInvites = requireEnv("EMAIL_FROM_INVITES");
 
   const inviterRaw = (opts.inviterLabel || "").trim();
-  const inviterName = inviterRaw ? escapeHtml(inviterRaw) : "A friend";
+  const inviterName = inviterRaw ? escapeHtml(inviterRaw) : "";
+  const url = escapeHtml(opts.inviteUrl);
 
-  const bodyHtml = `
-    <tr>
-      <td style="padding: 14px 18px 0;">
-        <div style="
-          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-          color: rgba(255,255,255,0.96);
-          font-size: 18px;
-          font-weight: 800;
-          line-height: 1.35;
-        ">
-          ${inviterName} invited you to BlockPools
-        </div>
-      </td>
-    </tr>
+  const subject = inviterRaw
+    ? `${inviterName} invited you to BlockPools`
+    : "You're invited to BlockPools";
 
-    <tr>
-      <td style="padding: 10px 18px 0;">
-        <div style="
-          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-          color: rgba(255,255,255,0.78);
-          font-size: 14px;
-          line-height: 1.7;
-        ">
-          A Sports Prediction Market Designed for Real Fans
-        </div>
-      </td>
-    </tr>
+  const headline = inviterRaw
+    ? `${inviterName} invited you to join BlockPools`
+    : "You've been invited to join BlockPools";
 
-    <tr>
-      <td style="padding: 12px 18px 0;">
-        <div style="
-          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-          color: rgba(255,255,255,0.55);
-          font-size: 12px;
-          line-height: 1.6;
-        ">
-          If the button doesn’t work, paste this link into your browser:<br/>
-          <a href="${opts.inviteUrl}" style="
-            color: rgba(250,204,21,0.95);
-            text-decoration: none;
-            word-break: break-all;
-          ">${opts.inviteUrl}</a>
-        </div>
-      </td>
-    </tr>
+  const html = `
+  <!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width" />
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+    </head>
+    <body style="margin:0;padding:0;background:#3F4EA3;background-image:linear-gradient(180deg,#3F4EA3 0%,#2C2A55 100%);font-family:Inter,Arial,sans-serif;color:#ffffff;">
+      <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">You've been invited to join BlockPools.</div>
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" role="presentation" style="padding:40px 20px;">
+        <tr>
+          <td align="center">
+            <table width="600" cellpadding="0" cellspacing="0" border="0" role="presentation" style="width:100%;max-width:600px;background:rgba(0,0,0,0.15);border-radius:12px;padding:40px 36px;">
+              <tr>
+                <td align="center" style="padding-bottom:6px;">
+                  <img src="https://www.blockpools.io/Logo_Icon.PNG" height="72" alt="BlockPools" style="display:block;border:0;outline:none;text-decoration:none;" />
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="font-size:22px;font-weight:800;letter-spacing:0.02em;color:#ffffff;padding-bottom:26px;">
+                  BlockPools
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="font-size:22px;line-height:1.35;font-weight:700;color:#ffffff;padding-bottom:10px;">
+                  ${headline}
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="font-size:16px;line-height:1.5;color:#e6e6e6;padding-bottom:30px;">
+                  The best and most fair place to trade sports.
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="padding-bottom:16px;">
+                  <a href="${url}" style="background:#facc15;color:#000000;font-weight:700;text-decoration:none;padding:14px 38px;border-radius:8px;display:inline-block;font-size:16px;line-height:1;">
+                    Accept Invite
+                  </a>
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="padding-bottom:30px;">
+                  <a href="${url}" style="color:#facc15;text-decoration:none;font-size:13px;line-height:1.5;word-break:break-all;">
+                    ${url}
+                  </a>
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="font-size:14px;font-weight:600;color:#e6e6e6;letter-spacing:0.01em;">
+                  Highest Payouts &nbsp;·&nbsp; Market-Driven Odds &nbsp;·&nbsp; Transparent Trades
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+  </html>
   `;
 
   return resend.emails.send({
     from: fromInvites,
     to: opts.to,
-    subject: `${inviterRaw ? inviterName : "Invite"} • BlockPools`,
-    html: renderBrandedEmail({
-      title: "You're invited",
-      preheader: `${inviterRaw ? inviterRaw : "A friend"} invited you to BlockPools.`,
-      intro: "", // keep empty; bodyHtml controls layout
-      bodyHtml,
-      button: { label: "Accept invite", href: opts.inviteUrl },
-      footerNote: "If you weren’t expecting this, you can ignore this email.",
-    }),
+    subject,
+    html,
   });
 }
 
