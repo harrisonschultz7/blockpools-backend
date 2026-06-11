@@ -418,6 +418,11 @@ const finalsSet = new Set([
   "after penalties",
   "after penalty shots",
   "after shootout",
+  // Soccer extra-time finals (Goalserve: "AET" = after extra time, "AP" = after penalties)
+  "aet",
+  "after extra time",
+  "ap",
+  "ended",
 ]);
 
 function isFinalStatus(raw: string): boolean {
@@ -519,6 +524,8 @@ function goalserveLeaguePaths(leagueLabel: string): { sportPath: string; leagueP
     return { sportPath: "commentaries", leaguePaths: ["1204"] };
   if (L === "ucl" || L === "uefa champions league" || L === "champions league")
     return { sportPath: "commentaries", leaguePaths: ["1005"] };
+  if (L === "wc" || L === "world cup" || L === "fifa world cup" || L === "worldcup")
+    return { sportPath: "commentaries", leaguePaths: ["1056"] };
   return { sportPath: "", leaguePaths: [] };
 }
 

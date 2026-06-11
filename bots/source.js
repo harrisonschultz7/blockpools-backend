@@ -1,11 +1,11 @@
 // bots/source.js
 // Chainlink Functions source for BlockPools settlement (optimized args model)
-// Supports: NFL, NBA, NHL, MLB, EPL, UCL via Goalserve
+// Supports: NFL, NBA, NHL, MLB, EPL, UCL, WC via Goalserve
 //
 // NEW ARGS (1):
 //  0: packed JSON string with fields:
 //     {
-//       league: "NFL" | "NBA" | "NHL" | "MLB" | "EPL" | "UCL",
+//       league: "NFL" | "NBA" | "NHL" | "MLB" | "EPL" | "UCL" | "WC",
 //       dateFrom: "yyyy-MM-dd",
 //       dateTo:   "yyyy-MM-dd",
 //       teamACode: "DAL",
@@ -86,6 +86,7 @@ const GOALSERVE_BASE_URL =
  * MLB: /baseball/usa?date=dd.MM.yyyy&json=1
  * EPL: /commentaries/1204?date=dd.MM.yyyy&json=1        (England - Premier League)
  * UCL: /commentaries/1005?date=dd.MM.yyyy&json=1        (UEFA Champions League)
+ * WC:  /commentaries/1056?date=dd.MM.yyyy&json=1        (FIFA World Cup)
  */
 function goalserveLeaguePaths(leagueLabel) {
   const L = String(leagueLabel || "").trim().toLowerCase();
@@ -123,6 +124,16 @@ function goalserveLeaguePaths(leagueLabel) {
     return { sportPath: "commentaries", leaguePaths: ["1005"] };
   }
 
+  // WC / FIFA World Cup (Goalserve soccer league id 1056)
+  if (
+    L === "wc" ||
+    L === "world cup" ||
+    L === "fifa world cup" ||
+    L === "worldcup"
+  ) {
+    return { sportPath: "commentaries", leaguePaths: ["1056"] };
+  }
+
   return { sportPath: "", leaguePaths: [] };
 }
 
@@ -144,6 +155,12 @@ const finalsSet = new Set([
   "after penalties",
   "after penalty shots",
   "after shootout",
+
+  // ✅ Soccer extra-time finals (Goalserve: "AET" = after extra time, "AP" = after penalties)
+  "aet",
+  "after extra time",
+  "ap",
+  "ended",
 ]);
 
 function isFinalStatus(raw) {
