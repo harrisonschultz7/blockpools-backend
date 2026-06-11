@@ -96,6 +96,10 @@ const __dirname =
 const RPC_URL = process.env.RPC_URL!;
 const PRIVATE_KEY = process.env.PRIVATE_KEY!;
 const SETTLEMENT_COORDINATOR_ADDRESS = (process.env.SETTLEMENT_COORDINATOR_ADDRESS || "").trim();
+// GamePoolMulti pools (3-way soccer, N-way props) settle through a separate
+// multi-aware coordinator (checks isResolved() instead of winningTeam()).
+// Optional: when unset, multi pools are skipped exactly like before.
+const SETTLEMENT_COORDINATOR_MULTI_ADDRESS = (process.env.SETTLEMENT_COORDINATOR_MULTI_ADDRESS || "").trim();
 
 const DRY_RUN = /^(1|true)$/i.test(String(process.env.DRY_RUN || ""));
 
@@ -937,6 +941,9 @@ async function main() {
   if (!SETTLEMENT_COORDINATOR_ADDRESS || !ethers.isAddress(SETTLEMENT_COORDINATOR_ADDRESS)) {
     throw new Error("Missing/invalid SETTLEMENT_COORDINATOR_ADDRESS env var (expected 0x...)");
   }
+  if (SETTLEMENT_COORDINATOR_MULTI_ADDRESS && !ethers.isAddress(SETTLEMENT_COORDINATOR_MULTI_ADDRESS)) {
+    throw new Error("Invalid SETTLEMENT_COORDINATOR_MULTI_ADDRESS env var (expected 0x... or unset)");
+  }
 
   console.log(`[CFG] DRY_RUN=${DRY_RUN} (env=${process.env.DRY_RUN ?? "(unset)"})`);
   console.log(
@@ -958,6 +965,7 @@ async function main() {
   console.log(`[CFG] FINAL_DEBOUNCE_SECONDS=${FINAL_DEBOUNCE_SECONDS}s FINAL_CACHE_PATH=${FINAL_CACHE_PATH} SETTLED_CACHE_PATH=${SETTLED_CACHE_PATH}`);
   console.log(`[CFG] FEED_CACHE_TTL_MS=${FEED_CACHE_TTL_MS} LOG_LEVEL=${LOG_LEVEL}`);
   console.log(`[CFG] SettlementCoordinator=${SETTLEMENT_COORDINATOR_ADDRESS}`);
+  console.log(`[CFG] SettlementCoordinatorMulti=${SETTLEMENT_COORDINATOR_MULTI_ADDRESS || "(unset — multi pools will be skipped)"}`);
   console.log(`[CFG] Provider=Goalserve (NFL + NBA + NHL + MLB + EPL + UCL)`);
 
   if (!REQUIRE_FINAL_CHECK && !ALLOW_UNSAFE_NO_FINAL_CHECK) {
@@ -970,6 +978,10 @@ async function main() {
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
   const coordinator = new ethers.Contract(SETTLEMENT_COORDINATOR_ADDRESS, SETTLEMENT_COORDINATOR_ABI, wallet);
+  // Same ABI surface (markReady/isKnownPool/ready/pending/retryCount/maxRetries).
+  const coordinatorMulti = SETTLEMENT_COORDINATOR_MULTI_ADDRESS
+    ? new ethers.Contract(SETTLEMENT_COORDINATOR_MULTI_ADDRESS, SETTLEMENT_COORDINATOR_ABI, wallet)
+    : null;
 
   // FIX 1: Read maxRetries once up front so we can gate per-pool below.
   let globalMaxRetries = 2;
@@ -979,6 +991,16 @@ async function main() {
     console.log("[warn] Could not read coordinator.maxRetries(); defaulting to 2");
   }
   console.log(`[CFG] coordinator.maxRetries=${globalMaxRetries}`);
+
+  let multiMaxRetries = globalMaxRetries;
+  if (coordinatorMulti) {
+    try {
+      multiMaxRetries = Number(await coordinatorMulti.maxRetries());
+    } catch {
+      console.log("[warn] Could not read coordinatorMulti.maxRetries(); defaulting to binary value");
+    }
+    console.log(`[CFG] coordinatorMulti.maxRetries=${multiMaxRetries}`);
+  }
 
   const gamesMeta = loadGamesMeta();
   if (!gamesMeta.length) {
@@ -1285,6 +1307,22 @@ async function main() {
   for (const s of finalEligible) {
     if (submitted >= MAX_TX_PER_RUN) break;
 
+    // Route by pool kind: GamePoolMulti pools must go through the multi-aware
+    // coordinator (markReady on the binary coordinator reverts "Pool read failed"
+    // because GamePoolMulti has no winningTeam()).
+    const isMultiPool = s.poolKind === "multi";
+    if (isMultiPool && !coordinatorMulti) {
+      console.log(
+        `[skip-multi] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) ` +
+          `is a GamePoolMulti but SETTLEMENT_COORDINATOR_MULTI_ADDRESS is unset — settle manually or configure the multi coordinator.`
+      );
+      skipped++;
+      continue;
+    }
+    const coord = isMultiPool ? coordinatorMulti! : coordinator;
+    const coordMaxRetries = isMultiPool ? multiMaxRetries : globalMaxRetries;
+    const coordLabel = isMultiPool ? "SettlementCoordinatorMulti" : "SettlementCoordinator";
+
     let known = false;
     let alreadyReady = false;
     let alreadyPending = false;
@@ -1292,10 +1330,10 @@ async function main() {
 
     try {
       [known, alreadyReady, alreadyPending, retryCount] = await Promise.all([
-        coordinator.isKnownPool(s.addr),
-        coordinator.ready(s.addr),
-        coordinator.pending(s.addr),
-        coordinator.retryCount(s.addr).then(Number).catch(() => 0),
+        coord.isKnownPool(s.addr),
+        coord.ready(s.addr),
+        coord.pending(s.addr),
+        coord.retryCount(s.addr).then(Number).catch(() => 0),
       ]);
     } catch (e: any) {
       console.log(`[warn] coordinator reads failed for ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}). Skipping.`);
@@ -1303,7 +1341,7 @@ async function main() {
     }
 
     if (!known) {
-      console.log(`[skip] not registered in SettlementCoordinator: ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
+      console.log(`[skip] not registered in ${coordLabel}: ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName})`);
       continue;
     }
 
@@ -1319,10 +1357,10 @@ async function main() {
 
     // Skip pools that have exhausted coordinator retries — calling markReady
     // would re-activate them and burn another Functions call for no gain.
-    if (retryCount >= globalMaxRetries) {
+    if (retryCount >= coordMaxRetries) {
       console.log(
         `[skip-exhausted] ${s.addr} (${s.league} ${s.teamAName} vs ${s.teamBName}) ` +
-          `retryCount=${retryCount}>=${globalMaxRetries} — coordinator has exhausted retries. ` +
+          `retryCount=${retryCount}>=${coordMaxRetries} — coordinator has exhausted retries. ` +
           `Run purgePool on this address and remove it from games.json.`
       );
       skipped++;
@@ -1340,8 +1378,8 @@ async function main() {
         if (REQUEST_DELAY_MS) await sleepLogged(REQUEST_DELAY_MS, "request-delay");
         if (TX_PACE_MS) await sleepLogged(TX_PACE_MS, "tx-pace");
 
-        console.log(`[TX-SEND] markReady addr=${s.addr} ${s.league} ${s.teamAName} vs ${s.teamBName}`);
-        const tx = await withTimeout(coordinator.markReady(s.addr), 60_000, "markReady send");
+        console.log(`[TX-SEND] markReady (${coordLabel}) addr=${s.addr} ${s.league} ${s.teamAName} vs ${s.teamBName}`);
+        const tx = await withTimeout(coord.markReady(s.addr), 60_000, "markReady send");
         console.log(`[TX-HASH] ${tx.hash} addr=${s.addr}`);
 
         const r = await withTimeout(tx.wait(1), TX_WAIT_TIMEOUT_MS, "tx.wait(1)");
