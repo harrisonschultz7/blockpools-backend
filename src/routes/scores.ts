@@ -287,6 +287,8 @@ function goalserveLeaguePaths(leagueLabel: string): {
   ) return { sportPath: "commentaries", leaguePaths: ["1204"] };
   if (L === "ucl" || L === "uefa champions league" || L === "champions league")
     return { sportPath: "commentaries", leaguePaths: ["1005"] };
+  if (L === "wc" || L === "world cup" || L === "fifa world cup" || L === "worldcup")
+    return { sportPath: "commentaries", leaguePaths: ["1056"] };
   return { sportPath: "", leaguePaths: [] };
 }
 
