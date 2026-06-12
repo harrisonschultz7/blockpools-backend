@@ -449,19 +449,24 @@ router.get("/live", async (req: Request, res: Response) => {
     }
 
     let lastError: string | null = null;
+    let fallbackPayload: any = null;
 
     for (const url of urls) {
       try {
         // ── Tier 2: In-memory cache — deduplicate concurrent live polls ──
+        let data: any;
+        let fromMemCache = false;
         if (!forceFresh) {
           const memHit = memGet(url);
           if (memHit) {
-            res.setHeader("X-Score-Cache", "memory-live");
-            return res.json(memHit);
+            data = memHit;
+            fromMemCache = true;
           }
         }
 
-        const data = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
+        if (data === undefined) {
+          data = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
+        }
 
         // ── Determine if this game is final ──────────────────────────────
         const { found, isFinal, match, shape } = extractMatchStatus(
@@ -470,13 +475,22 @@ router.get("/live", async (req: Request, res: Response) => {
           teamBName
         );
 
+        // Match not in this day's feed: games that kick off after midnight
+        // GMT (e.g. 10 PM ET) live in the NEXT day's Goalserve feed, so try
+        // the next URL. Keep the first payload as a fallback response so the
+        // route contract (full feed JSON) is preserved when nothing matches.
+        if (!found) {
+          if (!fromMemCache) memSet(url, data);
+          if (fallbackPayload === null) fallbackPayload = data;
+          continue;
+        }
+
         // Build the cache payload: a minimal envelope containing ONLY this
         // pool's matched match. Without this, every pool that hits the same
         // league-day Goalserve URL would cache the full daily feed, and the
         // frontend's pickMatch (which returns match[0] for arrays) would
         // render every pool as the same first match.
-        const cachePayload =
-          found && match && shape ? buildSingleMatchEnvelope(match, shape) : data;
+        const cachePayload = match && shape ? buildSingleMatchEnvelope(match, shape) : data;
 
         if (isFinal && contractAddress) {
           // Write to Postgres — this game will never hit Goalserve again
@@ -490,7 +504,7 @@ router.get("/live", async (req: Request, res: Response) => {
           // matched match in Postgres so the ticker can render correctly.
           memSet(url, data);
 
-          if (found && contractAddress) {
+          if (contractAddress) {
             void pgCacheSet(contractAddress, league, cachePayload, false);
           }
         }
@@ -503,6 +517,13 @@ router.get("/live", async (req: Request, res: Response) => {
         lastError = e?.message || "fetch failed";
         // Try next URL
       }
+    }
+
+    // No URL contained this matchup — return the first successful payload
+    // (legacy behavior) so callers can still inspect the raw feed.
+    if (fallbackPayload !== null) {
+      res.setHeader("X-Score-Cache", "goalserve-live");
+      return res.json(fallbackPayload);
     }
 
     return res.status(502).json({ error: `Goalserve fetch failed: ${lastError}` });
