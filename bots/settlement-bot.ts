@@ -668,6 +668,36 @@ function normalizeGameRow(r: any) {
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
+// National-team name aliases (WC / international soccer). Goalserve's feeds
+// disagree on nation names: commentaries says "Korea Republic" /
+// "Bosnia-Herzegovina" while fixtures / games.json / on-chain names say
+// "South Korea" / "Bosnia and Herzegovina". Keys/values are post-norm()
+// strings; both sides of a comparison get canonicalized.
+const NATION_ALIASES: Record<string, string> = {
+  "korea republic": "south korea",
+  "republic of korea": "south korea",
+  "korea dpr": "north korea",
+  "dpr korea": "north korea",
+  "ir iran": "iran",
+  "iran ir": "iran",
+  "united states": "usa",
+  "united states of america": "usa",
+  "bosnia herzegovina": "bosnia and herzegovina",
+  "bosnia": "bosnia and herzegovina",
+  "cote divoire": "ivory coast",
+  "czechia": "czech republic",
+  "turkiye": "turkey",
+  "cape verde islands": "cape verde",
+  "cabo verde": "cape verde",
+  "holland": "netherlands",
+  "united arab emirates": "uae",
+};
+
+function canonName(str: string): string {
+  const n = norm(str);
+  return NATION_ALIASES[n] || n;
+}
+
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -675,7 +705,7 @@ function teamMatchesOneSide(apiName: string, wantName: string, wantCode: string)
 
   if (!nApi) return false;
 
-  if (nWant && nApi === nWant) return true;
+  if (nWant && canonName(apiName) === canonName(wantName)) return true;
 
   const apiAcr = acronym(apiName);
   const wantAcr = acronym(wantName);

@@ -208,6 +208,37 @@ function norm(str) {
     .toLowerCase();
 }
 
+// National-team name aliases (WC / international soccer). Goalserve's feeds
+// disagree with each other on nation names: the commentaries feed says
+// "Korea Republic" / "Bosnia-Herzegovina" while the fixtures feed (and our
+// games.json / on-chain names) say "South Korea" / "Bosnia and Herzegovina".
+// Keys and values are post-norm() strings; BOTH sides of every comparison get
+// canonicalized, so direction doesn't matter.
+const NATION_ALIASES = {
+  "korea republic": "south korea",
+  "republic of korea": "south korea",
+  "korea dpr": "north korea",
+  "dpr korea": "north korea",
+  "ir iran": "iran",
+  "iran ir": "iran",
+  "united states": "usa",
+  "united states of america": "usa",
+  "bosnia herzegovina": "bosnia and herzegovina",
+  "bosnia": "bosnia and herzegovina",
+  "cote divoire": "ivory coast",
+  "czechia": "czech republic",
+  "turkiye": "turkey",
+  "cape verde islands": "cape verde",
+  "cabo verde": "cape verde",
+  "holland": "netherlands",
+  "united arab emirates": "uae",
+};
+
+function canonName(str) {
+  const n = norm(str);
+  return NATION_ALIASES[n] || n;
+}
+
 function trimU(s) {
   return String(s || "").trim().toUpperCase();
 }
@@ -397,8 +428,9 @@ function teamMatchesOneSide(apiName, wantName, wantCode) {
 
   if (!nApi) return false;
 
-  // 1) exact normalized name
-  if (nWant && nApi === nWant) return true;
+  // 1) exact normalized name (after nation-alias canonicalization, so
+  //    "Korea Republic" === "South Korea" etc.)
+  if (nWant && canonName(apiName) === canonName(wantName)) return true;
 
   // 2) code/acronym match
   const apiAcr = acronym(apiName);

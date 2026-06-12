@@ -145,6 +145,47 @@ function isFinalStatus(status: string): boolean {
 
 type MatchShape = "scores" | "soccer-tournament" | "soccer-commentaries" | "games";
 
+// National-team name aliases (WC / international soccer). Goalserve's feeds
+// disagree on nation names: commentaries says "Korea Republic" /
+// "Bosnia-Herzegovina" while fixtures / games.json / on-chain names say
+// "South Korea" / "Bosnia and Herzegovina". Keys/values are normalized
+// strings; both sides of a comparison get canonicalized.
+const NATION_ALIASES: Record<string, string> = {
+  "korea republic": "south korea",
+  "republic of korea": "south korea",
+  "korea dpr": "north korea",
+  "dpr korea": "north korea",
+  "ir iran": "iran",
+  "iran ir": "iran",
+  "united states": "usa",
+  "united states of america": "usa",
+  "bosnia herzegovina": "bosnia and herzegovina",
+  "bosnia": "bosnia and herzegovina",
+  "cote divoire": "ivory coast",
+  "czechia": "czech republic",
+  "turkiye": "turkey",
+  "cape verde islands": "cape verde",
+  "cabo verde": "cape verde",
+  "holland": "netherlands",
+  "united arab emirates": "uae",
+};
+
+function normName(s: string): string {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[’'`]/g, "")
+    .replace(/[^a-z0-9 ]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function canonName(s: string): string {
+  const n = normName(s);
+  return NATION_ALIASES[n] || n;
+}
+
 function extractMatchStatus(
   data: any,
   teamAName: string,
@@ -205,6 +246,8 @@ function extractMatchStatus(
 
   const aLower = teamAName.toLowerCase();
   const bLower = teamBName.toLowerCase();
+  const aCanon = canonName(teamAName);
+  const bCanon = canonName(teamBName);
 
   for (const { m, shape } of candidates) {
     if (!m || typeof m !== "object") continue;
@@ -228,9 +271,14 @@ function extractMatchStatus(
         ""
     ).toLowerCase();
 
+    const homeCanon = canonName(home);
+    const awayCanon = canonName(away);
+
     const matchesGame =
-      (home.includes(aLower) || away.includes(aLower) || aLower.includes(home)) &&
-      (home.includes(bLower) || away.includes(bLower) || bLower.includes(home));
+      (home.includes(aLower) || away.includes(aLower) || aLower.includes(home) ||
+        homeCanon === aCanon || awayCanon === aCanon) &&
+      (home.includes(bLower) || away.includes(bLower) || bLower.includes(home) ||
+        homeCanon === bCanon || awayCanon === bCanon);
 
     if (matchesGame) {
       const status = String(
