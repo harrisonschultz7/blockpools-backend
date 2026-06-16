@@ -248,10 +248,18 @@ function acronym(s) {
   return parts.map((p) => (p[0] || "").toUpperCase()).join("");
 }
 
-async function fetchJsonWithRetry(url, tries = 3) {
+// tries defaults to 1: inside the DON we have a ~10s TOTAL execution budget and
+// each request can take up to the 9s timeout, so there is no room for a second
+// attempt — a retry here just doubles load on the (rate-limited) Goalserve key
+// across every DON node and still gets killed at 10s. Re-attempts are the
+// coordinator's job: it re-fires the whole request in a fresh execution later,
+// when a transient 500 / throttle has likely cleared.
+async function fetchJsonWithRetry(url, tries = 1) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
-    const resp = await Functions.makeHttpRequest({ url });
+    // timeout: 9000 = Chainlink Functions' max per-request HTTP timeout.
+    // The default is 5s, which a slow Goalserve feed routinely exceeds.
+    const resp = await Functions.makeHttpRequest({ url, timeout: 9000 });
     if (!resp) {
       lastErr = Error("No response");
     } else if (resp.error) {
@@ -501,8 +509,14 @@ async function lookupWinnerCode() {
 
   const candidates = [];
 
+  // Fetch dates sequentially and STOP at the first date that yields a FINAL
+  // match for our teams. The common case (game on dateFrom) is then exactly ONE
+  // HTTP request. The extra date(s) in [dateFrom, dateTo) exist only to cover a
+  // late kickoff that Goalserve files under the next GMT day, so they should be
+  // hit only when the first day has no final result — never speculatively.
   for (const iso of iterateDateRange(dateFrom, dateTo)) {
     const ddmmyyyy = isoToDdmmyyyy(iso);
+    let foundFinalThisDate = false;
 
     for (const lp of leaguePaths) {
       const url =
@@ -539,8 +553,14 @@ async function lookupWinnerCode() {
           status: g.status,
           kickoff,
         });
+
+        if (isFinalStatus(g.status)) foundFinalThisDate = true;
       }
     }
+
+    // A final result for this matchup was found — no need to spend another
+    // HTTP request (and another budget slice) on the remaining date(s).
+    if (foundFinalThisDate) break;
   }
 
   if (!candidates.length) {
