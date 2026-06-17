@@ -23,7 +23,7 @@ const DELAY_MS = 700;
 // Set to true to send only to TEST_EMAIL instead of the full list.
 // Set to false when ready to blast everyone.
 const TEST_MODE = true;
-const TEST_EMAIL = "goey214@gmail.com";
+const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ALREADY_SENT = new Set<string>([
