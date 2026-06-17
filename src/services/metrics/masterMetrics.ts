@@ -24,7 +24,7 @@ import {
  */
 
 type RangeKey = "ALL" | "D30" | "D90";
-type LeagueKey = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL";
+type LeagueKey = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL" | "WC";
 
 /* =========================
    Excluded addresses
@@ -68,7 +68,7 @@ function computeWindow(range: RangeKey, anchorTs: number) {
 }
 
 function leagueList(league: LeagueKey): string[] {
-  if (league === "ALL") return ["MLB", "NFL", "NBA", "NHL", "EPL", "UCL"];
+  if (league === "ALL") return ["MLB", "NFL", "NBA", "NHL", "EPL", "UCL", "WC"];
   return [league];
 }
 
@@ -159,19 +159,21 @@ async function getCandidateUsersFromDb(params: {
   // ✅ Candidate selection = users with most recent TRADE EVENT in window
   // (NOT game lock_time)
   //
-  // We exclude system addresses (e.g. promo funding wallet) here so they
-  // never reach the aggregation step.
+  // Key on effective_user_address (= COALESCE(beneficiary_address, user_address))
+  // so promo (free-bet) activity funded by the promo wallet is attributed to the
+  // actual beneficiary, not the funding wallet. The funding wallet itself is still
+  // excluded as a candidate so it never surfaces as its own leaderboard row.
   const sql = `
     SELECT
-      LOWER(e.user_address) AS user_id,
+      LOWER(e.effective_user_address) AS user_id,
       MAX(e.timestamp)::bigint AS last_ts
     FROM public.user_trade_events e
     JOIN public.games g ON g.game_id = e.game_id
     WHERE e.timestamp >= $1
       AND e.timestamp <= $2
       AND g.league = ANY($3::text[])
-      AND LOWER(e.user_address) <> ALL($5::text[])
-    GROUP BY LOWER(e.user_address)
+      AND LOWER(e.effective_user_address) <> ALL($5::text[])
+    GROUP BY LOWER(e.effective_user_address)
     ORDER BY last_ts DESC
     LIMIT $4
   `;
@@ -200,10 +202,15 @@ async function fetchLeaderboardAggFromDb(params: {
   }
 
   // ✅ Main per-user rollup (canonical) — window by e.timestamp
+  // Key on effective_user_address so a user's promo (free-bet) BUY — funded by
+  // the promo wallet but stamped with beneficiary_address = the user — counts in
+  // buy_gross alongside the matching promo CLAIM (also attributed to the user).
+  // Keying on user_address counted the promo win but not the promo stake,
+  // inflating ROI.
   const sqlAgg = `
     WITH filtered AS (
       SELECT
-        LOWER(e.user_address) AS user_id,
+        LOWER(e.effective_user_address) AS user_id,
         g.league AS league,
         e.game_id,
         e.type,
@@ -218,7 +225,7 @@ async function fetchLeaderboardAggFromDb(params: {
       WHERE e.timestamp >= $1
         AND e.timestamp <= $2
         AND g.league = ANY($3::text[])
-        AND LOWER(e.user_address) = ANY($4::text[])
+        AND LOWER(e.effective_user_address) = ANY($4::text[])
     )
     SELECT
       user_id,
@@ -258,7 +265,7 @@ async function fetchLeaderboardAggFromDb(params: {
   const sqlLeague = `
     WITH filtered AS (
       SELECT
-        LOWER(e.user_address) AS user_id,
+        LOWER(e.effective_user_address) AS user_id,
         g.league AS league,
         e.type,
         g.is_final,
@@ -270,7 +277,7 @@ async function fetchLeaderboardAggFromDb(params: {
       WHERE e.timestamp >= $1
         AND e.timestamp <= $2
         AND g.league = ANY($3::text[])
-        AND LOWER(e.user_address) = ANY($4::text[])
+        AND LOWER(e.effective_user_address) = ANY($4::text[])
     )
     SELECT
       user_id,
@@ -322,7 +329,7 @@ export async function getLeaderboardUsers(params: {
 
   // ✅ bump cache version (window semantics changed: lock_time -> timestamp)
   const key = cacheKey({
-    v: "lb_users_db_v4_event_timestamp_window_explicit_returns",
+    v: "lb_users_db_v5_effective_user_address",
     league: params.league,
     range: params.range,
     sort: params.sort,

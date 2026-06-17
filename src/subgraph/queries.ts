@@ -504,6 +504,7 @@ query UserClaimsAndStats($user: String!, $claimsFirst: Int!, $statsFirst: Int!) 
     id
     amountDec
     timestamp
+    txHash
     game {
       id
       league

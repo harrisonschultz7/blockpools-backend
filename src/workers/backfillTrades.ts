@@ -2,6 +2,7 @@
 import { ENV } from "../config/env";
 import { subgraphQuery } from "../subgraph/client";
 import { upsertUserTradesAndGames, type GameMetaInput } from "../services/persistTrades";
+import { pool } from "../db";
 
 // ✅ Update this path if needed
 import gamesJson from "../data/games.json";
@@ -20,7 +21,7 @@ import gamesJson from "../data/games.json";
  *   node dist/workers/backfillTrades.js
  *
  * Optional env vars:
- *   BACKFILL_LEAGUES= NFL,NBA,NHL,MLB,EPL,UCL   (default all)
+ *   BACKFILL_LEAGUES= NFL,NBA,NHL,MLB,EPL,UCL,WC   (default all)
  *   BACKFILL_RANGE= ALL | D30 | D90            (default ALL)
  *   BACKFILL_CONCURRENCY= 3                    (default 3)
  *   BACKFILL_SLEEP_MS= 150                     (default 150)
@@ -28,7 +29,7 @@ import gamesJson from "../data/games.json";
  *   BACKFILL_START_INDEX= 0                    (skip first N users from discovered set)
  */
 
-const DEFAULT_LEAGUES = ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
+const DEFAULT_LEAGUES = ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL", "WC"];
 
 const Q_USERS_FROM_TRADES = `
 query UsersFromTrades($leagues:[String!]!, $start:BigInt!, $end:BigInt!, $first:Int!, $skip:Int!) {
@@ -526,6 +527,36 @@ async function backfillUser(opts: {
     });
 
     if (claimRows.length) {
+      // Reconcile vs direct-write claims (mirror of refreshUserTradesPage):
+      // the frontend writes a placeholder CLAIM row (id `claim-direct-<txHash>`)
+      // on-confirm so the win shows without waiting for the subgraph. The
+      // authoritative subgraph row has a DIFFERENT id (`claim-claim-<txHash>-<logIndex>`),
+      // so ON CONFLICT(id) cannot collapse them — leaving both rows would make the
+      // per-game claims SUM(net_out_dec) DOUBLE-COUNT winnings (inflated ROI).
+      // DELETE the placeholder for these txHashes first, then upsert the
+      // authoritative row → exactly one CLAIM row per tx.
+      try {
+        const txHashes = Array.from(
+          new Set(
+            claimRows
+              .map((r: any) => (r.txHash ? String(r.txHash).toLowerCase() : ""))
+              .filter(Boolean)
+          )
+        );
+        if (txHashes.length) {
+          await pool.query(
+            `DELETE FROM public.user_trade_events
+               WHERE lower(user_address) = lower($1)
+                 AND type = 'CLAIM'
+                 AND id LIKE 'claim-direct-%'
+                 AND lower(tx_hash) = ANY($2::text[])`,
+            [user, txHashes]
+          );
+        }
+      } catch (e: any) {
+        console.log(`[backfill claims reconcile] err: ${String(e?.message || e)}`);
+      }
+
       await upsertUserTradesAndGames({
         user,
         tradeRows: claimRows,
