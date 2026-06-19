@@ -39,6 +39,58 @@ router.post("/sweeps", async (req: Request, res: Response) => {
       });
     }
 
+    // ── Promo accounting snapshot ───────────────────────────────────────────
+    // The promo hot wallet is just another bettor in this pool, so its activity
+    // distorts amount_swept (winning free bets depress it, losing ones inflate
+    // it). Aggregate promo_redemptions for this pool (keyed by pool_address =
+    // contract_address) and snapshot it onto the row. The sweep only fires once
+    // the game is resolved, so redemptions are typically settled by now; any
+    // still in 'placed' are counted in promo_unsettled_count and the live
+    // game_accounting view recomputes from promo_redemptions regardless.
+    // Amounts are in whole USDC dollars (promo_redemptions' native unit).
+    let promo = {
+      bets_count: null as number | null,
+      credit_staked: null as string | null,
+      credit_won: null as string | null,
+      credit_lost: null as string | null,
+      payout_to_users: null as string | null,
+      credit_recovered: null as string | null,
+      unsettled_count: null as number | null,
+    };
+    try {
+      const pr = await pool.query(
+        `
+        SELECT
+          count(*)                  FILTER (WHERE status IN ('placed','settled_win','settled_loss')) AS bets_count,
+          coalesce(sum(credit_usdc) FILTER (WHERE status IN ('placed','settled_win','settled_loss')), 0) AS credit_staked,
+          coalesce(sum(credit_usdc) FILTER (WHERE status = 'settled_win'),  0) AS credit_won,
+          coalesce(sum(credit_usdc) FILTER (WHERE status = 'settled_loss'), 0) AS credit_lost,
+          coalesce(sum(payout_amount_usdc), 0)      AS payout_to_users,
+          coalesce(sum(treasury_recovered_usdc), 0) AS credit_recovered,
+          count(*)                  FILTER (WHERE status = 'placed') AS unsettled_count
+        FROM public.promo_redemptions
+        WHERE lower(pool_address) = $1
+        `,
+        [contractAddress]
+      );
+      const r = pr.rows[0];
+      if (r && Number(r.bets_count) > 0) {
+        promo = {
+          bets_count: Number(r.bets_count),
+          credit_staked: String(r.credit_staked),
+          credit_won: String(r.credit_won),
+          credit_lost: String(r.credit_lost),
+          payout_to_users: String(r.payout_to_users),
+          credit_recovered: String(r.credit_recovered),
+          unsettled_count: Number(r.unsettled_count),
+        };
+      }
+    } catch (e: any) {
+      // Never fail the sweep write because the promo rollup hit a snag — the
+      // live game_accounting view can still derive these. Log and continue.
+      console.warn("[admin/sweeps] promo rollup failed; writing sweep without snapshot", e?.message ?? e);
+    }
+
     // Helpful one-line debug for the new fields
     // (shows you immediately if the payload contains them)
     console.log("[admin/sweeps] incoming", {
@@ -89,6 +141,13 @@ router.post("/sweeps", async (req: Request, res: Response) => {
         lock_price_team_a_bps, lock_price_team_b_bps,
         avg_price_team_a_bps, avg_price_team_b_bps,
 
+        promo_bets_count, promo_credit_staked_usdc,
+        promo_credit_won_usdc, promo_credit_lost_usdc,
+        promo_payout_to_users_usdc, promo_credit_recovered_usdc,
+        promo_unsettled_count, promo_snapshot_at,
+
+        gas_cost_usd, eth_usd_price,
+
         swept_at
       )
       values (
@@ -126,7 +185,14 @@ router.post("/sweeps", async (req: Request, res: Response) => {
         $46, $47,
         $48, $49,
 
-        $50
+        $50, $51,
+        $52, $53,
+        $54, $55,
+        $56, $57,
+
+        $58, $59,
+
+        $60
       )
       on conflict (chain_id, contract_address, tx_hash)
       do update set
@@ -186,6 +252,18 @@ router.post("/sweeps", async (req: Request, res: Response) => {
         lock_price_team_b_bps = excluded.lock_price_team_b_bps,
         avg_price_team_a_bps = excluded.avg_price_team_a_bps,
         avg_price_team_b_bps = excluded.avg_price_team_b_bps,
+
+        promo_bets_count            = excluded.promo_bets_count,
+        promo_credit_staked_usdc    = excluded.promo_credit_staked_usdc,
+        promo_credit_won_usdc       = excluded.promo_credit_won_usdc,
+        promo_credit_lost_usdc      = excluded.promo_credit_lost_usdc,
+        promo_payout_to_users_usdc  = excluded.promo_payout_to_users_usdc,
+        promo_credit_recovered_usdc = excluded.promo_credit_recovered_usdc,
+        promo_unsettled_count       = excluded.promo_unsettled_count,
+        promo_snapshot_at           = excluded.promo_snapshot_at,
+
+        gas_cost_usd  = excluded.gas_cost_usd,
+        eth_usd_price = excluded.eth_usd_price,
 
         swept_at = excluded.swept_at
       returning id
@@ -253,6 +331,22 @@ router.post("/sweeps", async (req: Request, res: Response) => {
       pick(b, "lockPriceTeamB_bps", "lock_price_team_b_bps"),
       pick(b, "avgPriceTeamA_bps", "avg_price_team_a_bps"),
       pick(b, "avgPriceTeamB_bps", "avg_price_team_b_bps"),
+
+      // Promo accounting snapshot (dollars). All null when the pool had no
+      // free bets. promo_snapshot_at is stamped only when we captured promo data.
+      promo.bets_count,
+      promo.credit_staked,
+      promo.credit_won,
+      promo.credit_lost,
+      promo.payout_to_users,
+      promo.credit_recovered,
+      promo.unsettled_count,
+      promo.bets_count !== null ? new Date() : null,
+
+      // Gas valued in USD at sweep time (ETH/USD from Chainlink, posted by the
+      // sweeper). Null when the price read failed — view falls back to native.
+      pick(b, "gasCostUsd", "gas_cost_usd"),
+      pick(b, "ethUsdPrice", "eth_usd_price"),
 
       b.sweptAt ? new Date(b.sweptAt) : new Date(),
     ];
