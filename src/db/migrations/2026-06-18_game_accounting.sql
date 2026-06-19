@@ -125,12 +125,13 @@ SELECT
   s.locked_at,
   s.swept_at,
 
-  -- normalized on-chain figures (USDC dollars)
-  (s.amount_swept            / 1e6) AS gross_swept_usdc,
-  (s.total_fees_1pct         / 1e6) AS fees_usdc,            -- MEMO: already inside swept
-  (s.lp_funded_total         / 1e6) AS lp_funded_usdc,
-  (s.withdraw_fees_total     / 1e6) AS withdraw_fees_usdc,
-  (s.withdraw_net_payout_total / 1e6) AS withdraw_net_payout_usdc,
+  -- normalized on-chain figures (USDC dollars). The sweeps on-chain columns are
+  -- stored as TEXT, so cast (NULLIF guards against empty-string rows) before math.
+  (NULLIF(s.amount_swept, '')::numeric             / 1e6) AS gross_swept_usdc,
+  (NULLIF(s.total_fees_1pct, '')::numeric          / 1e6) AS fees_usdc,            -- MEMO: already inside swept
+  (NULLIF(s.lp_funded_total, '')::numeric          / 1e6) AS lp_funded_usdc,
+  (NULLIF(s.withdraw_fees_total, '')::numeric      / 1e6) AS withdraw_fees_usdc,
+  (NULLIF(s.withdraw_net_payout_total, '')::numeric / 1e6) AS withdraw_net_payout_usdc,
   s.gas_cost_native,                                         -- native ETH (wei)
   s.gas_cost_usd,                                            -- gas valued in USD at sweep time (null on historical rows)
   s.eth_usd_price,                                           -- ETH/USD used for the conversion
@@ -144,14 +145,16 @@ SELECT
   coalesce(p.payout_to_users, 0)   AS promo_payout_to_users_usdc, -- marketing expense
   coalesce(p.credit_recovered, 0)  AS promo_credit_recovered_usdc,
 
-  -- derived accounting
-  ((s.amount_swept / 1e6) + coalesce(p.payout_to_users, 0) - coalesce(p.credit_lost, 0))
+  -- derived accounting. coalesce the on-chain terms to 0: lp_funded_total is
+  -- null/empty on multi pools (their sweep path doesn't record LP funding), and
+  -- a null in a subtraction would poison the whole result.
+  (coalesce(NULLIF(s.amount_swept, '')::numeric / 1e6, 0) + coalesce(p.payout_to_users, 0) - coalesce(p.credit_lost, 0))
     AS organic_house_revenue_usdc,
-  ((s.amount_swept / 1e6) - (s.lp_funded_total / 1e6) - coalesce(p.credit_lost, 0))
+  (coalesce(NULLIF(s.amount_swept, '')::numeric / 1e6, 0) - coalesce(NULLIF(s.lp_funded_total, '')::numeric / 1e6, 0) - coalesce(p.credit_lost, 0))
     AS net_game_pnl_usdc,
   -- Same bottom line, less gas (valued in USD). gas_cost_usd is null on
   -- historical rows, so coalesce to 0 there (gas is sub-cent on Arbitrum).
-  ((s.amount_swept / 1e6) - (s.lp_funded_total / 1e6) - coalesce(p.credit_lost, 0)
+  (coalesce(NULLIF(s.amount_swept, '')::numeric / 1e6, 0) - coalesce(NULLIF(s.lp_funded_total, '')::numeric / 1e6, 0) - coalesce(p.credit_lost, 0)
     - coalesce(s.gas_cost_usd, 0))
     AS net_game_pnl_incl_gas_usd
 FROM public.sweeps s
