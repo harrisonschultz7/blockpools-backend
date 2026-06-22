@@ -22,14 +22,13 @@ const DELAY_MS = 700;
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send only to TEST_EMAIL instead of the full list.
 // Set to false when ready to blast everyone.
-const TEST_MODE = true;
+const TEST_MODE = false;
 const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ALREADY_SENT = new Set<string>([
-  "jaimeoliveira271@gmail.com",
-  "joilsoalves3@gmail.com",
   "goey214@gmail.com",
+  "bptester1240@gmail.com",
 ]);
 
 async function getRecipients(): Promise<string[]> {
