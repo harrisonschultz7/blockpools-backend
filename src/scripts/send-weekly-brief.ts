@@ -22,7 +22,7 @@ const DELAY_MS = 700;
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send only to TEST_EMAIL instead of the full list.
 // Set to false when ready to blast everyone.
-const TEST_MODE = false;
+const TEST_MODE = true;
 const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ async function run() {
   for (const email of emails) {
     try {
       const result = await resend.emails.send({
-        from: "Harrison <harrison@mail.blockpools.io>",
+        from: '"Harrison @ BlockPools" <harrison@mail.blockpools.io>',
         to: email,
         template: {
           id: TEMPLATE_ID,
