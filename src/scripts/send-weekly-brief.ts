@@ -70,7 +70,7 @@ async function run() {
   for (const email of emails) {
     try {
       const result = await resend.emails.send({
-        from: '"Harrison @ BlockPools" <harrison@mail.blockpools.io>',
+        from: "Harrison from BlockPools <harrison@mail.blockpools.io>",
         to: email,
         template: {
           id: TEMPLATE_ID,
