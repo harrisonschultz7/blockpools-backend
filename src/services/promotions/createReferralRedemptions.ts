@@ -140,6 +140,60 @@ export async function createReferralRedemptions(
       return { created: 0, reason: "referee_has_signup_bonus" };
     }
 
+    // 6b. Anti-circular: no DUPLICATE PAIR. A single invite already pays BOTH
+    //     sides $20, so a second referral between the same two wallets (in
+    //     either direction, via any other invite) is pure double-dipping — the
+    //     literal signature of the closed-loop ring (A "refers" B, then B
+    //     "refers" A, or the same two keep pairing). Genuine new referrals are
+    //     between two wallets that haven't been paired before, so this never
+    //     touches a legit first-time referral.
+    const dupPair = await client.query(
+      `
+      SELECT 1
+        FROM public.promo_redemptions r
+       WHERE r.referral_invite_id IS NOT NULL
+         AND r.referral_invite_id <> $1
+         AND r.status NOT IN ('expired', 'voided')
+         AND (
+              (lower(r.user_address) = $2 AND lower(r.referrer_address) = $3)
+           OR (lower(r.user_address) = $3 AND lower(r.referrer_address) = $2)
+         )
+       LIMIT 1
+      `,
+      [id, refereeAddr, inviterAddr]
+    );
+    if ((dupPair.rowCount ?? 0) > 0) {
+      await client.query("ROLLBACK");
+      return { created: 0, reason: "duplicate_referral_pair" };
+    }
+
+    // 6c. Anti-circular: REFEREE-ONCE. The "friend" side is for genuinely NEW
+    //     users, and you're only new once — so a user may be the REDEEMER of at
+    //     most one invite. We read this straight from the invites table (the
+    //     authoritative role source: the redeemer IS the new friend), which
+    //     avoids the referee/referrer ambiguity of the redemption rows. This
+    //     blocks one account being "referred" by several ring members (exactly
+    //     what let Matu66 redeem both his own invite AND lolita's). It does NOT
+    //     cap how many DISTINCT friends a REFERRER brings in (inviter_user_id,
+    //     not redeemed_by — the 10x stays intact); it only stops the same
+    //     account from being the new-friend repeatedly.
+    if (refereeUserId) {
+      const redeemedBefore = await client.query(
+        `
+        SELECT 1
+          FROM public.invites
+         WHERE id <> $1
+           AND COALESCE(redeemed_by_user_id, accepted_by_user_id) = $2
+         LIMIT 1
+        `,
+        [id, refereeUserId]
+      );
+      if ((redeemedBefore.rowCount ?? 0) > 0) {
+        await client.query("ROLLBACK");
+        return { created: 0, reason: "referee_already_referred" };
+      }
+    }
+
     const creditUsdc = String(campaign.credit_usdc);
     const isRepeatable = Boolean(campaign.is_repeatable);
 
