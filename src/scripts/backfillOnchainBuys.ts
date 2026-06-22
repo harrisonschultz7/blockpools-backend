@@ -190,6 +190,14 @@ async function run() {
   }
 
   console.log(`[backfill-onchain] done. users=${rowsByUser.size} okUsers=${okUsers} totalBuyRows=${totalLogs}`);
+
+  // upsertUserTradesAndGames fires markUserHasTraded / updatePromoProgress /
+  // handlePromoTradeAttribution as fire-and-forget (NOT awaited) — they run on
+  // the shared pool AFTER the upsert returns. Give them time to finish before
+  // we end the pool, otherwise they throw "Cannot use a pool after calling end".
+  console.log("[backfill-onchain] waiting 10s for promo/stat hooks to settle…");
+  await new Promise((r) => setTimeout(r, 10_000));
+
   await dbPool.end().catch(() => {});
   process.exit(0);
 }
