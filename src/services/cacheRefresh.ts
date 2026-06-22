@@ -468,6 +468,41 @@ export async function refreshUserTradesPage(params: {
 
   const deduped = dedupeActivityRows(mergedSorted);
 
+  // Reconcile vs direct-write BUYs: when a buy tx confirms, the frontend
+  // immediately writes a placeholder BUY row (id `buy-direct-<txHash>`) so the
+  // bet shows without waiting ~30min for the subgraph (and survives cases where
+  // the subgraph never indexes a smart-wallet buy at all). Once the subgraph
+  // delivers that same buy, DELETE the placeholder and let the authoritative
+  // subgraph row persist (id `trade-<...>` / `bet-<...>`).
+  //
+  // Why delete-then-upsert (not ON CONFLICT): the two rows have different ids,
+  // so ON CONFLICT(id) would NOT collapse them and exposure / cost-basis would
+  // DOUBLE-COUNT. Deleting the placeholder first guarantees exactly one BUY row
+  // per tx AND upgrades the frontend's estimated price/shares/fee to the exact
+  // on-chain values (enrichment). Mirrors the CLAIM reconcile below.
+  try {
+    const buyTxHashes = Array.from(
+      new Set(
+        deduped.rows
+          .filter((r: any) => String(r?.type).toUpperCase() === "BUY")
+          .map((r: any) => (r?.txHash ? String(r.txHash).toLowerCase() : ""))
+          .filter(Boolean)
+      )
+    );
+    if (buyTxHashes.length) {
+      await pool.query(
+        `DELETE FROM public.user_trade_events
+           WHERE lower(user_address) = lower($1)
+             AND type = 'BUY'
+             AND id LIKE 'buy-direct-%'
+             AND lower(tx_hash) = ANY($2::text[])`,
+        [params.user, buyTxHashes]
+      );
+    }
+  } catch (e: any) {
+    console.log(`[persistTrades buy reconcile] err: ${String(e?.message || e)}`);
+  }
+
   // ✅ Persist deduped trades+bets
   try {
     await upsertUserTradesAndGames({
