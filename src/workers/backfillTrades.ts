@@ -464,6 +464,38 @@ async function backfillUser(opts: {
     totalDroppedDupes += deduped.dropped;
 
     if (deduped.rows.length) {
+      // Reconcile vs direct-write BUYs (mirror of refreshUserTradesPage + the
+      // claims reconcile below): a `buy-direct-<txHash>` placeholder was written
+      // (frontend recordBuyDirect / placeFreeBet / the on-chain backfill) while
+      // the subgraph was down. The authoritative subgraph BUY has a DIFFERENT id
+      // (`trade-...`/`bet-...`), so ON CONFLICT(id) can't collapse them — leaving
+      // both would DOUBLE-COUNT exposure/cost-basis. DELETE the placeholder for
+      // these txHashes first, then upsert the authoritative row → exactly one BUY
+      // per tx. Matches by user_address so promo (funding-wallet) buy-direct rows
+      // are reconciled when the funding wallet is processed as a user.
+      try {
+        const buyTxHashes = Array.from(
+          new Set(
+            deduped.rows
+              .filter((r: any) => String(r?.type).toUpperCase() === "BUY")
+              .map((r: any) => (r?.txHash ? String(r.txHash).toLowerCase() : ""))
+              .filter(Boolean)
+          )
+        );
+        if (buyTxHashes.length) {
+          await pool.query(
+            `DELETE FROM public.user_trade_events
+               WHERE lower(user_address) = lower($1)
+                 AND type = 'BUY'
+                 AND id LIKE 'buy-direct-%'
+                 AND lower(tx_hash) = ANY($2::text[])`,
+            [user, buyTxHashes]
+          );
+        }
+      } catch (e: any) {
+        console.log(`[backfill buy reconcile] err: ${String(e?.message || e)}`);
+      }
+
       await upsertUserTradesAndGames({
         user,
         tradeRows: deduped.rows,
