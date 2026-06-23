@@ -297,10 +297,17 @@ export async function sendInviteEmail(opts: {
                 </td>
               </tr>
               <tr>
-                <td align="center" style="padding-bottom:30px;">
+                <td align="center" style="padding-bottom:18px;">
                   <a href="${url}" style="color:#facc15;text-decoration:none;font-size:13px;line-height:1.5;word-break:break-all;">
                     ${url}
                   </a>
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="padding-bottom:28px;">
+                  <div style="max-width:440px;margin:0 auto;font-size:13px;line-height:1.55;color:rgba(255,255,255,0.78);">
+                    To receive the <strong style="color:#facc15;">$20 referral bonus</strong>, you must create your BlockPools profile <strong>through this invite link</strong>. If you sign up separately first, the referral bonus can&rsquo;t be applied to your account.
+                  </div>
                 </td>
               </tr>
               <tr>
