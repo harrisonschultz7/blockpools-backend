@@ -22,6 +22,7 @@ import {
 import { getFundingWallet } from "./findFundingWallet";
 import { hasBetFundedEntry, writeLedgerEntry } from "./promotionFunding";
 import { triggerFundingWalletAttributionRefresh } from "./handlePromoTradeAttribution";
+import { upsertUserTradesAndGames } from "../persistTrades";
 
 // Minimal pool ABI covering both pool variants in this codebase:
 //   - Multi-outcome (gamePoolMulti): buy(uint8 outcome, uint256, uint256)
@@ -405,6 +406,54 @@ export async function placeFreeBet(
     throw err;
   } finally {
     client.release();
+  }
+
+  // Direct-write the BUY row to user_trade_events NOW, independent of the
+  // subgraph, so the promo bet shows in stats immediately even while the
+  // subgraph lags or is stalled. Without this the row only ever arrived via the
+  // subgraph pull below — which silently produces nothing whenever the subgraph
+  // is behind. Mirrors the frontend recordBuyDirect path for user buys.
+  //
+  // - user = funding wallet (it placed the buy on-chain), so refreshUserTradesPage's
+  //   `buy-direct-%` reconcile collapses this row by txHash once the subgraph
+  //   delivers the authoritative funding-wallet trade — no double-count.
+  // - persistTrades' promo pre-insert hook (applyBeneficiaryToFundingWalletTrade)
+  //   finds the now-'placed' redemption by (pool, txHash) and stamps
+  //   beneficiary_address + promo_redemption_id, so the trade attributes to the
+  //   user via effective_user_address — no extra wiring needed here.
+  // Amounts are the credit (gross≈net for a free bet); the subgraph reconcile
+  // later replaces this with exact fee/shares values. Never blocks the response.
+  try {
+    await upsertUserTradesAndGames({
+      user: wallet.address.toLowerCase(),
+      tradeRows: [
+        {
+          id: `buy-direct-${txHash.toLowerCase()}`,
+          type: "BUY",
+          side: null,
+          outcomeIndex,
+          outcomeCode: null,
+          timestamp: Math.floor(Date.now() / 1000),
+          txHash,
+          spotPriceBps: priceBps,
+          avgPriceBps: priceBps,
+          grossInDec: creditUsdc,
+          grossOutDec: "0",
+          feeDec: "0",
+          netStakeDec: creditUsdc,
+          netOutDec: "0",
+          costBasisClosedDec: "0",
+          realizedPnlDec: "0",
+          game: { id: poolAddress, league: game.league ?? null },
+          __source: "promo-direct",
+        },
+      ],
+    });
+  } catch (err) {
+    console.error(
+      "[placeFreeBet] direct-write of promo BUY failed (non-blocking)",
+      { redemptionId, txHash, err }
+    );
   }
 
   // Fire-and-forget: pull the funding wallet's freshly-confirmed BUY from the
