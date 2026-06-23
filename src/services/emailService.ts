@@ -240,12 +240,12 @@ export async function sendInviteEmail(opts: {
   const url = escapeHtml(opts.inviteUrl);
 
   const subject = inviterRaw
-    ? `${inviterName} invited you to BlockPools`
-    : "You're invited to BlockPools";
+    ? `${inviterName} te invitó a BlockPools`
+    : "Te invitaron a BlockPools";
 
   const headline = inviterRaw
-    ? `${inviterName} invited you to join BlockPools`
-    : "You've been invited to join BlockPools";
+    ? `${inviterName} te invitó a unirte a BlockPools`
+    : "Te invitaron a unirte a BlockPools";
 
   const html = `
   <!doctype html>
@@ -264,7 +264,7 @@ export async function sendInviteEmail(opts: {
       </style>
     </head>
     <body style="margin:0;padding:0;background:#3F4EA3;background-image:linear-gradient(180deg,#3F4EA3 0%,#2C2A55 100%);font-family:Inter,Arial,sans-serif;color:#ffffff;">
-      <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">You've been invited to join BlockPools.</div>
+      <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">Te invitaron a unirte a BlockPools.</div>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" role="presentation" style="padding:40px 20px;">
         <tr>
           <td align="center">
@@ -286,13 +286,13 @@ export async function sendInviteEmail(opts: {
               </tr>
               <tr>
                 <td align="center" style="font-size:17px;line-height:1.5;font-weight:600;color:#facc15;padding-bottom:32px;">
-                  Where Sports Fans Trade Together
+                  Donde los fanáticos del deporte operan juntos
                 </td>
               </tr>
               <tr>
                 <td align="center" style="padding-bottom:16px;">
                   <a href="${url}" style="background:#facc15;color:#000000;font-weight:700;text-decoration:none;padding:14px 38px;border-radius:8px;display:inline-block;font-size:16px;line-height:1;">
-                    Accept Invite
+                    Aceptar invitación
                   </a>
                 </td>
               </tr>
@@ -306,7 +306,7 @@ export async function sendInviteEmail(opts: {
               <tr>
                 <td align="center" style="padding-bottom:28px;">
                   <div style="max-width:440px;margin:0 auto;font-size:13px;line-height:1.55;color:rgba(255,255,255,0.78);">
-                    To receive the <strong style="color:#facc15;">$20 referral bonus</strong>, you must create your BlockPools profile <strong>through this invite link</strong>. If you sign up separately first, the referral bonus can&rsquo;t be applied to your account.
+                    Para recibir el <strong style="color:#facc15;">bono de referido de $20</strong>, debes crear tu perfil de BlockPools <strong>a través de este enlace de invitación</strong>. Si te registras por separado, el bono no podrá aplicarse a tu cuenta.
                   </div>
                 </td>
               </tr>
@@ -318,13 +318,13 @@ export async function sendInviteEmail(opts: {
                   <table cellpadding="0" cellspacing="0" border="0" role="presentation" align="center">
                     <tr>
                       <td style="padding:4px 5px;">
-                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">Follow Top Traders</span>
+                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">Sigue a los mejores</span>
                       </td>
                       <td style="padding:4px 5px;">
-                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">Live Market Chat</span>
+                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">Chat en vivo</span>
                       </td>
                       <td style="padding:4px 5px;">
-                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">See Every Trade</span>
+                        <span style="display:inline-block;border:1.5px solid rgba(250,204,21,0.55);background:rgba(250,204,21,0.08);border-radius:999px;padding:8px 16px;font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;">Ve cada operación</span>
                       </td>
                     </tr>
                   </table>
