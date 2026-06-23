@@ -45,7 +45,7 @@ async function getVerifiedUser(
 // ── Canonical live ROI (single user) ────────────────────────────────────────
 //
 // Matches masterMetrics.ts / profile page exactly:
-//   total_traded = SUM(gross_in_dec) WHERE type='BUY' AND is_final=true AND resolution_type='NORMAL'
+//   total_traded = SUM(gross_in_dec) WHERE type='BUY' AND is_final=true AND resolution_type IN ('NORMAL','RESOLVED')
 //                + SUM(cost_basis_closed_dec) WHERE type='SELL' AND is_final=false
 //   total_return = SUM(net_out_dec) WHERE type IN ('SELL','CLAIM')
 //   ROI (%)      = (total_return / total_traded - 1) * 100
@@ -76,7 +76,7 @@ async function computeLiveRoi(
     )
     SELECT
       (
-        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type = 'NORMAL'), 0)
+        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
         + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
       )::numeric AS total_traded,
       COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
@@ -138,7 +138,7 @@ async function computeLiveRoiBulk(
     SELECT
       user_address,
       (
-        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type = 'NORMAL'), 0)
+        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
         + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
       )::numeric AS total_traded,
       COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
@@ -207,7 +207,7 @@ async function computeLiveRoiBulkAllLeagues(
     SELECT
       user_address,
       (
-        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type = 'NORMAL'), 0)
+        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
         + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
       )::numeric AS total_traded,
       COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
@@ -443,7 +443,7 @@ router.get("/roi/:address", async (req: Request, res: Response) => {
       )
       SELECT
         (
-          COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type = 'NORMAL'), 0)
+          COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
           + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
         )::numeric AS total_traded,
         COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,

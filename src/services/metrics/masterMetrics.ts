@@ -235,7 +235,7 @@ async function fetchLeaderboardAggFromDb(params: {
       -- Using is_final=false on the SELL filter avoids double-counting positions
       -- that were sold AND then also settled/claimed after game ended.
       (
-        COALESCE(SUM(gross_in) FILTER (WHERE type = 'BUY' AND is_final = true AND resolution_type = 'NORMAL'), 0)
+        COALESCE(SUM(gross_in) FILTER (WHERE type = 'BUY' AND is_final = true AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
         + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
       )::numeric AS buy_gross,
       SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric     AS claim_total,
@@ -283,7 +283,7 @@ async function fetchLeaderboardAggFromDb(params: {
       user_id,
       league,
       (
-        COALESCE(SUM(gross_in) FILTER (WHERE type='BUY' AND is_final = true AND resolution_type = 'NORMAL'), 0)
+        COALESCE(SUM(gross_in) FILTER (WHERE type='BUY' AND is_final = true AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
         + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
       )::numeric AS buy_gross
     FROM filtered
