@@ -28,7 +28,7 @@
 //   BACKFILL_CHUNK       getLogs block-range chunk size (default 9000)
 //   RPC_URL / ARBITRUM_RPC_URL / PROMO_RPC_URL   Arbitrum RPC (default public arb1)
 
-import { JsonRpcProvider, Interface, id as keccakId, zeroPadValue, getAddress, formatUnits } from "ethers";
+import { JsonRpcProvider, Interface, Contract, id as keccakId, zeroPadValue, getAddress, formatUnits } from "ethers";
 import { upsertUserTradesAndGames } from "../services/persistTrades";
 import { pool as dbPool } from "../db";
 
@@ -38,12 +38,29 @@ const RPC_URL =
   process.env.PROMO_RPC_URL ||
   "https://arb1.arbitrum.io/rpc";
 
-const BUY_FRAGMENT =
+// MULTI pools (gamePoolMulti.buy) — indexed uint8 outcome + string outcomeCode.
+const BUY_FRAGMENT_MULTI =
   "event Buy(address indexed user, bytes32 indexed marketId, string league, uint8 indexed outcome, string outcomeCode, uint256 grossAmount, uint256 netStake, uint256 fee, uint256 sharesOut, uint256 spotPriceBps, uint256 avgPriceBps)";
-const BUY_TOPIC0 = keccakId(
+const BUY_TOPIC0_MULTI = keccakId(
   "Buy(address,bytes32,string,uint8,string,uint256,uint256,uint256,uint256,uint256,uint256)"
-);
-const iface = new Interface([BUY_FRAGMENT]);
+).toLowerCase();
+const ifaceMulti = new Interface([BUY_FRAGMENT_MULTI]);
+
+// BINARY pools (gamePool.buyTeamA/B) — NO indexed outcome; a non-indexed
+// `string teamCode` instead. Different signature → different topic0, so it must
+// be matched and decoded separately. Outcome index is derived from teamCode via
+// the pool's teamACode()/teamBCode() getters (A=0, B=1).
+const BUY_FRAGMENT_BINARY =
+  "event Buy(address indexed user, bytes32 indexed gameId, string league, string teamCode, uint256 grossAmount, uint256 netStake, uint256 fee, uint256 sharesOut, uint256 spotPriceBps, uint256 avgPriceBps)";
+const BUY_TOPIC0_BINARY = keccakId(
+  "Buy(address,bytes32,string,string,uint256,uint256,uint256,uint256,uint256,uint256)"
+).toLowerCase();
+const ifaceBinary = new Interface([BUY_FRAGMENT_BINARY]);
+
+const TEAM_ABI = [
+  "function teamACode() view returns (string)",
+  "function teamBCode() view returns (string)",
+];
 
 const USDC_DECIMALS = 6;
 
@@ -89,6 +106,41 @@ async function run() {
     return ts;
   }
 
+  // Match BOTH the multi and binary Buy signatures in a single getLogs (topic0
+  // OR-filter). user is topic1 (indexed) in both, so the single-user fast filter
+  // still applies on topic2.
+  const topic0Or = [BUY_TOPIC0_MULTI, BUY_TOPIC0_BINARY];
+
+  // Per-pool teamACode/teamBCode, read once, to map a binary event's teamCode
+  // string to an outcome index (A=0, B=1). Best-effort; outcome index doesn't
+  // affect the promo's held-to-settlement sum for buy-only positions, and the
+  // subgraph reconcile overwrites these rows with authoritative data anyway.
+  const teamCodeCache = new Map<string, { a: string; b: string }>();
+  async function resolveBinaryOutcome(
+    addr: string,
+    teamCode: string
+  ): Promise<{ index: number; code: string }> {
+    const key = addr.toLowerCase();
+    let codes = teamCodeCache.get(key);
+    if (!codes) {
+      codes = { a: "", b: "" };
+      try {
+        const c = new Contract(addr, TEAM_ABI, provider);
+        const [a, b] = await Promise.all([c.teamACode(), c.teamBCode()]);
+        codes = {
+          a: String(a || "").toUpperCase().trim(),
+          b: String(b || "").toUpperCase().trim(),
+        };
+      } catch {
+        /* leave blank; fall through to index 0 (A) like the subgraph default */
+      }
+      teamCodeCache.set(key, codes);
+    }
+    const code = String(teamCode || "").toUpperCase().trim();
+    if (codes.b && code === codes.b) return { index: 1, code };
+    return { index: 0, code: code || codes.a }; // default A
+  }
+
   // Collect rows grouped by user so each user's promo is evaluated once.
   const rowsByUser = new Map<string, any[]>();
   let totalLogs = 0;
@@ -110,15 +162,15 @@ async function run() {
           address,
           fromBlock: start,
           toBlock: end,
-          topics: userTopic ? [BUY_TOPIC0, userTopic] : [BUY_TOPIC0],
+          topics: userTopic ? [topic0Or, userTopic] : [topic0Or],
         });
       } catch (e: any) {
         console.log(`[backfill-onchain] getLogs ${address} ${start}-${end} err: ${String(e?.message || e)} (retrying smaller)`);
         // Shrink-and-retry once for RPC range limits.
         const mid = Math.floor((start + end) / 2);
         try {
-          const a = await provider.getLogs({ address, fromBlock: start, toBlock: mid, topics: userTopic ? [BUY_TOPIC0, userTopic] : [BUY_TOPIC0] });
-          const b = await provider.getLogs({ address, fromBlock: mid + 1, toBlock: end, topics: userTopic ? [BUY_TOPIC0, userTopic] : [BUY_TOPIC0] });
+          const a = await provider.getLogs({ address, fromBlock: start, toBlock: mid, topics: userTopic ? [topic0Or, userTopic] : [topic0Or] });
+          const b = await provider.getLogs({ address, fromBlock: mid + 1, toBlock: end, topics: userTopic ? [topic0Or, userTopic] : [topic0Or] });
           logs = a.concat(b);
         } catch (e2: any) {
           console.log(`[backfill-onchain] retry failed ${start}-${end}: ${String(e2?.message || e2)}`);
@@ -127,9 +179,17 @@ async function run() {
       }
 
       for (const log of logs) {
+        const t0 = String((log.topics as string[])[0] || "").toLowerCase();
+        const isMulti = t0 === BUY_TOPIC0_MULTI;
+        const isBinary = t0 === BUY_TOPIC0_BINARY;
+        if (!isMulti && !isBinary) continue;
+
         let parsed;
         try {
-          parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
+          parsed = (isMulti ? ifaceMulti : ifaceBinary).parseLog({
+            topics: log.topics as string[],
+            data: log.data,
+          });
         } catch {
           continue;
         }
@@ -142,14 +202,26 @@ async function run() {
         const ts = await blockTs(Number(log.blockNumber));
         const league = String(parsed.args.league || "");
 
+        // Outcome: multi carries it in the event; binary derives it from teamCode.
+        let outcomeIndex: number;
+        let outcomeCode: string;
+        if (isMulti) {
+          outcomeIndex = Number(parsed.args.outcome);
+          outcomeCode = String(parsed.args.outcomeCode || "");
+        } else {
+          const r = await resolveBinaryOutcome(address, String(parsed.args.teamCode || ""));
+          outcomeIndex = r.index;
+          outcomeCode = r.code;
+        }
+
         const row = {
           // SAME id convention as the frontend direct-write so the subgraph
           // reconcile (DELETE … id LIKE 'buy-direct-%' … tx_hash = ANY) collapses it.
           id: `buy-direct-${txHash.toLowerCase()}`,
           type: "BUY",
           side: null,
-          outcomeIndex: Number(parsed.args.outcome),
-          outcomeCode: String(parsed.args.outcomeCode || ""),
+          outcomeIndex,
+          outcomeCode,
           timestamp: ts,
           txHash,
           spotPriceBps: Number(parsed.args.spotPriceBps),
@@ -169,7 +241,7 @@ async function run() {
         rowsByUser.get(user)!.push(row);
         totalLogs++;
         console.log(
-          `[backfill-onchain] BUY user=${user} outcome=${row.outcomeIndex} net=${row.netStakeDec} tx=${txHash} blk=${log.blockNumber}`
+          `[backfill-onchain] BUY(${isMulti ? "multi" : "binary"}) user=${user} outcome=${outcomeIndex} net=${row.netStakeDec} tx=${txHash} blk=${log.blockNumber}`
         );
       }
       await sleep(60);
