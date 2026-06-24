@@ -14,6 +14,7 @@ import wallRouter from "./routes/wall";
 import leagueChatRouter from "./routes/leagueChat";
 import socialTagsRouter from "./routes/socialTags";
 import invitesRouter from "./routes/invites";
+import notificationsRouter from "./routes/notifications";
 import emailTestRouter from "./routes/emailTest";
 import adminSweepsRouter from "./routes/adminSweeps";
 
@@ -158,6 +159,7 @@ export function makeServer() {
   // ── Bare /api mounts (catch-all — must come last) ─────────────────────────────
   app.use("/api", wallRouter);
   app.use("/api", invitesRouter);
+  app.use("/api", notificationsRouter);
   app.use("/api", emailTestRouter);
 
   // ✅ User leaderboard API (backend-computed + cached metrics)

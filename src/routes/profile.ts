@@ -17,6 +17,7 @@ import multer from "multer";
 import path from "path";
 import { PrivyClient } from "@privy-io/server-auth";
 import { Resend } from "resend";
+import { notifyFollow } from "../services/notifications/notify";
 
 import { buildProfilePortfolio } from "../services/profilePortfolio";
 import { PROMO_FRAMEWORK_ENABLED } from "../config/promo";
@@ -785,7 +786,7 @@ router.post("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: Res
     if (targetRes.rows.length === 0)
       return res.status(404).json({ error: "Target profile not found" });
 
-    await pool.query(
+    const followIns = await pool.query(
       `
       INSERT INTO user_follows (follower_id, following_id)
       VALUES ($1, $2)
@@ -793,6 +794,12 @@ router.post("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: Res
       `,
       [viewerId, profileId]
     );
+
+    // Notify the followed user — only when a NEW follow row was created, so
+    // re-POSTing an existing follow doesn't re-fire. Fire-and-forget.
+    if ((followIns.rowCount ?? 0) > 0) {
+      notifyFollow({ followerId: viewerId, followingId: profileId }).catch(() => {});
+    }
 
     const { rows } = await pool.query(
       `

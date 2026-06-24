@@ -25,6 +25,7 @@
 // query includes `beneficiary_address IS NULL`.
 
 import { pool } from "../../db";
+import { notifyPromoCreditById } from "../notifications/notify";
 
 export type EvaluateResult =
   | { unlocked: false; reason: string }
@@ -199,6 +200,9 @@ export async function evaluatePromoEligibility(
     ]
   );
 
+  // "You have been credited with $X promo" — the credit is now spendable.
+  notifyPromoCreditById(redemptionId).catch(() => {});
+
   return { unlocked: true, redemptionId };
 }
 
@@ -347,6 +351,9 @@ async function evaluateMutualReferral(
         }),
       ]
     );
+
+    // Notify each side that their referral credit is now spendable.
+    notifyPromoCreditById(String(r.id)).catch(() => {});
   }
 
   return { unlocked: true, redemptionId: String(row.id) };

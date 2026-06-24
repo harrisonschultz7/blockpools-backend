@@ -5,6 +5,7 @@ import { pool } from "../db";
 import { authPrivy, authPrivyOptionalWallet, AuthedRequest } from "../middleware/authPrivy";
 import { sendInviteEmail } from "../services/emailService";
 import { createReferralRedemptions } from "../services/promotions/createReferralRedemptions";
+import { notifyReferral } from "../services/notifications/notify";
 
 const router = Router();
 
@@ -203,6 +204,14 @@ router.post("/invites/accept", authPrivyOptionalWallet, async (req: AuthedReques
       console.error("[invites/accept] referral pair creation failed (non-blocking)", e);
     }
 
+    // "New Referred Friend: X" → the inviter. Independent of the promo
+    // framework; deduped by invite id so accept+redeem only notify once.
+    notifyReferral({
+      inviteId: rows[0].id,
+      inviterUserId: rows[0].inviter_user_id,
+      refereeUserId: inviteeUserId,
+    }).catch(() => {});
+
     return res.json({
       ok: true,
       inviterUserId: rows[0].inviter_user_id,
@@ -258,6 +267,13 @@ router.post("/invites/redeem", authPrivyOptionalWallet, async (req: AuthedReques
     } catch (e) {
       console.error("[invites/redeem] referral pair creation failed (non-blocking)", e);
     }
+
+    // "New Referred Friend: X" → the inviter. Deduped by invite id.
+    notifyReferral({
+      inviteId: rows[0].id,
+      inviterUserId: rows[0].inviter_user_id,
+      refereeUserId: inviteeUserId,
+    }).catch(() => {});
 
     return res.json({
       ok: true,

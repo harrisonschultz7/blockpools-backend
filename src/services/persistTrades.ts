@@ -2,6 +2,7 @@
 import { pool } from "../db";
 import { markUserHasTraded } from "../utils/markHasTraded";
 import { updatePromoProgress } from "../utils/updatePromoProgress";
+import { notifyTradeToFollowers } from "./notifications/notify";
 
 // === PROMO FRAMEWORK SIDECAR (gated, safe to remove) ============================
 // All references below are no-ops when PROMO_FRAMEWORK_ENABLED=false. To remove
@@ -611,6 +612,32 @@ export async function upsertUserTradesAndGames(opts: {
       const uniqueAddresses = [...new Set(trades.map((t) => t.user))];
       Promise.all(uniqueAddresses.map((addr) => markUserHasTraded(addr)))
         .catch((err) => console.error("[persistTrades] markUserHasTraded failed:", err));
+    }
+
+    // ── Notify followers of each BUY/SELL trade (fire-and-forget) ────────────
+    // One notification per (follower, trade), deduped by trade id inside the
+    // emitter so re-persisting an upserted trade never double-notifies. CLAIMs
+    // are excluded — they aren't social signals.
+    if (trades.length) {
+      const socialTrades = trades.filter(
+        (t) => t.type === "BUY" || t.type === "SELL"
+      );
+      Promise.all(
+        socialTrades.map((t) =>
+          notifyTradeToFollowers({
+            tradeId: t.id,
+            traderAddress: t.user,
+            type: t.type as "BUY" | "SELL",
+            outcomeCode: t.outcomeCode,
+            outcomeIndex: t.outcomeIndex,
+            avgPriceBps: t.avgPriceBps,
+            gameId: t.gameId,
+            league: t.league,
+          })
+        )
+      ).catch((err) =>
+        console.error("[persistTrades] notifyTradeToFollowers failed:", err)
+      );
     }
 
     // ── Update promo trade progress (fire-and-forget, never blocks) ──────────
