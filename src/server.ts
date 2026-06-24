@@ -12,6 +12,7 @@ import { pingDb } from "./db/pg";
 import profileRouter from "./routes/profile";
 import wallRouter from "./routes/wall";
 import leagueChatRouter from "./routes/leagueChat";
+import socialTagsRouter from "./routes/socialTags";
 import invitesRouter from "./routes/invites";
 import emailTestRouter from "./routes/emailTest";
 import adminSweepsRouter from "./routes/adminSweeps";
@@ -135,6 +136,11 @@ export function makeServer() {
   //   GET  /api/league-chat/roi/:address
   //   POST /api/league-chat/refresh-roi
   app.use("/api/league-chat", leagueChatRouter);
+
+  // ✅ Social Tags — bettor-type badges per market
+  //   POST /api/social-tags/refresh  (cron: rebuild user_tags_by_league)
+  //   GET  /api/social-tags?gameIds=0x..,0x..  (per-side Whale/Hot/Sharp counts)
+  app.use("/api/social-tags", socialTagsRouter);
 
   app.use("/api/admin", adminSweepsRouter);
   app.use("/api/promo", promoRouter);

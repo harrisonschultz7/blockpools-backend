@@ -18,6 +18,7 @@ import {
   bustUserCache,
 } from "../services/cacheRefresh";
 import { upsertUserTradesAndGames } from "../services/persistTrades";
+import { invalidateSocialTags } from "./socialTags";
 
 function clampPageSize(v: any) {
   const n = parseInt(String(v || "25"), 10);
@@ -203,6 +204,9 @@ cacheRoutes.post("/user/:address/record-trade", async (req, res) => {
   try {
     await upsertUserTradesAndGames({ user: address, tradeRows: [row] });
     bustUserCache(address);
+    // Drop this game's social-tag counts so the new position is reflected on the
+    // next read (open markets otherwise refresh on a 60s TTL).
+    invalidateSocialTags(gameId);
     return res.json({ ok: true, id: row.id });
   } catch (e: any) {
     console.log(`[record-trade] err: ${String(e?.message || e)}`);
