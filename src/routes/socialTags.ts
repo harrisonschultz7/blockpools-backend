@@ -50,17 +50,24 @@ const OPEN_TTL_MS      = 60_000; // open markets: per-side counts cached this lo
 const REBUILD_SQL = `
   WITH picks AS (
     -- per (user, league, game): the outcome the user staked the most on,
-    -- among final + resolved games with a known winner.
-    SELECT addr, league, game_id, lock_time, outcome_index, winning_outcome_index,
+    -- among final + resolved games with a known winner. last_ts = the user's
+    -- most recent trade on that game; it orders the streak below.
+    --
+    -- NOTE: we deliberately order recency by the user's trade time, NOT by
+    -- games.lock_time. Futures / MULTI markets (e.g. World Cup group/tournament
+    -- winners) carry a sentinel lock_time of 9999999999, so ordering by lock_time
+    -- would make every futures market sort as "most recent" and scramble the
+    -- streak. Trade timestamp is a real time on every market type.
+    SELECT addr, league, game_id, last_ts, outcome_index, winning_outcome_index,
            ROW_NUMBER() OVER (PARTITION BY addr, game_id ORDER BY staked DESC, outcome_index ASC) AS rn
     FROM (
       SELECT LOWER(e.effective_user_address) AS addr,
              g.league                        AS league,
              e.game_id                       AS game_id,
-             g.lock_time                     AS lock_time,
              e.outcome_index                 AS outcome_index,
              g.winning_outcome_index         AS winning_outcome_index,
-             SUM(COALESCE(e.gross_in_dec, 0)) AS staked
+             SUM(COALESCE(e.gross_in_dec, 0)) AS staked,
+             MAX(e.timestamp)                AS last_ts
       FROM public.user_trade_events e
       JOIN public.games g ON g.game_id = e.game_id
       WHERE e.type = 'BUY'
@@ -68,13 +75,13 @@ const REBUILD_SQL = `
         AND g.is_final = true
         AND g.resolution_type IN ('NORMAL', 'RESOLVED')
         AND g.winning_outcome_index IS NOT NULL
-      GROUP BY 1, 2, 3, 4, 5, 6
+      GROUP BY 1, 2, 3, 4, 5
     ) s
   ),
   seq AS (
     SELECT addr, league,
            (outcome_index = winning_outcome_index) AS won,
-           ROW_NUMBER() OVER (PARTITION BY addr, league ORDER BY lock_time DESC NULLS LAST, game_id DESC) AS rn2
+           ROW_NUMBER() OVER (PARTITION BY addr, league ORDER BY last_ts DESC NULLS LAST, game_id DESC) AS rn2
     FROM picks
     WHERE rn = 1
   ),
