@@ -172,6 +172,7 @@ export async function notifyFollow(opts: {
  */
 export async function notifyTradeToFollowers(opts: {
   tradeId: string;
+  txHash?: string | null;
   traderAddress: string;
   type: "BUY" | "SELL";
   outcomeCode: string | null;
@@ -212,12 +213,21 @@ export async function notifyTradeToFollowers(opts: {
       league: opts.league,
     };
 
+    // Dedupe on the STABLE on-chain identity (tx hash + outcome index), not the
+    // synthetic row id — the indexer's id is unstable (e.g. a "trade-" vs
+    // "trade-trade-" prefix flip), which would otherwise re-fire the same trade
+    // under a new key on re-ingestion. Fall back to the row id only if no hash.
+    const stableKey =
+      opts.txHash && opts.txHash.trim()
+        ? `${opts.txHash.toLowerCase()}:${opts.outcomeIndex ?? "x"}`
+        : opts.tradeId;
+
     await insertNotifications(
       followers.map((f: any) => ({
         recipientId: f.follower_id as string,
         type: "trade" as const,
         actorId: trader.id,
-        dedupeKey: `trade:${opts.tradeId}`,
+        dedupeKey: `trade:${stableKey}`,
         payload,
       }))
     );

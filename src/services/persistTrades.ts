@@ -626,6 +626,7 @@ export async function upsertUserTradesAndGames(opts: {
         socialTrades.map((t) =>
           notifyTradeToFollowers({
             tradeId: t.id,
+            txHash: t.txHash,
             traderAddress: t.user,
             type: t.type as "BUY" | "SELL",
             outcomeCode: t.outcomeCode,
