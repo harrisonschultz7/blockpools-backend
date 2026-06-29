@@ -13,6 +13,10 @@ import {
   placeFreeBet,
   PlaceFreeBetException,
 } from "../services/promotions/placeFreeBet";
+import {
+  cumulativeHeldToSettlement,
+  countReferrerSlotsUpTo,
+} from "../services/promotions/evaluatePromoEligibility";
 
 const router = Router();
 
@@ -308,6 +312,121 @@ router.get("/me/progress", async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error("[promotionsRouter/me/progress]", err);
+    return res.status(500).json({ error: "DB error" });
+  }
+});
+
+// ── GET /api/promotions/me/referral-progress?address=0x... ───────────────────
+//
+// Per-friend progress for the mutual referral promo, split by role. Mirrors the
+// EXACT gate in evaluateMutualReferral so the bars never disagree with what
+// actually unlocks:
+//   - referee[]:  pending pairs where this wallet is the invited friend. Needs
+//                 one fresh `unlockMinTradeUsdc` traded since they joined.
+//   - referrer[]: pending pairs where this wallet is the referrer, oldest
+//                 first. Each needs a FRESH `unlockMinTradeUsdc` traded after
+//                 that friend was invited, and each $20 funds only one friend
+//                 (FIFO) — so `accumulatedUsdc` already nets out volume claimed
+//                 by earlier friends. The next $20 you trade fills the top row.
+//
+// Response: { referee: Row[], referrer: Row[] } where Row = {
+//   redemptionId, inviteId, counterpartyAddress, claimedAt, expiresAt,
+//   creditUsdc, requiredUsdc, accumulatedUsdc, remainingUsdc, percent, rank? }
+router.get("/me/referral-progress", async (req: Request, res: Response) => {
+  const address = String(req.query.address || "").toLowerCase().trim();
+  if (!ADDR_RE.test(address)) {
+    return res.status(400).json({ error: "Invalid address" });
+  }
+
+  try {
+    const q = await pool.query(
+      `
+      SELECT
+        r.id,
+        r.referral_invite_id,
+        r.claimed_at,
+        r.expires_at,
+        r.credit_usdc,
+        p.unlock_min_trade_usdc,
+        p.starts_at                AS promotion_starts_at,
+        lower(ua.primary_address)  AS inviter_address,
+        lower(ub.primary_address)  AS referee_address
+      FROM public.promo_redemptions r
+      JOIN public.promotions p ON p.id = r.promotion_id
+      JOIN public.invites    i ON i.id = r.referral_invite_id
+      LEFT JOIN public.users ua ON ua.id = i.inviter_user_id
+      LEFT JOIN public.users ub
+        ON ub.id = COALESCE(i.redeemed_by_user_id, i.accepted_by_user_id)
+      WHERE lower(r.user_address) = $1
+        AND r.status = 'pending_qualification'
+        AND p.unlock_condition = 'mutual_referral_trade'
+      ORDER BY r.claimed_at ASC NULLS LAST
+      `,
+      [address]
+    );
+
+    const referee: any[] = [];
+    const referrer: any[] = [];
+
+    for (const row of q.rows) {
+      const minTrade = Number(row.unlock_min_trade_usdc ?? 0);
+      const credit = Number(row.credit_usdc);
+      const base = {
+        redemptionId: row.id,
+        inviteId: Number(row.referral_invite_id),
+        claimedAt: row.claimed_at,
+        expiresAt: row.expires_at,
+        creditUsdc: credit,
+        requiredUsdc: minTrade,
+      };
+
+      if (row.referee_address === address) {
+        // Friend side: fresh own-money volume since they joined.
+        const held = await cumulativeHeldToSettlement(address, row.claimed_at);
+        const accumulated = Math.max(0, Math.min(minTrade, held));
+        referee.push({
+          ...base,
+          counterpartyAddress: row.inviter_address,
+          accumulatedUsdc: accumulated,
+          remainingUsdc: Math.max(0, minTrade - accumulated),
+          percent:
+            minTrade > 0
+              ? Math.min(100, Math.round((accumulated / minTrade) * 100))
+              : 0,
+        });
+      } else if (row.inviter_address === address) {
+        // Referrer side: fresh since this referral, minus what earlier friends
+        // already consumed (FIFO) — identical math to the qualifier.
+        const sinceClaimed = await cumulativeHeldToSettlement(
+          address,
+          row.claimed_at
+        );
+        const sinceStart = await cumulativeHeldToSettlement(
+          address,
+          row.promotion_starts_at
+        );
+        const k = await countReferrerSlotsUpTo(address, String(row.id));
+        const accumulated = Math.max(
+          0,
+          Math.min(minTrade, sinceStart - (k - 1) * minTrade, sinceClaimed)
+        );
+        referrer.push({
+          ...base,
+          counterpartyAddress: row.referee_address,
+          rank: k,
+          accumulatedUsdc: accumulated,
+          remainingUsdc: Math.max(0, minTrade - accumulated),
+          percent:
+            minTrade > 0
+              ? Math.min(100, Math.round((accumulated / minTrade) * 100))
+              : 0,
+        });
+      }
+    }
+
+    return res.json({ referee, referrer });
+  } catch (err) {
+    console.error("[promotionsRouter/me/referral-progress]", err);
     return res.status(500).json({ error: "DB error" });
   }
 });
