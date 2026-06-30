@@ -242,38 +242,44 @@ router.get("/me/progress", async (req: Request, res: Response) => {
     const red = redQ.rows[0];
     const minTrade = Number(red.unlock_min_trade_usdc ?? 0);
 
-    // Compute held net stake per (game, outcome) twice:
+    // Net directional held per game, split into two buckets:
     //   - SETTLED bucket (g.is_final = true)   → counts toward unlock
     //   - PENDING bucket (g.is_final = false)  → in-flight; shown as striped
     //
-    // We pick the MAX held position from each bucket. Mirrors the exact
-    // qualification rule used by evaluatePromoEligibility for the settled
-    // bucket; the pending bucket is purely UI signal so users know their
-    // in-flight bet is being tracked.
+    // Mirrors the exact qualifier in evaluatePromoEligibility: per game collapse
+    // to net exposure GREATEST(2·MAX(held) − SUM(held), 0) so buying both sides
+    // can't pad the bar, then SUM across games (cumulative, like the qualifier).
+    // The pending bucket is purely UI signal so users see in-flight bets count.
     const progQ = await pool.query(
       `
       WITH per_outcome AS (
         SELECT
           e.game_id,
-          e.outcome_index,
           g.is_final,
-          SUM(CASE WHEN e.type = 'BUY'
-                   THEN COALESCE(e.net_stake_dec, 0)
-                   ELSE 0 END)::numeric AS bought,
-          SUM(CASE WHEN e.type = 'SELL'
-                   THEN COALESCE(e.cost_basis_closed_dec, 0)
-                   ELSE 0 END)::numeric AS sold
+          e.outcome_index,
+          GREATEST(
+              SUM(CASE WHEN e.type = 'BUY'
+                       THEN COALESCE(e.net_stake_dec, 0) ELSE 0 END)
+            - SUM(CASE WHEN e.type = 'SELL'
+                       THEN COALESCE(e.cost_basis_closed_dec, 0) ELSE 0 END)
+          , 0)::numeric AS held
         FROM public.user_trade_events e
         JOIN public.games g ON lower(g.game_id) = lower(e.game_id)
         WHERE lower(e.user_address) = $1
           AND e.beneficiary_address IS NULL
           AND e.inserted_at >= $2
-        GROUP BY e.game_id, e.outcome_index, g.is_final
+        GROUP BY e.game_id, g.is_final, e.outcome_index
+      ),
+      per_game AS (
+        SELECT game_id, is_final,
+               GREATEST(2 * MAX(held) - SUM(held), 0)::numeric AS net_held
+        FROM per_outcome
+        GROUP BY game_id, is_final
       )
       SELECT
-        COALESCE(MAX(CASE WHEN is_final = true  THEN bought - sold END), 0)::numeric AS best_settled,
-        COALESCE(MAX(CASE WHEN is_final = false THEN bought - sold END), 0)::numeric AS best_pending
-      FROM per_outcome
+        COALESCE(SUM(CASE WHEN is_final = true  THEN net_held END), 0)::numeric AS best_settled,
+        COALESCE(SUM(CASE WHEN is_final = false THEN net_held END), 0)::numeric AS best_pending
+      FROM per_game
       `,
       [address, red.claimed_at]
     );

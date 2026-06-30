@@ -11,15 +11,18 @@
 //
 // 'referee_signup' and 'none' are resolved at claim time, not here.
 //
-// Qualifier model: CUMULATIVE held-to-settlement. For every (game, outcome)
-// the user touched, we compute (sum of post-claim BUY gross) − (sum of SELL
-// cost_basis_closed). That's what the user was still holding when the game
-// went final. Across every SETTLED game, we sum those positives. When the
-// running total reaches `unlock_min_trade_usdc`, the redemption flips to
-// eligible. "Trade $10 to unlock $10" reads as: $10 worth of positions held
-// across one or more games until those games settled — no win required, but
-// sells before settlement subtract from the count. Buy-then-immediately-
-// sell farming therefore can't unlock the bonus.
+// Qualifier model: CUMULATIVE NET held-to-settlement. For every (game,
+// outcome) the user touched, we compute (sum of post-claim BUY gross) − (sum
+// of SELL cost_basis_closed) — what they were still holding when the game went
+// final. We then collapse each game to its NET DIRECTIONAL exposure: the
+// largest single-outcome position minus everything held on the OTHER outcomes
+// of that game (the hedge), i.e. GREATEST(2·max − total, 0). Buying both sides
+// of a market nets toward zero, so a risk-free hedge can't manufacture
+// qualifying volume. We sum that net across every SETTLED game; when the total
+// reaches `unlock_min_trade_usdc`, the redemption flips to eligible. "Trade $10
+// to unlock $10" therefore means $10 of REAL exposure held to settlement — no
+// win required, but sells before settlement AND opposite-side hedges both
+// subtract. Buy-then-sell and buy-both-sides farming are both defeated.
 //
 // Free-bet trades MUST NOT count toward unlocking another free bet, so every
 // query includes `beneficiary_address IS NULL`.
@@ -100,11 +103,10 @@ export async function evaluatePromoEligibility(
     return { unlocked: false, reason: `unsupported_condition_${unlockCondition}` };
   }
 
-  // Cumulative-held-to-settlement qualifier. Rules:
-  //   1. Per (game_id, outcome_index): compute bought − sold using
-  //      gross_in_dec for BUYs and cost_basis_closed_dec for SELLs. That's
-  //      the user's "still held when the game went final" position in
-  //      gross-USDC terms.
+  // Cumulative NET held-to-settlement qualifier. Rules:
+  //   1. Per (game_id, outcome_index): held = bought − sold using gross_in_dec
+  //      for BUYs and cost_basis_closed_dec for SELLs (clamped ≥ 0). That's the
+  //      user's "still held when the game went final" position per outcome.
   //   2. gross_in_dec (NOT net_stake_dec) is the right column for BUYs
   //      because the user thinks of their trade as the dollar amount they
   //      typed. net_stake subtracts the protocol fee, which would mean a
@@ -114,9 +116,11 @@ export async function evaluatePromoEligibility(
   //      settlement — only the game settling does. This prevents the
   //      buy-then-immediately-sell farm. (Settled-aware re-evaluation
   //      lives elsewhere; see settleFreeBet / the games settle hook.)
-  //   4. Sum (bought − sold), clamped to ≥ 0, across every settled
-  //      (game, outcome) the user touched. THAT running total is what
-  //      gets compared to unlock_min_trade_usdc.
+  //   4. Collapse each game to its NET DIRECTIONAL exposure:
+  //      GREATEST(2·MAX(held) − SUM(held), 0) = largest outcome minus the
+  //      hedged other side. Buying both sides nets toward zero, so a risk-free
+  //      hedge can't manufacture qualifying volume. Sum that net across every
+  //      settled game; THAT total is compared to unlock_min_trade_usdc.
   //   5. Exclude trades where beneficiary_address IS NOT NULL — those are
   //      free-bet placements paid by the funding wallet, which must never
   //      count toward unlocking ANOTHER free bet (structural guard).
@@ -128,12 +132,12 @@ export async function evaluatePromoEligibility(
       SELECT
         e.game_id,
         e.outcome_index,
-        SUM(CASE WHEN e.type = 'BUY'
-                 THEN COALESCE(e.gross_in_dec, 0)
-                 ELSE 0 END)::numeric AS bought,
-        SUM(CASE WHEN e.type = 'SELL'
-                 THEN COALESCE(e.cost_basis_closed_dec, 0)
-                 ELSE 0 END)::numeric AS sold,
+        GREATEST(
+            SUM(CASE WHEN e.type = 'BUY'
+                     THEN COALESCE(e.gross_in_dec, 0) ELSE 0 END)
+          - SUM(CASE WHEN e.type = 'SELL'
+                     THEN COALESCE(e.cost_basis_closed_dec, 0) ELSE 0 END)
+        , 0)::numeric AS held,
         MIN(e.id) FILTER (WHERE e.type = 'BUY') AS first_buy_id
       FROM public.user_trade_events e
       JOIN public.games g ON lower(g.game_id) = lower(e.game_id)
@@ -142,12 +146,22 @@ export async function evaluatePromoEligibility(
         AND e.inserted_at        >= $3
         AND g.is_final            = true
       GROUP BY e.game_id, e.outcome_index
+    ),
+    per_game AS (
+      -- Net directional exposure: largest single-outcome position minus the
+      -- hedge held on the other outcomes of the same game.
+      SELECT
+        game_id,
+        GREATEST(2 * MAX(held) - SUM(held), 0)::numeric AS net_held,
+        MIN(first_buy_id) AS first_buy_id
+      FROM per_outcome
+      GROUP BY game_id
     )
     SELECT
-      COALESCE(SUM(GREATEST(bought - sold, 0)), 0)::numeric AS cumulative_held,
+      COALESCE(SUM(net_held), 0)::numeric AS cumulative_held,
       MIN(first_buy_id) AS first_buy_id
-      FROM per_outcome
-    HAVING COALESCE(SUM(GREATEST(bought - sold, 0)), 0) >= $2::numeric
+      FROM per_game
+    HAVING COALESCE(SUM(net_held), 0) >= $2::numeric
     `,
     [watchAddress, String(minTrade), row.claimed_at]
   );
@@ -209,12 +223,14 @@ export async function evaluatePromoEligibility(
 
 // ── Shared qualifier ─────────────────────────────────────────────────────────
 //
-// Cumulative held-to-settlement USDC for one wallet since `since`:
-//   per (settled game, outcome): GREATEST(sum BUY gross_in_dec − sum SELL
-//   cost_basis_closed_dec, 0), summed across all settled buckets. Own-money
-//   only (beneficiary_address IS NULL) so free bets never count toward
-//   unlocking another free bet. This matches the single-address qualifier used
-//   above for first_trade / referee_first_trade.
+// Cumulative NET held-to-settlement USDC for one wallet since `since`:
+//   per (settled game, outcome): held = GREATEST(sum BUY gross_in_dec − sum
+//   SELL cost_basis_closed_dec, 0); then per game collapse to net directional
+//   exposure GREATEST(2·MAX(held) − SUM(held), 0) so buying both sides of a
+//   market (a risk-free hedge) nets toward zero instead of double-counting;
+//   then sum across all settled games. Own-money only (beneficiary_address IS
+//   NULL) so free bets never count toward unlocking another free bet. Matches
+//   the single-address qualifier used above for first_trade / referee_first_trade.
 export async function cumulativeHeldToSettlement(
   address: string,
   since: string | Date
@@ -225,12 +241,12 @@ export async function cumulativeHeldToSettlement(
       SELECT
         e.game_id,
         e.outcome_index,
-        SUM(CASE WHEN e.type = 'BUY'
-                 THEN COALESCE(e.gross_in_dec, 0)
-                 ELSE 0 END)::numeric AS bought,
-        SUM(CASE WHEN e.type = 'SELL'
-                 THEN COALESCE(e.cost_basis_closed_dec, 0)
-                 ELSE 0 END)::numeric AS sold
+        GREATEST(
+            SUM(CASE WHEN e.type = 'BUY'
+                     THEN COALESCE(e.gross_in_dec, 0) ELSE 0 END)
+          - SUM(CASE WHEN e.type = 'SELL'
+                     THEN COALESCE(e.cost_basis_closed_dec, 0) ELSE 0 END)
+        , 0)::numeric AS held
       FROM public.user_trade_events e
       JOIN public.games g ON lower(g.game_id) = lower(e.game_id)
       WHERE lower(e.user_address) = $1
@@ -238,9 +254,15 @@ export async function cumulativeHeldToSettlement(
         AND e.inserted_at        >= $2
         AND g.is_final            = true
       GROUP BY e.game_id, e.outcome_index
+    ),
+    per_game AS (
+      SELECT game_id,
+             GREATEST(2 * MAX(held) - SUM(held), 0)::numeric AS net_held
+      FROM per_outcome
+      GROUP BY game_id
     )
-    SELECT COALESCE(SUM(GREATEST(bought - sold, 0)), 0)::numeric AS held
-    FROM per_outcome
+    SELECT COALESCE(SUM(net_held), 0)::numeric AS held
+    FROM per_game
     `,
     [String(address).toLowerCase(), since]
   );
