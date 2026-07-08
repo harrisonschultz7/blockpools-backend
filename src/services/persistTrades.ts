@@ -615,12 +615,25 @@ export async function upsertUserTradesAndGames(opts: {
     }
 
     // ── Notify followers of each BUY/SELL trade (fire-and-forget) ────────────
-    // One notification per (follower, trade), deduped by trade id inside the
-    // emitter so re-persisting an upserted trade never double-notifies. CLAIMs
-    // are excluded — they aren't social signals.
+    // One notification per (follower, trade), deduped by tx_hash+outcome inside
+    // the emitter. CLAIMs are excluded — they aren't social signals.
+    //
+    // FRESHNESS GUARD: this path re-persists every trade in the batch on each
+    // indexer poll (ON CONFLICT DO UPDATE), and re-syncs/backfills can surface
+    // days-old trades. Without a guard, any such old trade that hasn't been
+    // notified under the current dedupe key gets a notification stamped with
+    // created_at = now — i.e. followers get "X traded" alerts (showing "now")
+    // for activity from days ago. So we only notify for trades whose on-chain
+    // timestamp is recent. 30 min tolerates normal indexer lag while excluding
+    // stale/backfilled trades. (Trade timestamps are unix seconds.)
     if (trades.length) {
+      const NOTIFY_MAX_AGE_SEC = 30 * 60;
+      const nowSec = Math.floor(Date.now() / 1000);
       const socialTrades = trades.filter(
-        (t) => t.type === "BUY" || t.type === "SELL"
+        (t) =>
+          (t.type === "BUY" || t.type === "SELL") &&
+          t.timestamp > 0 &&
+          nowSec - t.timestamp <= NOTIFY_MAX_AGE_SEC
       );
       Promise.all(
         socialTrades.map((t) =>
