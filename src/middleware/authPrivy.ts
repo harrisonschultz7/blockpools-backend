@@ -2,6 +2,24 @@
 import type { Request, Response, NextFunction } from "express";
 import { PrivyClient } from "@privy-io/server-auth";
 import { pool } from "../db";
+import { resolveAttribution } from "../services/attribution";
+
+// Addresses we've already attempted to attribute in THIS process. Bounds the
+// attribution work to at most one attempt per wallet per server lifetime, so it
+// never adds a DB round-trip to the hot auth path on repeat requests. Cleared on
+// restart/deploy, so a wallet whose visitor->UTM bridge data arrived after its
+// first attempt gets re-tried. resolveAttribution itself is idempotent (writes
+// only when attributed_at IS NULL), so re-tries after success are cheap no-ops.
+const attributionAttempted = new Set<string>();
+
+function maybeAttribute(primaryAddress: string) {
+  if (!primaryAddress || attributionAttempted.has(primaryAddress)) return;
+  attributionAttempted.add(primaryAddress);
+  // Fire-and-forget: attribution must never add latency to auth. First-touch
+  // wins; wallet-optional signups whose smart wallet provisions on a later
+  // request are covered here (the address only appears once provisioned).
+  resolveAttribution(primaryAddress).catch(() => {});
+}
 
 const APP_ID = (process.env.PRIVY_APP_ID || "").trim();
 const APP_SECRET = (process.env.PRIVY_APP_SECRET || "").trim();
@@ -116,6 +134,9 @@ async function runAuth(
       // Do not block auth if DB write fails; log for visibility.
       console.error("[authPrivy] failed to upsert user addresses", dbErr);
     }
+
+    // Best-effort first-touch ad attribution (once per wallet per process).
+    if (primaryAddress) maybeAttribute(primaryAddress);
 
     return next();
   } catch (err) {

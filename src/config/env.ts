@@ -64,4 +64,16 @@ export const ENV = {
   // Worker
   CACHE_WORKER_ENABLED: bool("CACHE_WORKER_ENABLED", false),
   CACHE_WORKER_INTERVAL_SECONDS: num("CACHE_WORKER_INTERVAL_SECONDS", 60),
+
+  // Meta Conversions API (server-side FirstTrade). DISABLED unless
+  // META_CAPI_ENABLED is true AND a pixel id + access token are set. The
+  // metaCapi service reads these from process.env directly; listed here so the
+  // full env surface is discoverable in one place.
+  //   META_CAPI_ENABLED         "true"/"1" to actually send (default off)
+  //   META_PIXEL_ID             Pixel / Dataset id (Events Manager)
+  //   META_CAPI_ACCESS_TOKEN    System-user Conversions API token
+  //   META_CAPI_TEST_EVENT_CODE optional — routes to the Test Events tab only
+  //   META_GRAPH_VERSION        optional — Graph API version (default v21.0)
+  META_CAPI_ENABLED: bool("META_CAPI_ENABLED", false),
+  META_PIXEL_ID: opt("META_PIXEL_ID"),
 } as const;
