@@ -173,6 +173,10 @@ export async function notifyFollow(opts: {
 export async function notifyTradeToFollowers(opts: {
   tradeId: string;
   txHash?: string | null;
+  /** On-chain trade time (unix seconds). Used to only notify followers who were
+   *  already following WHEN the trade happened — so following a user does not
+   *  retro-notify you for their past trades. */
+  tradeTimestampSec?: number | null;
   traderAddress: string;
   type: "BUY" | "SELL";
   outcomeCode: string | null;
@@ -188,9 +192,17 @@ export async function notifyTradeToFollowers(opts: {
     // No user row -> nobody can be following them anyway.
     if (!trader) return;
 
+    // Only notify followers who were ALREADY following at the time of the trade.
+    // A trade re-ingested after someone follows the trader must not notify that
+    // new follower about the trader's past activity.
+    const ts = opts.tradeTimestampSec;
+    const hasTs = typeof ts === "number" && Number.isFinite(ts) && ts > 0;
     const { rows: followers } = await pool.query(
-      `SELECT follower_id FROM public.user_follows WHERE following_id = $1`,
-      [trader.id]
+      hasTs
+        ? `SELECT follower_id FROM public.user_follows
+             WHERE following_id = $1 AND created_at <= to_timestamp($2)`
+        : `SELECT follower_id FROM public.user_follows WHERE following_id = $1`,
+      hasTs ? [trader.id, ts] : [trader.id]
     );
     if (!followers.length) return;
 

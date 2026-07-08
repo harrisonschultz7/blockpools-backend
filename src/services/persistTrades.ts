@@ -640,6 +640,7 @@ export async function upsertUserTradesAndGames(opts: {
           notifyTradeToFollowers({
             tradeId: t.id,
             txHash: t.txHash,
+            tradeTimestampSec: t.timestamp,
             traderAddress: t.user,
             type: t.type as "BUY" | "SELL",
             outcomeCode: t.outcomeCode,
