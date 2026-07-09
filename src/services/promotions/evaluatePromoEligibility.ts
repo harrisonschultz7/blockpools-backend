@@ -75,10 +75,14 @@ export async function evaluatePromoEligibility(
   //     settlement), counted from the pair's claimed_at (their join). Flips
   //     only the referee row.
   //   - Referrer:         must RE-TRADE minTrade of their own money AFTER each
-  //     referral is accepted, and each minTrade of volume can fund only ONE
-  //     friend (FIFO, no reuse). So bringing in N friends needs N×minTrade of
-  //     post-referral volume. Flips only that referrer row. This closes the
-  //     "trade $20 once, then collect for every friend" loop.
+  //     referral is accepted (each minTrade funds only ONE friend, FIFO, no
+  //     reuse) AND the friend they referred must themselves have traded minTrade.
+  //     So earning N referrer bonuses needs N friends who each traded minTrade
+  //     AND N×minTrade of the referrer's own post-referral volume. Flips only
+  //     that referrer row. Asymmetric: the friend's side does NOT wait on the
+  //     referrer, but the referrer's side DOES wait on the friend — closing the
+  //     "refer a bunch, trade my own $20 per head, collect before they trade"
+  //     loop.
   if (unlockCondition === "mutual_referral_trade") {
     return evaluateMutualReferral(row, minTrade);
   }
@@ -419,7 +423,8 @@ async function evaluateMutualReferral(
     });
   }
 
-  // ── Referrer side: RE-TRADE minTrade per friend, FIFO non-reusable. ──
+  // ── Referrer side: RE-TRADE minTrade per friend (FIFO) AND that friend must
+  //    have traded minTrade too. ──
   if (thisAddr === inviterAddr) {
     // `sinceClaimed`: fresh own-money volume traded AFTER this referral was
     //   accepted — so historical/pre-referral volume can never unlock a friend.
@@ -445,6 +450,22 @@ async function evaluateMutualReferral(
       return {
         unlocked: false,
         reason: `referrer_retrade_below_threshold(sinceClaimed=${sinceClaimed},sinceStart=${sinceStart},rank=${k},need=${needCumulative},min=${minTrade})`,
+      };
+    }
+
+    // ALSO wait on the friend: the referrer's $20 unlocks only once the friend
+    // they referred has themselves traded minTrade. Without this a referrer
+    // could invite many people, trade their own minTrade per head, and collect
+    // without any friend ever trading. (The friend's OWN side stays independent
+    // — it flips on the friend's trade alone; only the referrer side is gated on
+    // the friend.) Both pair rows share claimed_at, so we anchor the friend the
+    // same way. This row gets re-evaluated when the friend trades because the
+    // persistTrades hook matches redemptions on referrer_address = the trader.
+    const refereeHeld = await cumulativeHeldToSettlement(refereeAddr, row.claimed_at);
+    if (refereeHeld < minTrade) {
+      return {
+        unlocked: false,
+        reason: `referrer_waiting_on_referee(refereeHeld=${refereeHeld},min=${minTrade})`,
       };
     }
 
