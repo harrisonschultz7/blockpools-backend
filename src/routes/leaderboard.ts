@@ -13,7 +13,7 @@ function parseRange(x: any): "ALL" | "D30" | "D90" {
 
 function parseLeague(x: any): any {
   const v = String(x || "ALL").toUpperCase();
-  const allowed = new Set(["ALL", "MLB", "NFL", "NBA", "NHL", "EPL", "UCL"]);
+  const allowed = new Set(["ALL", "MLB", "NFL", "NBA", "NHL", "EPL", "UCL", "WC"]);
   return allowed.has(v) ? v : "ALL";
 }
 
