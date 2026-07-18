@@ -30,6 +30,11 @@ import tradeAggRoutes from "./routes/tradeAggRoutes";
 // ✅ Live scores proxy (Goalserve)
 import scoresRouter from "./routes/scores";
 
+// ✅ Settlement resolver for the CRE workflow (Goalserve fetch + match server-side,
+//    returns a tiny outcome so the DON never hits its HTTP response-buffer limit)
+//   GET /api/scores/settlement?league=..&dateFrom=..&dateTo=..&teamAName=..&teamBName=..
+import settlementResultRouter from "./routes/settlementResult";
+
 // ✅ Standings proxy + background cron (Goalserve — UCL, EPL, NBA, NHL, MLB etc.)
 import standingsRouter, { startStandingsCron } from "./routes/standings";
 
@@ -122,6 +127,11 @@ export function makeServer() {
   // ✅ Trade agg (query-based)
   //   GET /api/profile/trade-agg?user=0x...&page=1&pageSize=10&league=ALL&range=ALL
   app.use("/api/profile/trade-agg", tradeAggRoutes);
+
+  // ✅ Settlement resolver (CRE workflow calls this) — mount BEFORE scoresRouter
+  //   so /api/scores/settlement is matched by the dedicated router.
+  //   GET /api/scores/settlement?league=..&dateFrom=..&dateTo=..&teamAName=..&teamBName=..
+  app.use("/api/scores", settlementResultRouter);
 
   // ✅ Live scores proxy — Goalserve
   //   GET /api/scores/live?league=MLB&teamAName=...&teamBName=...&lockTime=...
