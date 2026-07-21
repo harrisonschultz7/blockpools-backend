@@ -83,26 +83,124 @@ function normalizeProfileRow(row: any, publicBaseUrl: string) {
   };
 }
 
+// ── Welcome-email language selection ─────────────────────────────────────────
+// Two email languages are supported: Spanish (default, LatAm audience) and
+// English (Hong Kong / international expansion). Language is derived from the
+// browser Accept-Language header at first login, with the stored
+// preferred_locale tag as a fallback, then Spanish as the ultimate default.
+type WelcomeLang = "es" | "en";
+
+// Resend template ids. Each language keeps its template id hardcoded as the
+// default so sends work with no env changes; the env vars override if you want
+// to swap templates without a deploy. If English ever resolves empty, the send
+// degrades gracefully to the Spanish template (see sendWelcomeEmail).
+const WELCOME_TEMPLATE_ES =
+  (process.env.RESEND_WELCOME_TEMPLATE_ES || "").trim() ||
+  "2a86d254-f493-45d1-abda-706fd33f1479";
+const WELCOME_TEMPLATE_EN =
+  (process.env.RESEND_WELCOME_TEMPLATE_EN || "").trim() ||
+  "120a6317-8e49-4388-a8be-290ecb9abf8e";
+
+const WELCOME_SUBJECT: Record<WelcomeLang, string> = {
+  es: "Bienvenido a BlockPools",
+  en: "Welcome to BlockPools",
+};
+
+// Primary subtag of the first entry in an Accept-Language header, lowercased
+// (e.g. "es-419,es;q=0.9,en;q=0.8" -> "es-419"). Returns null if absent.
+function normalizeLocaleTag(header?: string | null): string | null {
+  if (!header) return null;
+  const first = header.split(",")[0]?.split(";")[0]?.trim().toLowerCase();
+  return first || null;
+}
+
+// Map a raw locale tag to one of the two supported email languages. Spanish
+// tags -> es; everything else routes to English (HK/international is
+// English-facing). Returns null for an empty/unknown tag so callers can fall
+// back to the next signal.
+function langFromLocaleTag(tag?: string | null): WelcomeLang | null {
+  if (!tag) return null;
+  if (tag.startsWith("es")) return "es";
+  return "en";
+}
+
+// Resolve the welcome-email language for a user from their request, and persist
+// the first-seen locale tag onto the user row (first-touch wins — never clobber
+// an existing value). Best-effort: any DB error here is non-fatal.
+async function resolveWelcomeLang(
+  req: AuthedRequest,
+  userId: string
+): Promise<WelcomeLang> {
+  const headerTag = normalizeLocaleTag(
+    req.headers["accept-language"] as string | undefined
+  );
+
+  if (headerTag) {
+    await pool
+      .query(
+        `UPDATE users SET preferred_locale = COALESCE(preferred_locale, $1) WHERE id = $2`,
+        [headerTag, userId]
+      )
+      .catch((e) =>
+        console.error(
+          "[Welcome Email] preferred_locale persist failed (non-fatal)",
+          e?.message || e
+        )
+      );
+  }
+
+  // Prefer the live header; fall back to any stored tag; default Spanish.
+  const fromHeader = langFromLocaleTag(headerTag);
+  if (fromHeader) return fromHeader;
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT preferred_locale FROM users WHERE id = $1 LIMIT 1`,
+      [userId]
+    );
+    const stored = langFromLocaleTag(rows[0]?.preferred_locale);
+    if (stored) return stored;
+  } catch {
+    /* non-fatal — fall through to default */
+  }
+  return "es";
+}
+
 // ── Shared welcome email helper ──────────────────────────────────────────────
-// Sends the welcome email via Resend (SDK v6.8.0 template object syntax).
+// Sends the welcome email via Resend (SDK v6.8.0 template object syntax) in the
+// caller-provided language (defaults to Spanish to preserve prior behavior).
 // NOTE: Does NOT set welcome_email_sent — callers must claim the flag
 // atomically BEFORE calling this function to prevent race conditions.
 // If Resend fails, callers should roll back the flag.
 async function sendWelcomeEmail(
   userId: string,
   email: string,
-  context: string
+  context: string,
+  lang: WelcomeLang = "es"
 ): Promise<boolean> {
   try {
-    console.log(`[Welcome Email][${context}] Sending to: ${email} (userId: ${userId})`);
+    // Choose template by language. If English is requested but its template id
+    // isn't configured yet, degrade gracefully to the Spanish template rather
+    // than failing the send (a missing env var must not break onboarding).
+    let templateId = lang === "en" ? WELCOME_TEMPLATE_EN : WELCOME_TEMPLATE_ES;
+    let effectiveLang: WelcomeLang = lang;
+    if (lang === "en" && !templateId) {
+      console.warn(
+        `[Welcome Email][${context}] RESEND_WELCOME_TEMPLATE_EN not set — falling back to Spanish template for ${email}`
+      );
+      templateId = WELCOME_TEMPLATE_ES;
+      effectiveLang = "es";
+    }
+
+    console.log(`[Welcome Email][${context}] Sending to: ${email} (userId: ${userId}, lang: ${effectiveLang})`);
     console.log(`[Welcome Email][${context}] RESEND_API_KEY present: ${!!process.env.RESEND_API_KEY}`);
 
     const emailResult = await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
       to: email,
-      subject: "Welcome to BlockPools",
+      subject: WELCOME_SUBJECT[effectiveLang],
       template: {
-        id: "2a86d254-f493-45d1-abda-706fd33f1479",
+        id: templateId,
       },
     } as any);
 
@@ -319,8 +417,12 @@ router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) 
     const wrote = writeResult.rows.length > 0;
     console.log(`[sync-email] userId: ${userId}, wrote new email: ${wrote}`);
 
+    // Resolve language from the browser Accept-Language header (and persist the
+    // locale tag) once — reused for both the first-save and catchup sends.
+    const lang = await resolveWelcomeLang(req, userId);
+
     if (wrote) {
-      await sendWelcomeEmail(userId, email, "sync-email/first-save");
+      await sendWelcomeEmail(userId, email, "sync-email/first-save", lang);
     } else {
       // ── Path B: email already stored — atomically claim the flag to send
       // a catchup welcome email (covers users whose email existed before the
@@ -340,7 +442,7 @@ router.post("/sync-email", authPrivy, async (req: AuthedRequest, res: Response) 
         console.log(
           `[sync-email] Catchup — atomically claimed flag for userId: ${userId}`
         );
-        await sendWelcomeEmail(userId, catchupRow.email, "sync-email/catchup");
+        await sendWelcomeEmail(userId, catchupRow.email, "sync-email/catchup", lang);
       }
     }
 
@@ -569,7 +671,8 @@ router.post("/", authPrivyOptionalWallet, async (req: AuthedRequest, res: Respon
           [userId]
         );
         if (claim.rows.length > 0) {
-          await sendWelcomeEmail(userId, savedProfile.email, "profile-upsert");
+          const lang = await resolveWelcomeLang(req, userId);
+          await sendWelcomeEmail(userId, savedProfile.email, "profile-upsert", lang);
         } else {
           console.log(`[Welcome Email] Flag already claimed — skipping for userId: ${userId}`);
         }

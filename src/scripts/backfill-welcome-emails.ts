@@ -14,6 +14,24 @@ import { Resend } from "resend";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+// Template ids per language (mirrors src/routes/profile.ts). Spanish keeps the
+// existing hardcoded id as default; English comes from RESEND_WELCOME_TEMPLATE_EN.
+const WELCOME_TEMPLATE_ES =
+  (process.env.RESEND_WELCOME_TEMPLATE_ES || "").trim() ||
+  "2a86d254-f493-45d1-abda-706fd33f1479";
+const WELCOME_TEMPLATE_EN =
+  (process.env.RESEND_WELCOME_TEMPLATE_EN || "").trim() ||
+  "120a6317-8e49-4388-a8be-290ecb9abf8e";
+
+function pickTemplate(preferredLocale: string | null): { id: string; subject: string } {
+  const tag = (preferredLocale || "").trim().toLowerCase();
+  const isEnglish = tag !== "" && !tag.startsWith("es");
+  if (isEnglish && WELCOME_TEMPLATE_EN) {
+    return { id: WELCOME_TEMPLATE_EN, subject: "Welcome to BlockPools" };
+  }
+  return { id: WELCOME_TEMPLATE_ES, subject: "Bienvenido a BlockPools" };
+}
+
 async function run() {
   // Atomically claim all unsent rows in one query so if the script is run
   // twice concurrently it won't double-send.
@@ -23,7 +41,7 @@ async function run() {
      WHERE email IS NOT NULL
        AND email != ''
        AND (welcome_email_sent IS NULL OR welcome_email_sent = false)
-     RETURNING id, email`
+     RETURNING id, email, preferred_locale`
   );
 
   console.log(`Found ${rows.length} users to send welcome emails to`);
@@ -39,12 +57,13 @@ async function run() {
 
   for (const user of rows) {
     try {
+      const tpl = pickTemplate(user.preferred_locale);
       const result = await resend.emails.send({
         from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
         to: user.email,
-        subject: "Welcome to BlockPools",
+        subject: tpl.subject,
         template: {
-          id: "2a86d254-f493-45d1-abda-706fd33f1479",
+          id: tpl.id,
         },
       } as any);
 
