@@ -32,7 +32,16 @@ const GOALSERVE_API_KEY = process.env.GOALSERVE_API_KEY || "";
 const GOALSERVE_BASE_URL = (
   process.env.GOALSERVE_BASE_URL || "https://www.goalserve.com/getfeed"
 ).replace(/\/+$/, "");
-const FETCH_TIMEOUT_MS = 15_000;
+// Per-attempt Goalserve timeout. Kept well under the DON node's HTTP timeout
+// (~9s) so the backend always responds in time — see the deadline logic below.
+const FETCH_TIMEOUT_MS = Number(process.env.SETTLEMENT_FETCH_TIMEOUT_MS || 6_000);
+// Feed cache + retry tuning (see fetchJson). Goalserve intermittently 403s the
+// key under load; the CRE fans a single settlement out to 9 DON nodes, each
+// doing its own fetch, so without this a transient 403 splits consensus.
+const FEED_CACHE_TTL_MS = Number(process.env.SETTLEMENT_FEED_CACHE_TTL_MS || 120_000);
+const FEED_MAX_RETRIES = Number(process.env.SETTLEMENT_FEED_RETRIES || 4);
+// Total wall-clock budget for one feed URL (all retries). Under the DON timeout.
+const FEED_TOTAL_DEADLINE_MS = Number(process.env.SETTLEMENT_FEED_DEADLINE_MS || 7_000);
 
 export const OUTCOME_A = 0;
 export const OUTCOME_B = 1;
@@ -267,16 +276,86 @@ function* iterateDateRange(fromISO: string, toISO: string): Generator<string> {
   }
 }
 
-async function fetchJson(url: string): Promise<any> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// In-process feed cache + single-flight registry. Keyed by the full Goalserve
+// URL (so it's per league+date). Only SUCCESSFUL feeds are cached; failures are
+// retried, never cached.
+const feedCache = new Map<string, { at: number; data: any }>();
+const feedInflight = new Map<string, Promise<any>>();
+
+async function goalserveFetchOnce(url: string, timeoutMs: number): Promise<any> {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  const t = setTimeout(() => ctrl.abort(), Math.max(500, timeoutMs));
   try {
     const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const err: any = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      // Goalserve rate-limits with a fast 403/429; 5xx is also transient.
+      err.retryable = res.status === 403 || res.status === 429 || res.status >= 500;
+      throw err;
+    }
     return await res.json();
   } finally {
     clearTimeout(t);
   }
+}
+
+// Retry Goalserve's intermittent throttling within a total time budget kept
+// under the DON node's HTTP timeout. A transient 403 that previously became a
+// 502 (→ consensus split) is now retried until it succeeds or the budget runs
+// out. Abort/network errors are treated as retryable; an explicit non-retryable
+// HTTP status (e.g. 400/404) fails fast.
+async function goalserveFetchRetry(url: string): Promise<any> {
+  const started = Date.now();
+  let lastErr: any;
+  for (let attempt = 0; attempt <= FEED_MAX_RETRIES; attempt++) {
+    const remaining = FEED_TOTAL_DEADLINE_MS - (Date.now() - started);
+    if (remaining <= 0) break;
+    try {
+      // Cap this attempt by whichever is smaller: the per-attempt timeout or the
+      // remaining total budget — so all retries together never exceed the budget.
+      return await goalserveFetchOnce(url, Math.min(FETCH_TIMEOUT_MS, remaining));
+    } catch (e: any) {
+      lastErr = e;
+      const retryable = e?.retryable !== false; // network/abort default to retryable
+      if (!retryable || attempt === FEED_MAX_RETRIES) break;
+      const backoff = 250 * (attempt + 1) + Math.floor(Math.random() * 150);
+      if (Date.now() - started + backoff > FEED_TOTAL_DEADLINE_MS) break;
+      await sleep(backoff);
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Cached + single-flight Goalserve fetch. Collapses the CRE's 9-node-per-pool
+ * burst (and any pools sharing a league/date) into ONE upstream call whose
+ * result every caller shares — so Goalserve's per-key throttle can no longer
+ * split DON consensus. Retries transient 403/429/5xx (Goalserve rate-limiting).
+ */
+async function fetchJson(url: string): Promise<any> {
+  const cached = feedCache.get(url);
+  if (cached && Date.now() - cached.at < FEED_CACHE_TTL_MS) return cached.data;
+
+  const inflight = feedInflight.get(url);
+  if (inflight) return inflight;
+
+  const p = goalserveFetchRetry(url)
+    .then((data) => {
+      feedCache.set(url, { at: Date.now(), data });
+      if (feedCache.size > 500) {
+        const cutoff = Date.now() - FEED_CACHE_TTL_MS;
+        for (const [k, v] of feedCache) if (v.at < cutoff) feedCache.delete(k);
+      }
+      return data;
+    })
+    .finally(() => {
+      feedInflight.delete(url);
+    });
+  feedInflight.set(url, p);
+  return p;
 }
 
 type SettlementResult = {
