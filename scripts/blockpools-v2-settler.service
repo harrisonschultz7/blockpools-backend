@@ -1,0 +1,32 @@
+# BlockPools v2 order-book settler — polls Goalserve every 5 min and settles any
+# v2 market whose game just went final (vault.reportPayouts), then clears the
+# book + writes realized-PnL CLAIM rows. The AMM analog of blockpools-settler.
+#
+# Install on the VPS:
+#   sudo cp /opt/blockpools/backend/scripts/blockpools-v2-settler.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now blockpools-v2-settler.service
+#   journalctl -u blockpools-v2-settler.service -f      # watch it
+#
+# Requires in /opt/blockpools/backend/.env: PRIVATE_KEY (the resolver, already set
+# for the AMM bot), VAULT_ADDRESS, BACKEND_URL=http://127.0.0.1:8080, and
+# GAMES_JSON_PATH pointing at a games.json that CONTAINS the v2 markets.
+# If `node` isn't at /usr/bin/env's default, set ExecStart to `which node`'s path.
+
+[Unit]
+Description=BlockPools v2 order-book settler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+ExecStart=/usr/bin/env node scripts/settle-v2.js --loop 300
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

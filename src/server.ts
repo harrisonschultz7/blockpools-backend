@@ -56,6 +56,11 @@ import analyticsRouter from "./routes/analytics";
 //   GET /api/analytics/admin/*
 import analyticsAdminRouter from "./routes/analyticsAdmin";
 
+// ✅ v2 (order-book) lifecycle + read API. The matcher POSTs order/fill/cancel
+//   events; frontend reads open orders + monitoring stats.
+//   POST /api/v2/{order,fill,cancel,reload-markets}  GET /api/v2/{open-orders,stats}
+import v2Router from "./routes/v2Routes";
+
 const PORT = Number(process.env.PORT || 3001);
 
 // Behind Nginx/Cloudflare, this ensures req.protocol/host are derived from forwarded headers.
@@ -165,6 +170,9 @@ export function makeServer() {
   // ✅ Analytics ingest — specific sub-path, mounted before the bare /api mounts
   //   POST /api/analytics/track  body: { events: [...] }
   app.use("/api/analytics", analyticsRouter);
+
+  // v2 order-book persistence + reads
+  app.use("/api/v2", v2Router);
 
   // ── Bare /api mounts (catch-all — must come last) ─────────────────────────────
   app.use("/api", wallRouter);
