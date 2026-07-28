@@ -421,6 +421,24 @@ export async function recordV2Resolution(opts: {
     [marketId]
   );
 
+  // Flip the underlying game final so the profile P&L snapshot stops valuing this
+  // as an OPEN position. Once resolved, the payout flows through the CLAIM rows
+  // below (winners) / is simply lost (losers); leaving is_final=false would mark
+  // the position at last-traded price AND add the claim → double-counting. The v2
+  // game_id (incl. group sub-markets `parent::CODE`) isn't touched by the sports
+  // finalize scan, so we set it here at settlement.
+  if (gameId) {
+    await pool.query(
+      `UPDATE public.games
+          SET is_final = true,
+              resolution_type = 'RESOLVED',
+              winning_outcome_index = COALESCE($2, winning_outcome_index),
+              updated_at = now()
+        WHERE game_id = $1`,
+      [gameId, opts.winningOutcome ?? null]
+    );
+  }
+
   const v = vault();
   if (!v || !gameId) return { claims: 0, holders: 0 };
 
