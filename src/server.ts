@@ -37,6 +37,7 @@ import settlementResultRouter from "./routes/settlementResult";
 
 // ✅ Standings proxy + background cron (Goalserve — UCL, EPL, NBA, NHL, MLB etc.)
 import standingsRouter, { startStandingsCron } from "./routes/standings";
+import { startPortfolioSnapshotCron } from "./workers/portfolioSnapshotWorker";
 
 // ✅ Chart data from Supabase (league winner price history)
 import chartRouter from "./routes/chart";
@@ -60,6 +61,10 @@ import analyticsAdminRouter from "./routes/analyticsAdmin";
 //   events; frontend reads open orders + monitoring stats.
 //   POST /api/v2/{order,fill,cancel,reload-markets}  GET /api/v2/{open-orders,stats}
 import v2Router from "./routes/v2Routes";
+
+// ✅ Profile portfolio net-worth series (for the redesigned profile chart).
+//   POST /api/portfolio/:address/snapshot   GET /api/portfolio/:address/series
+import portfolioRouter from "./routes/portfolio";
 
 const PORT = Number(process.env.PORT || 3001);
 
@@ -174,6 +179,9 @@ export function makeServer() {
   // v2 order-book persistence + reads
   app.use("/api/v2", v2Router);
 
+  // profile portfolio net-worth series
+  app.use("/api/portfolio", portfolioRouter);
+
   // ── Bare /api mounts (catch-all — must come last) ─────────────────────────────
   app.use("/api", wallRouter);
   app.use("/api", invitesRouter);
@@ -213,5 +221,6 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`BlockPools backend listening on port ${PORT}`);
     startStandingsCron();
+    startPortfolioSnapshotCron();
   });
 }
