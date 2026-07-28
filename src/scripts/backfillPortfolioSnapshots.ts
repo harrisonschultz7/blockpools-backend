@@ -1,49 +1,21 @@
-// One-time backfill of daily net-worth snapshots for everyone who traded in the
-// last ~60 days, so profile charts aren't empty and the range toggles differ.
+// One-time backfill of daily Profit/Loss snapshots for everyone who traded in the
+// last ~60 days, so profile P&L charts aren't empty and the range toggles differ.
 //
-// Method (matches the forward cron so backfilled + live points are consistent):
-//   positions(T) = Σ net shares held at T × the market's last-traded price as of T
-//                  (from the trade ledger; a CLAIM before T closes that position)
-//   cash(T)      = current on-chain USDC  −  net trade cashflow after T
-//                  (BUY out / SELL+CLAIM in). Anchored to today's real balance.
-//   equity(T)    = cash(T) + positions(T)
+// P&L(T) = open-positions value at T (net shares × last-traded price as of T)
+//        + realized cashflow up to T (SELL + CLAIM proceeds − BUY cost).
+// Fully ledger-derived — no on-chain reads, deposit/withdrawal-neutral.
 //
-// Caveat: the cash side is exact ONLY if the user didn't deposit/withdraw in the
-// window (we have no deposit history) — the positions/P&L shape stays correct.
-//
-// Idempotent: skips any (user, day) that already has a snapshot, so re-running
-// never duplicates and never clobbers the forward cron's points.
+// Idempotent: skips any (user, day) that already has a snapshot.
 //
 //   npx ts-node --transpile-only src/scripts/backfillPortfolioSnapshots.ts
-//   env: BACKFILL_DAYS (60), ARBITRUM_RPC_URL, V2_USDC_ADDRESS, SNAPSHOT_RPC_CONCURRENCY
+//   (or after build: node dist/scripts/backfillPortfolioSnapshots.js)
+//   env: BACKFILL_DAYS (60)
 
-import { JsonRpcProvider, Contract } from "ethers";
+import "dotenv/config"; // load .env before ../db reads DATABASE_URL (standalone run)
 import { pool } from "../db";
 
-const RPC_URL = process.env.ARBITRUM_RPC_URL || process.env.RPC_URL || "https://arb1.arbitrum.io/rpc";
-const USDC_ADDRESS = process.env.V2_USDC_ADDRESS || "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 const DAYS = Number(process.env.BACKFILL_DAYS || 60);
-const RPC_CONCURRENCY = Math.max(1, Number(process.env.SNAPSHOT_RPC_CONCURRENCY || 8));
 const DAY = 86400;
-const ERC20 = ["function balanceOf(address) view returns (uint256)"];
-
-async function usdcBalances(addrs: string[]): Promise<Map<string, number>> {
-  const provider = new JsonRpcProvider(RPC_URL);
-  const usdc = new Contract(USDC_ADDRESS, ERC20, provider);
-  const out = new Map<string, number>();
-  for (let i = 0; i < addrs.length; i += RPC_CONCURRENCY) {
-    await Promise.all(
-      addrs.slice(i, i + RPC_CONCURRENCY).map(async (a) => {
-        try {
-          out.set(a, Number((await usdc.balanceOf(a)) as bigint) / 1e6);
-        } catch {
-          /* undefined → 0 cash */
-        }
-      })
-    );
-  }
-  return out;
-}
 
 type Trade = {
   addr: string; ts: number; type: "BUY" | "SELL" | "CLAIM";
@@ -63,9 +35,8 @@ async function main() {
     console.log("[backfill] no active traders");
     return;
   }
-  console.log(`[backfill] ${addrs.length} traders, ${DAYS}d of daily points`);
+  console.log(`[backfill] ${addrs.length} traders, ${DAYS}d of daily P&L points`);
 
-  // Full trade history for these users (a position opened >60d ago may still be held).
   const tr = await pool.query(
     `SELECT lower(user_address) AS addr, timestamp AS ts, type, game_id, outcome_index,
             COALESCE(gross_in_dec,0)::float8 AS gin, COALESCE(gross_out_dec,0)::float8 AS gout,
@@ -101,18 +72,16 @@ async function main() {
     return p;
   };
 
-  const cashNow = await usdcBalances(addrs);
-
-  // Existing snapshot days (idempotency) — "addr|YYYY-MM-DD".
+  // Existing snapshot days (idempotency) — "addr|YYYY-MM-DD" (UTC).
   const existing = new Set<string>();
   const ex = await pool.query(
-    `SELECT user_address AS addr, to_char(date_trunc('day', snapshot_at),'YYYY-MM-DD') AS d
+    `SELECT user_address AS addr, to_char(snapshot_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS d
        FROM public.portfolio_snapshots WHERE user_address = ANY($1) GROUP BY 1,2`,
     [addrs]
   );
   for (const r of ex.rows as any[]) existing.add(`${r.addr}|${r.d}`);
 
-  const rows: Array<[string, number, number, number, string]> = [];
+  const rows: Array<[string, number, number, string]> = []; // addr, positions, pnl, iso
   for (const addr of addrs) {
     const ts = byUser.get(addr) || [];
     if (!ts.length) continue;
@@ -123,21 +92,17 @@ async function main() {
 
       const shares = new Map<string, number>();
       const claimed = new Set<string>();
-      let cashDelta = 0;
+      let realized = 0;
       for (const r of ts) {
-        if (r.ts <= T) {
-          if (r.type === "CLAIM") { claimed.add(r.gameId); continue; }
-          const price = r.px > 0 ? r.px / 10000 : 0;
-          if (price <= 0) continue;
-          const k = `${r.gameId}:${r.outcome}`;
-          const sh = (r.type === "BUY" ? r.gin : -(r.gout || r.nout)) / price;
-          shares.set(k, (shares.get(k) || 0) + sh);
-        } else {
-          // trade after T → contributes to cash reconstruction
-          if (r.type === "BUY") cashDelta += r.gin;
-          else if (r.type === "SELL") cashDelta -= (r.gout || r.nout);
-          else cashDelta -= r.nout; // CLAIM
-        }
+        if (r.ts > T) break; // sorted asc → only trades up to T
+        if (r.type === "CLAIM") { claimed.add(r.gameId); realized += r.nout; continue; }
+        const price = r.px > 0 ? r.px / 10000 : 0;
+        if (r.type === "BUY") { realized -= r.gin; }
+        else { realized += (r.gout || r.nout); } // SELL
+        if (price <= 0) continue;
+        const k = `${r.gameId}:${r.outcome}`;
+        const sh = (r.type === "BUY" ? r.gin : -(r.gout || r.nout)) / price;
+        shares.set(k, (shares.get(k) || 0) + sh);
       }
       let positions = 0;
       for (const [k, sh] of shares) {
@@ -145,14 +110,11 @@ async function main() {
         if (claimed.has(k.split(":")[0])) continue;
         positions += sh * priceBefore(k, T);
       }
-      const cash = Math.max(0, (cashNow.get(addr) || 0) + cashDelta);
-      const equity = cash + positions;
-      if (equity <= 0) continue;
-      rows.push([addr, cash, positions, equity, new Date(T * 1000).toISOString()]);
+      const pnl = positions + realized;
+      rows.push([addr, positions, pnl, new Date(T * 1000).toISOString()]);
     }
   }
 
-  // Batch insert.
   let n = 0;
   const CHUNK = 500;
   for (let i = 0; i < rows.length; i += CHUNK) {
@@ -160,18 +122,18 @@ async function main() {
     const vals: any[] = [];
     const ph = chunk
       .map((r, j) => {
-        const b = j * 5;
-        vals.push(r[0], r[1], r[2], r[3], r[4]);
-        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5})`;
+        const b = j * 4;
+        vals.push(r[0], r[1], r[2], r[3]);
+        return `($${b + 1},$${b + 2},$${b + 3},$${b + 4})`;
       })
       .join(",");
     await pool.query(
-      `INSERT INTO public.portfolio_snapshots (user_address, cash_usd, positions_usd, equity_usd, snapshot_at) VALUES ${ph}`,
+      `INSERT INTO public.portfolio_snapshots (user_address, positions_usd, pnl_usd, snapshot_at) VALUES ${ph}`,
       vals
     );
     n += chunk.length;
   }
-  console.log(`[backfill] inserted ${n} historical snapshots across ${addrs.length} users`);
+  console.log(`[backfill] inserted ${n} historical P&L snapshots across ${addrs.length} users`);
 }
 
 main()

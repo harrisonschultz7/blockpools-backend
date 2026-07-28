@@ -80,8 +80,7 @@ router.get("/:address/series", async (req: AuthedRequest, res: Response) => {
 
     const { rows } = await pool.query(
       `SELECT extract(epoch from snapshot_at)::bigint AS t,
-              equity_usd::float8 AS equity,
-              cash_usd::float8 AS cash,
+              pnl_usd::float8 AS pnl,
               positions_usd::float8 AS positions
          FROM public.portfolio_snapshots
         WHERE ${where}

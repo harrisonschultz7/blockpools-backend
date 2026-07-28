@@ -1,58 +1,25 @@
 // src/workers/portfolioSnapshotWorker.ts
 //
-// Server-side net-worth snapshot cron. Runs on a schedule (independent of who's
-// browsing) so EVERY active trader's profile chart stays current — not just when
-// the owner happens to visit. Complements the client-reported snapshot (which
-// still fires on own-profile visits).
+// Server-side Profit/Loss snapshot cron. Runs on a schedule (independent of who's
+// browsing) so EVERY active trader's profile P&L chart stays current.
 //
-// Equity per user = on-chain USDC balance (cash) + open positions marked to the
-// market's last-traded price (mark-to-market). Positions come from the unified
-// trade ledger (v1 AMM + v2 order-book), so both are covered. All DB-derived
-// except the USDC balances (batched on-chain reads).
+// P&L per user = open-positions value (marked to each market's last-traded price)
+//   + realized cashflow  (SELL proceeds + CLAIM proceeds − BUY cost).
+// Fully derived from the trade ledger — no on-chain reads, and deposit/withdrawal
+// -neutral (adding funds isn't profit).
 //
 // Enable with PORTFOLIO_SNAPSHOT_CRON_ENABLED=true. Tunables:
-//   SNAPSHOT_INTERVAL_MS (default 6h), SNAPSHOT_ACTIVE_DAYS (60),
-//   SNAPSHOT_RPC_CONCURRENCY (8), ARBITRUM_RPC_URL / RPC_URL, V2_USDC_ADDRESS.
+//   SNAPSHOT_INTERVAL_MS (default 6h), SNAPSHOT_ACTIVE_DAYS (60).
 
-import { JsonRpcProvider, Contract } from "ethers";
 import { pool } from "../db";
 
-const RPC_URL = process.env.ARBITRUM_RPC_URL || process.env.RPC_URL || "https://arb1.arbitrum.io/rpc";
-const USDC_ADDRESS = process.env.V2_USDC_ADDRESS || "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
 const ACTIVE_DAYS = Number(process.env.SNAPSHOT_ACTIVE_DAYS || 60);
 const INTERVAL_MS = Number(process.env.SNAPSHOT_INTERVAL_MS || 6 * 3600 * 1000);
-const RPC_CONCURRENCY = Math.max(1, Number(process.env.SNAPSHOT_RPC_CONCURRENCY || 8));
 
-const ERC20 = ["function balanceOf(address) view returns (uint256)"];
-
-/** On-chain USDC balance (6dp → USD) for each address, batched with a concurrency cap. */
-async function usdcBalances(addrs: string[]): Promise<Map<string, number>> {
-  const provider = new JsonRpcProvider(RPC_URL);
-  const usdc = new Contract(USDC_ADDRESS, ERC20, provider);
-  const out = new Map<string, number>();
-  for (let i = 0; i < addrs.length; i += RPC_CONCURRENCY) {
-    const chunk = addrs.slice(i, i + RPC_CONCURRENCY);
-    await Promise.all(
-      chunk.map(async (a) => {
-        try {
-          const bal = (await usdc.balanceOf(a)) as bigint;
-          out.set(a, Number(bal) / 1e6);
-        } catch {
-          /* leave undefined → treated as 0 cash */
-        }
-      })
-    );
-  }
-  return out;
-}
-
-/**
- * Compute + record one snapshot per active trader. Returns how many were written.
- */
+/** Compute + record one P&L snapshot per active trader. Returns how many were written. */
 export async function runPortfolioSnapshots(): Promise<{ users: number }> {
   const started = Date.now();
 
-  // 1) Active traders (traded within the window).
   const traders = await pool.query<{ addr: string }>(
     `SELECT DISTINCT lower(user_address) AS addr
        FROM public.user_trade_events
@@ -62,8 +29,7 @@ export async function runPortfolioSnapshots(): Promise<{ users: number }> {
   const addrs = traders.rows.map((r) => r.addr).filter(Boolean);
   if (!addrs.length) return { users: 0 };
 
-  // 2) Open positions valued at each market's last-traded price (unresolved only).
-  //    net_shares = Σ BUY($/price) − Σ SELL($/price); value = net_shares × last price.
+  // Open positions valued at each market's last-traded price (unresolved only).
   const posRes = await pool.query<{ addr: string; positions_usd: string }>(`
     WITH last_price AS (
       SELECT DISTINCT ON (game_id, outcome_index) game_id, outcome_index, avg_price_bps
@@ -95,30 +61,37 @@ export async function runPortfolioSnapshots(): Promise<{ users: number }> {
   const positionsByAddr = new Map<string, number>();
   for (const r of posRes.rows) positionsByAddr.set(r.addr, Number(r.positions_usd) || 0);
 
-  // 3) On-chain USDC (cash).
-  const cashByAddr = await usdcBalances(addrs);
+  // Realized cashflow = money out of trades − money in.
+  const realizedRes = await pool.query<{ addr: string; realized: string }>(`
+    SELECT lower(user_address) AS addr,
+           SUM(CASE WHEN type = 'BUY'   THEN -COALESCE(gross_in_dec, 0)
+                    WHEN type = 'SELL'  THEN  COALESCE(gross_out_dec, net_out_dec, 0)
+                    WHEN type = 'CLAIM' THEN  COALESCE(net_out_dec, 0)
+                    ELSE 0 END) AS realized
+      FROM public.user_trade_events
+     WHERE lower(user_address) = ANY($1) AND type IN ('BUY','SELL','CLAIM')
+     GROUP BY 1
+  `, [addrs]);
+  const realizedByAddr = new Map<string, number>();
+  for (const r of realizedRes.rows) realizedByAddr.set(r.addr, Number(r.realized) || 0);
 
-  // 4) Insert one snapshot per user (skip users with nothing to show).
   let n = 0;
   for (const addr of addrs) {
-    const cash = cashByAddr.get(addr) ?? 0;
     const positions = positionsByAddr.get(addr) ?? 0;
-    const equity = cash + positions;
-    if (equity <= 0 && positions <= 0) continue;
+    const realized = realizedByAddr.get(addr) ?? 0;
+    const pnl = positions + realized;
     try {
       await pool.query(
-        `INSERT INTO public.portfolio_snapshots (user_address, cash_usd, positions_usd, equity_usd)
-         VALUES ($1, $2, $3, $4)`,
-        [addr, cash, positions, equity]
+        `INSERT INTO public.portfolio_snapshots (user_address, positions_usd, pnl_usd)
+         VALUES ($1, $2, $3)`,
+        [addr, positions, pnl]
       );
       n++;
     } catch (e: any) {
       console.error(`[snapshot-cron] insert failed for ${addr}: ${e?.message || e}`);
     }
   }
-  console.log(
-    `[snapshot-cron] wrote ${n}/${addrs.length} snapshots in ${((Date.now() - started) / 1000).toFixed(1)}s`
-  );
+  console.log(`[snapshot-cron] wrote ${n}/${addrs.length} P&L snapshots in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   return { users: n };
 }
 
@@ -133,6 +106,6 @@ export function startPortfolioSnapshotCron(): void {
     runPortfolioSnapshots().catch((e) => console.error("[snapshot-cron]", e?.message || e));
   };
   console.log(`[snapshot-cron] enabled — every ${(INTERVAL_MS / 3600000).toFixed(1)}h, active window ${ACTIVE_DAYS}d`);
-  setTimeout(tick, 20_000); // first run shortly after boot
+  setTimeout(tick, 20_000);
   setInterval(tick, INTERVAL_MS);
 }
