@@ -74,8 +74,8 @@ router.get("/:address/series", async (req: AuthedRequest, res: Response) => {
 
   try {
     const where = days
-      ? `user_address = $1 AND snapshot_at > now() - ($2 || ' days')::interval`
-      : `user_address = $1`;
+      ? `user_address = $1 AND pnl_usd IS NOT NULL AND snapshot_at > now() - ($2 || ' days')::interval`
+      : `user_address = $1 AND pnl_usd IS NOT NULL`;
     const params: any[] = days ? [address, days] : [address];
 
     const { rows } = await pool.query(

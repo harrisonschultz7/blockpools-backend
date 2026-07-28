@@ -72,6 +72,22 @@ async function main() {
     return p;
   };
 
+  // When each game became FINAL (epoch of updated_at). A resolved game must stop
+  // being marked as an open position — its outcome flows through realized (CLAIM
+  // proceeds for winners, nothing for losers). Without this, resolved-but-unclaimed
+  // positions stay marked at last-traded price forever and hugely inflate P&L.
+  const finalAt = new Map<string, number>(); // game_id -> epoch it resolved (Infinity = still open)
+  const gq = await pool.query(
+    `SELECT DISTINCT g.game_id, g.is_final, extract(epoch from g.updated_at)::bigint AS upd
+       FROM public.games g
+       JOIN public.user_trade_events t ON t.game_id = g.game_id
+      WHERE lower(t.user_address) = ANY($1)`,
+    [addrs]
+  );
+  for (const r of gq.rows as any[]) {
+    finalAt.set(r.game_id, r.is_final ? Number(r.upd) : Number.POSITIVE_INFINITY);
+  }
+
   // Existing snapshot days (idempotency) — "addr|YYYY-MM-DD" (UTC).
   const existing = new Set<string>();
   const ex = await pool.query(
@@ -107,7 +123,9 @@ async function main() {
       let positions = 0;
       for (const [k, sh] of shares) {
         if (sh <= 1e-6) continue;
-        if (claimed.has(k.split(":")[0])) continue;
+        const gid = k.split(":")[0];
+        if (claimed.has(gid)) continue;
+        if ((finalAt.get(gid) ?? Number.POSITIVE_INFINITY) <= T) continue; // resolved by T → realized, not open
         positions += sh * priceBefore(k, T);
       }
       const pnl = positions + realized;
