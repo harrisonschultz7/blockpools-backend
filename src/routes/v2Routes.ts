@@ -119,13 +119,16 @@ v2Router.post("/reload-markets", async (req, res) => {
 v2Router.get("/redeemable", async (req, res) => {
   const maker = String(req.query.maker || "").trim().toLowerCase();
   if (!maker) return res.status(400).json({ ok: false, error: "maker required" });
+  // all=1 skips the is_final filter → every market the wallet traded (the caller
+  // decides resolved/redeemable on-chain). Used by the operator claim-all script.
+  const all = String(req.query.all || "") === "1";
   try {
     const { rows: markets } = await pool.query(
       `SELECT f.market_id AS "marketId", max(f.game_id) AS "gameId", max(f.league) AS league
          FROM v2.fills f
          LEFT JOIN public.games g ON g.game_id = f.game_id
         WHERE (lower(f.a_maker) = $1 OR lower(f.b_maker) = $1)
-          AND COALESCE(g.is_final, false) = true
+          ${all ? "" : "AND COALESCE(g.is_final, false) = true"}
         GROUP BY f.market_id`,
       [maker]
     );
