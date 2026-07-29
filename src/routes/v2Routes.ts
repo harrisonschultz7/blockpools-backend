@@ -120,10 +120,8 @@ v2Router.get("/redeemable", async (req, res) => {
   const maker = String(req.query.maker || "").trim().toLowerCase();
   if (!maker) return res.status(400).json({ ok: false, error: "maker required" });
   try {
-    const { rows } = await pool.query(
-      `SELECT f.market_id                          AS "marketId",
-              max(f.game_id)                       AS "gameId",
-              max(f.league)                        AS league
+    const { rows: markets } = await pool.query(
+      `SELECT f.market_id AS "marketId", max(f.game_id) AS "gameId", max(f.league) AS league
          FROM v2.fills f
          LEFT JOIN public.games g ON g.game_id = f.game_id
         WHERE (lower(f.a_maker) = $1 OR lower(f.b_maker) = $1)
@@ -131,8 +129,40 @@ v2Router.get("/redeemable", async (req, res) => {
         GROUP BY f.market_id`,
       [maker]
     );
+    const gameIds = markets.map((m: any) => m.gameId).filter(Boolean);
+
+    // Ledger cost + net shares per (game, outcome) so the card can show Amount
+    // Traded, avg Price and ROI against the on-chain payout.
+    const byKey = new Map<string, { cost: number; shares: number }>();
+    if (gameIds.length) {
+      const { rows: agg } = await pool.query(
+        `SELECT game_id, outcome_index,
+                SUM(CASE WHEN type='BUY' THEN COALESCE(gross_in_dec,0) ELSE 0 END)::float8 AS cost,
+                SUM(CASE WHEN type='BUY'  THEN COALESCE(gross_in_dec,0)/(avg_price_bps/10000.0)
+                         WHEN type='SELL' THEN -COALESCE(gross_out_dec,net_out_dec,0)/(avg_price_bps/10000.0)
+                         ELSE 0 END)::float8 AS shares
+           FROM public.user_trade_events
+          WHERE lower(user_address) = $1 AND type IN ('BUY','SELL') AND avg_price_bps > 0
+            AND game_id = ANY($2)
+          GROUP BY game_id, outcome_index`,
+        [maker, gameIds]
+      );
+      for (const a of agg as any[]) {
+        byKey.set(`${a.game_id}:${a.outcome_index}`, { cost: Number(a.cost) || 0, shares: Number(a.shares) || 0 });
+      }
+    }
+
+    const out = markets.map((m: any) => ({
+      marketId: m.marketId,
+      gameId: m.gameId,
+      league: m.league,
+      outcomes: {
+        0: byKey.get(`${m.gameId}:0`) || { cost: 0, shares: 0 },
+        1: byKey.get(`${m.gameId}:1`) || { cost: 0, shares: 0 },
+      },
+    }));
     res.setHeader("Cache-Control", "no-store");
-    return res.json({ ok: true, markets: rows });
+    return res.json({ ok: true, markets: out });
   } catch (e: any) {
     console.error("[v2/redeemable]", e?.message || e);
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
