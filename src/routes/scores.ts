@@ -186,10 +186,108 @@ function canonName(s: string): string {
   return NATION_ALIASES[n] || n;
 }
 
+// ── Kickoff-time disambiguation (ported from settlement-bot.ts) ──────────────
+//
+// Two teams can play twice on the same calendar day (MLB doubleheaders /
+// makeup games). The daily Goalserve feed then contains BOTH games for the
+// matchup, and picking the first team-name hit renders the WRONG game's score
+// (e.g. the 1:40 PM makeup instead of the 7:10 PM game the market is for).
+//
+// lockTime is the market's game-start anchor. We parse each candidate's real
+// kickoff and pick the one whose start is closest to lockTime — the same
+// disambiguation the settlement bot already does.
+
+/** Goalserve rows that are not the real contest (postponed/cancelled shells). */
+function isShellSchedulingStatus(raw: string): boolean {
+  const s = String(raw || "").trim().toLowerCase();
+  if (!s) return false;
+  if (s === "postponed" || s === "ppd" || s === "ppd.") return true;
+  if (s.includes("postpon")) return true;
+  if (s.includes("cancell") || s.includes("canceled")) return true;
+  if (s.includes("suspended") && !s.includes("final")) return true;
+  if (s.includes("rain delay") || s === "delay") return true;
+  if (s.includes("forfeit")) return true;
+  if (s === "tbd" || s.includes("to be determined")) return true;
+  return false;
+}
+
+/** "28.07.2026 23:10" (UTC) → epoch seconds. */
+function parseDatetimeUTC(s?: string): number | undefined {
+  if (!s) return;
+  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+  if (!m) return;
+  const [, dd, MM, yyyy, HH, mm] = m;
+  const t = Date.UTC(+yyyy, +MM - 1, +dd, +HH, +mm, 0, 0);
+  return isFinite(t) ? Math.floor(t / 1000) : undefined;
+}
+
+/** Separate "28.07.2026" + "7:10 PM"/"19:10" → epoch seconds (approx; TZ-naive). */
+function parseDateAndTimeAsUTC(dateStr?: string, timeStr?: string): number | undefined {
+  if (!dateStr) return;
+  const md = String(dateStr).match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (!md) return;
+  const [, dd, MM, yyyy] = md;
+  let h = 0, mi = 0;
+  if (timeStr) {
+    const ampm = String(timeStr).trim().toUpperCase();
+    let mh = ampm.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/);
+    if (mh) {
+      h = +mh[1];
+      mi = +mh[2];
+      const mer = mh[3];
+      if (mer === "PM" && h < 12) h += 12;
+      if (mer === "AM" && h === 12) h = 0;
+    } else {
+      mh = ampm.match(/^(\d{1,2}):(\d{2})$/);
+      if (mh) { h = +mh[1]; mi = +mh[2]; }
+    }
+  }
+  const t = Date.UTC(+yyyy, +MM - 1, +dd, h, mi, 0, 0);
+  return isFinite(t) ? Math.floor(t / 1000) : undefined;
+}
+
+function kickoffEpochFromRaw(raw: any): number | undefined {
+  const t1 = parseDatetimeUTC(raw?.datetime_utc || raw?.["@datetime_utc"]);
+  if (t1) return t1;
+  const date = raw?.formatted_date || raw?.date || raw?.["@formatted_date"] || raw?.["@date"];
+  const time = raw?.time || raw?.start_time || raw?.start || raw?.["@time"];
+  return parseDateAndTimeAsUTC(date, time);
+}
+
+/**
+ * Among candidate games that all match the two teams, pick the one whose
+ * kickoff is closest to lockTime. Preserves legacy behavior when there is
+ * only one match (single-game day) or no usable lockTime — the change only
+ * bites on doubleheaders.
+ */
+function pickClosestByKickoff<T extends { status: string; kickoff?: number }>(
+  matches: T[],
+  lockTime: number
+): T {
+  if (matches.length === 1) return matches[0];
+
+  // Drop postponed/cancelled shells when a real game exists for this matchup.
+  const real = matches.filter((m) => !isShellSchedulingStatus(m.status));
+  const pool = real.length ? real : matches;
+  if (pool.length === 1 || !(lockTime > 0)) return pool[0];
+
+  const distTo = (m: T) =>
+    m.kickoff != null ? Math.abs(m.kickoff - lockTime) : Number.MAX_SAFE_INTEGER;
+
+  let best = pool[0];
+  let bestDist = distTo(best);
+  for (const m of pool.slice(1)) {
+    const d = distTo(m);
+    if (d < bestDist) { best = m; bestDist = d; }
+  }
+  return best;
+}
+
 function extractMatchStatus(
   data: any,
   teamAName: string,
-  teamBName: string
+  teamBName: string,
+  lockTime: number
 ): {
   found: boolean;
   isFinal: boolean;
@@ -249,6 +347,15 @@ function extractMatchStatus(
   const aCanon = canonName(teamAName);
   const bCanon = canonName(teamBName);
 
+  // Collect EVERY candidate that matches the two teams (not just the first),
+  // so a same-day doubleheader can be disambiguated by kickoff below.
+  const teamMatches: Array<{
+    m: any;
+    shape: MatchShape;
+    status: string;
+    kickoff?: number;
+  }> = [];
+
   for (const { m, shape } of candidates) {
     if (!m || typeof m !== "object") continue;
 
@@ -286,16 +393,24 @@ function extractMatchStatus(
       )
         .toLowerCase()
         .trim();
-      return {
-        found: true,
-        isFinal: isFinalStatus(status),
-        match: m,
-        shape,
-      };
+      teamMatches.push({ m, shape, status, kickoff: kickoffEpochFromRaw(m) });
     }
   }
 
-  return { found: false, isFinal: false, match: null, shape: null };
+  if (!teamMatches.length) {
+    return { found: false, isFinal: false, match: null, shape: null };
+  }
+
+  // Doubleheader disambiguation: pick the game whose start is closest to the
+  // market's lockTime. Single-game days are unaffected (returns the sole match).
+  const best = pickClosestByKickoff(teamMatches, lockTime);
+
+  return {
+    found: true,
+    isFinal: isFinalStatus(best.status),
+    match: best.m,
+    shape: best.shape,
+  };
 }
 
 /**
@@ -472,7 +587,8 @@ router.get("/live", async (req: Request, res: Response) => {
         const { found, isFinal, match, shape } = extractMatchStatus(
           data,
           teamAName,
-          teamBName
+          teamBName,
+          lockTime
         );
 
         // Match not in this day's feed: games that kick off after midnight
