@@ -113,6 +113,32 @@ v2Router.post("/reload-markets", async (req, res) => {
 
 // --- Reads ------------------------------------------------------------------
 
+// GET /api/v2/redeemable?maker=<addr> — resolved markets the user traded. The
+// frontend reads on-chain (markets/payoutNum/sharesOf) to decide which are
+// winning + unredeemed and shows a Redeem button; losers/redeemed drop off.
+v2Router.get("/redeemable", async (req, res) => {
+  const maker = String(req.query.maker || "").trim().toLowerCase();
+  if (!maker) return res.status(400).json({ ok: false, error: "maker required" });
+  try {
+    const { rows } = await pool.query(
+      `SELECT f.market_id                          AS "marketId",
+              max(f.game_id)                       AS "gameId",
+              max(f.league)                        AS league
+         FROM v2.fills f
+         LEFT JOIN public.games g ON g.game_id = f.game_id
+        WHERE (lower(f.a_maker) = $1 OR lower(f.b_maker) = $1)
+          AND COALESCE(g.is_final, false) = true
+        GROUP BY f.market_id`,
+      [maker]
+    );
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ ok: true, markets: rows });
+  } catch (e: any) {
+    console.error("[v2/redeemable]", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // GET /api/v2/open-orders?marketId=&maker=&limit=  — rehydrate + Open Orders tab.
 v2Router.get("/open-orders", async (req, res) => {
   try {
