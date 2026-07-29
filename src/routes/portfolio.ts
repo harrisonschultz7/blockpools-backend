@@ -117,7 +117,8 @@ router.get("/:address/positions", async (req: AuthedRequest, res: Response) => {
           AND t.type IN ('BUY','SELL')
           AND t.outcome_index IS NOT NULL
           AND COALESCE(g.is_final, false) = false
-          AND COALESCE(upper(g.resolution_type), 'UNRESOLVED') NOT IN ('RESOLVED','FINAL')`,
+          AND COALESCE(upper(g.resolution_type), 'UNRESOLVED') NOT IN ('RESOLVED','FINAL')
+        ORDER BY t.timestamp ASC`,
       [address]
     );
 
