@@ -188,6 +188,47 @@ v2Router.get("/open-orders", async (req, res) => {
   }
 });
 
+// GET /api/v2/chart/:gameId — per-outcome traded-price history for a v2 market.
+//
+// Unlike the AMM chart (which stores a PRE-trade spot price and must simulate the
+// book forward), v2 fills store the ACTUAL per-outcome price in bps at each trade,
+// and a binary market's two legs are complementary (sum ~10000 bps). So the series
+// needs no reconstruction — just the real points, oldest first. Matches the
+// market's own game_id case-insensitively, plus any `PARENT::CODE` sub-market
+// game_ids (group / league-winner markets). Every leg is a v2- prefixed row.
+//
+// Response: { ok, points: [{ ts, outcomeIndex, code, bps }] }
+v2Router.get("/chart/:gameId", async (req, res) => {
+  const gameId = String(req.params.gameId || "").trim();
+  if (!gameId) return res.status(400).json({ ok: false, error: "gameId required" });
+  try {
+    const { rows } = await pool.query(
+      `SELECT timestamp AS ts, outcome_index, outcome_code, spot_price_bps
+         FROM public.user_trade_events
+        WHERE id LIKE 'v2-%'
+          AND type IN ('BUY','SELL')
+          AND spot_price_bps IS NOT NULL
+          AND (game_id ILIKE $1 OR game_id ILIKE $1 || '::%')
+        ORDER BY timestamp ASC
+        LIMIT 3000`,
+      [gameId]
+    );
+    const points = rows
+      .map((r: any) => ({
+        ts: Number(r.ts),
+        outcomeIndex: r.outcome_index == null ? null : Number(r.outcome_index),
+        code: r.outcome_code ?? null,
+        bps: Number(r.spot_price_bps),
+      }))
+      .filter((p) => Number.isFinite(p.ts) && p.ts > 0 && Number.isFinite(p.bps));
+    res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=30");
+    return res.json({ ok: true, points });
+  } catch (e: any) {
+    console.error("[v2/chart]", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // GET /api/v2/stats — basic monitoring: volume + trade count (all-time + 24h),
 // plus a per-market breakdown. Volume = notional USD across both legs of each
 // fill = maker_price * fill_shares / 1e12 (one complete-set side of the trade).
