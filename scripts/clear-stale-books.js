@@ -1,33 +1,36 @@
 #!/usr/bin/env node
 // scripts/clear-stale-books.js
 //
-// Pull v2 market liquidity once a game has been live for a while, so seeded
-// market-maker orders can't be sniped late in the game.
+// Pull the OPERATOR/MM wallet's resting seed orders once a game has been live
+// for a while, so its stale market-maker ladder can't be sniped late-game.
 //
 // WHY: v2 order-book markets do NOT lock on-chain at kickoff (unlike the AMM
-// pools). Left alone, the resting MM ladder stays fillable at its stale seed
-// prices as the game's outcome becomes known — a user could buy the entire
-// winning side near the end at pre-game odds and drain the LP. Clearing the book
-// once the game is underway removes that resting liquidity, effectively freezing
-// the market for the rest of the game.
+// pools). Left alone, the seeded MM bid ladder stays fillable at its pre-game
+// prices as the outcome becomes known — a user could buy the whole winning side
+// at stale odds near the end and drain the LP.
 //
-// WHAT IT DOES: for every v2 game whose kickoff is between STALE_CLEAR_AFTER_SEC
-// and STALE_CLEAR_MAX_AGE_SEC in the past, POST /clear-market for each of its
-// on-chain markets (binary/prop single id + every group sub-market id). It clears
-// the WHOLE book (MM + any user limit orders) — mid-game we don't want ANY
-// snipeable resting liquidity. Re-running is safe: clearing an empty book is a
-// no-op, and re-clearing each pass also wipes anything re-seeded during the game.
+// SCOPE — READ THIS: this cancels ONLY the operator/MM wallet's own resting
+// orders (SWEEP_MAKERS, default 0xD660fa35…). It does NOT touch:
+//   • other users' resting limit orders (left in the book, at their own prices),
+//   • anyone's FILLED positions (those are on-chain vault shares — the matcher
+//     book only holds unfilled orders; a cancel moves no funds).
+// Mechanism: GET /book → keep entries whose maker ∈ SWEEP_MAKERS → POST /cancel
+// per hash. Uses only existing matcher endpoints (no matcher change/restart).
 //
-// WHAT IT DOES NOT DO: it never resolves or settles anything — payouts stay the
-// settler's job (settle-v2.js). It only touches the off-chain matcher book; no
-// RPC, no keys, no on-chain writes.
+// It never resolves or settles anything — payouts stay the settler's job
+// (settle-v2.js). Cancelling an already-gone order is a harmless no-op, so
+// re-running each pass is safe and also re-pulls anything the MM re-seeded.
+//
+// A game is swept while its kickoff is between STALE_CLEAR_AFTER_SEC and
+// STALE_CLEAR_MAX_AGE_SEC in the past.
 //
 // Env (backend .env): GAMES_JSON_PATH, MATCHER_URL (default 127.0.0.1:8090),
-//   STALE_CLEAR_AFTER_SEC   (default 3600  = start clearing 1h after kickoff),
-//   STALE_CLEAR_MAX_AGE_SEC (default 43200 = stop 12h after kickoff — game's over).
+//   SWEEP_MAKERS (comma-sep wallets; default operator 0xD660fa35…),
+//   STALE_CLEAR_AFTER_SEC   (default 3600  = start 1h after kickoff),
+//   STALE_CLEAR_MAX_AGE_SEC (default 43200 = stop 12h after kickoff).
 // Run: node scripts/clear-stale-books.js               # one pass
-//      node scripts/clear-stale-books.js --loop 300    # every 5 min (systemd/cron)
-//      node scripts/clear-stale-books.js --dry         # preview, no POST
+//      node scripts/clear-stale-books.js --loop 300    # every 5 min (systemd)
+//      node scripts/clear-stale-books.js --dry         # preview, cancels nothing
 //      node scripts/clear-stale-books.js --market <id> # limit to one game
 
 const fs = require("fs");
@@ -38,6 +41,15 @@ const MATCHER_URL = (process.env.MATCHER_URL || "http://127.0.0.1:8090").replace
 const AFTER_SEC = Number(process.env.STALE_CLEAR_AFTER_SEC || 3600);
 const MAX_AGE_SEC = Number(process.env.STALE_CLEAR_MAX_AGE_SEC || 43200);
 const DRY = process.argv.includes("--dry");
+
+// Operator/MM wallet(s) whose resting seed orders we pull. ONLY these makers'
+// orders are cancelled — every other maker's orders are left untouched.
+const SWEEP_MAKERS = new Set(
+  (process.env.SWEEP_MAKERS || "0xD660fa35cd16F768e41C8E09729e39385B51F55c")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 const argValue = (flag) => {
   const i = process.argv.indexOf(flag);
@@ -72,15 +84,29 @@ function marketIdsOf(g) {
   return [...ids];
 }
 
-async function clearMarket(marketId) {
-  const res = await fetch(`${MATCHER_URL}/clear-market`, {
+// The operator/MM wallet's resting order hashes on a market (both outcomes,
+// bids + asks). Everything else in the book is left alone.
+async function operatorOrderHashes(marketId) {
+  const res = await fetch(`${MATCHER_URL}/book?marketId=${encodeURIComponent(marketId)}`);
+  if (!res.ok) throw new Error(`book HTTP ${res.status}`);
+  const book = await res.json(); // { bids: {0:[],1:[]}, asks: {0:[],1:[]} }
+  const entries = [
+    ...(book.bids?.[0] || []), ...(book.bids?.[1] || []),
+    ...(book.asks?.[0] || []), ...(book.asks?.[1] || []),
+  ];
+  return entries
+    .filter((e) => SWEEP_MAKERS.has(String(e.maker || "").toLowerCase()))
+    .map((e) => e.hash)
+    .filter(Boolean);
+}
+
+async function cancelOrder(hash) {
+  const res = await fetch(`${MATCHER_URL}/cancel`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ marketId }),
+    body: JSON.stringify({ hash }),
   });
-  if (!res.ok) throw new Error(`clear-market HTTP ${res.status}`);
-  const json = await res.json().catch(() => ({}));
-  return Number(json.cleared || 0);
+  if (!res.ok) throw new Error(`cancel HTTP ${res.status}`);
 }
 
 async function tick() {
@@ -99,17 +125,23 @@ async function tick() {
     const age = now - start;
     // Only during the live-game window: after the grace period, before it's ancient.
     if (age < AFTER_SEC || age > MAX_AGE_SEC) continue;
+    const ageMin = Math.round(age / 60);
 
     for (const mid of marketIdsOf(g)) {
       try {
+        const hashes = await operatorOrderHashes(mid);
+        if (!hashes.length) continue;
         if (DRY) {
-          console.log(`WOULD clear ${g.gameId} ${mid} (kickoff ${Math.round(age / 60)}m ago)`);
+          console.log(`WOULD cancel ${hashes.length} operator order(s) on ${g.gameId} ${mid} (kickoff ${ageMin}m ago)`);
           continue;
         }
-        const n = await clearMarket(mid);
-        if (n > 0) console.log(`cleared ${g.gameId} ${mid}: ${n} order(s) (kickoff ${Math.round(age / 60)}m ago)`);
+        let n = 0;
+        for (const h of hashes) {
+          try { await cancelOrder(h); n++; } catch (err) { console.log(`    cancel ${h} failed: ${err.message}`); }
+        }
+        if (n > 0) console.log(`swept ${n} operator order(s) on ${g.gameId} ${mid} (kickoff ${ageMin}m ago)`);
       } catch (e) {
-        console.log(`  ${g.gameId} ${mid}: clear failed (${e.message})`);
+        console.log(`  ${g.gameId} ${mid}: sweep failed (${e.message})`);
       }
     }
   }
@@ -117,7 +149,7 @@ async function tick() {
 
 (async () => {
   console.log(
-    `clear-stale-books: matcher=${MATCHER_URL} after=${AFTER_SEC}s maxAge=${MAX_AGE_SEC}s${DRY ? " (DRY RUN)" : ""}`
+    `clear-stale-books: matcher=${MATCHER_URL} makers=[${[...SWEEP_MAKERS].join(",")}] after=${AFTER_SEC}s maxAge=${MAX_AGE_SEC}s${DRY ? " (DRY RUN)" : ""}`
   );
   const safeTick = async () => {
     try {
