@@ -35,6 +35,12 @@
 
 const fs = require("fs");
 const path = require("path");
+// Load the backend .env (GAMES_JSON_PATH, MATCHER_URL, SWEEP_MAKERS, STALE_CLEAR_*)
+// exactly like settle-v2.js does. WITHOUT this, the systemd service (which sets no
+// EnvironmentFile) has no GAMES_JSON_PATH and falls back to the wrong games.json
+// dir (frontend/ vs frontend-src/), reads a stale list, and silently sweeps
+// nothing — the bug that let seed orders get sniped.
+require("dotenv").config({ path: path.join(__dirname, "../.env") });
 
 const GAMES_JSON = process.env.GAMES_JSON_PATH || path.join(__dirname, "../../frontend/src/data/games.json");
 const MATCHER_URL = (process.env.MATCHER_URL || "http://127.0.0.1:8090").replace(/\/+$/, "");
