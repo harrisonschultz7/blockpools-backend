@@ -246,6 +246,10 @@ function buildStatsRow(
       league: entry.league,
       marketType: entry.marketType,
       outcomesCount: entry.outcomesCount,
+      // Team codes so the games table (and the profile Market column) shows the
+      // deployed codes (e.g. LAD) instead of a code derived from the name (LA).
+      teamACode: entry.outcomes?.[0]?.outcomeCode ?? null,
+      teamBCode: entry.outcomes?.[1]?.outcomeCode ?? null,
       teamAName: entry.teamAName,
       teamBName: entry.teamBName,
       marketQuestion: entry.marketQuestion,
@@ -261,6 +265,8 @@ function buildStatsRow(
       league: entry.league,
       marketType: entry.marketType,
       outcomesCount: entry.outcomesCount,
+      teamACode: entry.outcomes?.[0]?.outcomeCode ?? null,
+      teamBCode: entry.outcomes?.[1]?.outcomeCode ?? null,
       teamAName: entry.teamAName,
       teamBName: entry.teamBName,
       marketQuestion: entry.marketQuestion,
