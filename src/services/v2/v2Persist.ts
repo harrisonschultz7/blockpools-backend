@@ -20,6 +20,8 @@ const SCALE = 1_000_000n; // 1e6 == $1.00/share and 1e6 == 1 share
 
 const V2_VAULT_ADDRESS =
   process.env.V2_VAULT_ADDRESS || "0x14BD1fd3911C22173FeaEcBfD670D09c1143A594";
+const V2_EXCHANGE_ADDRESS =
+  process.env.V2_EXCHANGE_ADDRESS || "0x7f259179Db5Fee779f05DD52A878EF340B6d494b";
 // Read-only RPC for sharesOf at resolution. Falls back to the public Arbitrum
 // endpoint (same default as refreshGamesAndScores) so no extra env is required.
 const V2_RPC_URL =
@@ -36,6 +38,41 @@ function vault(): Contract | null {
     provider
   );
   return _vault;
+}
+
+let _exchange: Contract | null = null;
+function exchange(): Contract | null {
+  if (_exchange) return _exchange;
+  if (!V2_RPC_URL) return null;
+  const provider = new JsonRpcProvider(V2_RPC_URL);
+  _exchange = new Contract(
+    V2_EXCHANGE_ADDRESS,
+    ["function protocolFeeBps() view returns (uint256)"],
+    provider
+  );
+  return _exchange;
+}
+
+// Cache the on-chain protocol fee (bps). It changes only on an owner tx, and
+// fills are recorded within seconds of settlement, so a short TTL keeps the
+// recorded fee in lock-step with the contract (the single source of truth)
+// without an RPC round-trip per fill.
+let _feeBps = 0;
+let _feeBpsAt = 0;
+const FEE_TTL_MS = 60_000;
+async function getProtocolFeeBps(): Promise<number> {
+  const now = Date.now();
+  if (_feeBpsAt && now - _feeBpsAt < FEE_TTL_MS) return _feeBps;
+  try {
+    const ex = exchange();
+    if (ex) {
+      _feeBps = Number(await ex.protocolFeeBps());
+      _feeBpsAt = now;
+    }
+  } catch {
+    /* keep last known value on RPC hiccup */
+  }
+  return _feeBps;
 }
 
 // Market-maker / operator wallets whose fills seed liquidity — excluded from the
@@ -285,14 +322,26 @@ export async function recordV2Fill(f: V2FillInput): Promise<{ fillId: string; st
   const makerPrice = bi(f.makerPrice);
   const market = resolveV2Market(f.a.marketId);
 
+  // Protocol fee (Exchange.protocolFeeBps) applied to each leg's USDC notional.
+  // The taker is leg a, the maker is leg b — same convention as the contract.
+  // taker_fee is the real house revenue when the house is the resting maker;
+  // maker_fee is a house->treasury wash when b is an MM wallet (real when b is
+  // organic). Stored in micro-USD (1e6 = $1), like fill_shares/maker_price.
+  const feeBps = await getProtocolFeeBps();
+  const feeBi = BigInt(feeBps);
+  const takerNotionalMicro = legEconomics(f.matchType, true, makerPrice, fill).microUsd;
+  const makerNotionalMicro = legEconomics(f.matchType, false, makerPrice, fill).microUsd;
+  const takerFeeMicro = (takerNotionalMicro * feeBi) / 10000n;
+  const makerFeeMicro = (makerNotionalMicro * feeBi) / 10000n;
+
   // 1) v2.fills (durable settlement record; keeps MM legs too, for monitoring).
   await pool.query(
     `
     INSERT INTO v2.fills
       (id, tx_hash, market_id, match_type, fill_shares, maker_price,
        a_hash, b_hash, a_maker, b_maker, a_side, b_side, a_outcome, b_outcome,
-       game_id, league, block_number, created_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now())
+       game_id, league, block_number, taker_fee_micro, maker_fee_micro, fee_bps, created_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, now())
     ON CONFLICT (id) DO NOTHING
     `,
     [
@@ -313,6 +362,9 @@ export async function recordV2Fill(f: V2FillInput): Promise<{ fillId: string; st
       market?.parentGameId ?? null,
       market?.league ?? null,
       f.blockNumber ?? null,
+      takerFeeMicro.toString(),
+      makerFeeMicro.toString(),
+      feeBps,
     ]
   );
 
