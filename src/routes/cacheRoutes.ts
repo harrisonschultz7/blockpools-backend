@@ -236,11 +236,11 @@ cacheRoutes.post("/user/:address/record-merge", async (req, res) => {
 
   const b = (req.body || {}) as Record<string, unknown>;
   const txHash = b.txHash ? String(b.txHash) : null;
-  const gameId = b.gameId
-    ? String(b.gameId).toLowerCase()
-    : b.contract
-      ? String(b.contract).toLowerCase()
-      : "";
+  // Preserve gameId case — v2 game_ids are UPPERCASE (e.g. MLB-TEX-TB-…) and
+  // getTradeAgg groups + joins public.games on the EXACT game_id, so a lowercased
+  // id (the v1 contract-address convention) would neither attach to the buys nor
+  // join, and the merge legs would silently disappear. Merges are v2-only.
+  const gameId = b.gameId ? String(b.gameId).trim() : b.contract ? String(b.contract).trim() : "";
   const sets = Number(b.sets);
   // Merge-time book mid for outcome 0; outcome 1 is the complement so the two legs
   // sum to exactly `sets` USDC (a complete set merges for $1). Falls back to 50/50.
