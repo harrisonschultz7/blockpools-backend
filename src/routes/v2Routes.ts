@@ -197,23 +197,29 @@ v2Router.get("/open-orders", async (req, res) => {
 // market's own game_id case-insensitively, plus any `PARENT::CODE` sub-market
 // game_ids (group / league-winner markets). Every leg is a v2- prefixed row.
 //
-// Response: { ok, points: [{ ts, outcomeIndex, code, bps }] }
+// Response: { ok, points: [{ ts, outcomeIndex, code, bps }], lastMid: { aBps, bBps } | null }
+// `lastMid` is the sweeper's pre-clear book-mid snapshot — the display fallback
+// when a market was seeded but never traded (no fills), so it still holds the
+// real price instead of reverting to 50/50.
 v2Router.get("/chart/:gameId", async (req, res) => {
   const gameId = String(req.params.gameId || "").trim();
   if (!gameId) return res.status(400).json({ ok: false, error: "gameId required" });
   try {
-    const { rows } = await pool.query(
-      `SELECT timestamp AS ts, outcome_index, outcome_code, spot_price_bps
-         FROM public.user_trade_events
-        WHERE id LIKE 'v2-%'
-          AND type IN ('BUY','SELL')
-          AND spot_price_bps IS NOT NULL
-          AND (game_id ILIKE $1 OR game_id ILIKE $1 || '::%')
-        ORDER BY timestamp ASC
-        LIMIT 3000`,
-      [gameId]
-    );
-    const points = rows
+    const [pointsRes, snapRes] = await Promise.all([
+      pool.query(
+        `SELECT timestamp AS ts, outcome_index, outcome_code, spot_price_bps
+           FROM public.user_trade_events
+          WHERE id LIKE 'v2-%'
+            AND type IN ('BUY','SELL')
+            AND spot_price_bps IS NOT NULL
+            AND (game_id ILIKE $1 OR game_id ILIKE $1 || '::%')
+          ORDER BY timestamp ASC
+          LIMIT 3000`,
+        [gameId]
+      ),
+      pool.query(`SELECT a_bps, b_bps FROM v2.last_prices WHERE game_id ILIKE $1 LIMIT 1`, [gameId]),
+    ]);
+    const points = pointsRes.rows
       .map((r: any) => ({
         ts: Number(r.ts),
         outcomeIndex: r.outcome_index == null ? null : Number(r.outcome_index),
@@ -221,10 +227,44 @@ v2Router.get("/chart/:gameId", async (req, res) => {
         bps: Number(r.spot_price_bps),
       }))
       .filter((p) => Number.isFinite(p.ts) && p.ts > 0 && Number.isFinite(p.bps));
+    const s = snapRes.rows[0];
+    const lastMid =
+      s && Number.isFinite(Number(s.a_bps)) && Number.isFinite(Number(s.b_bps))
+        ? { aBps: Number(s.a_bps), bBps: Number(s.b_bps) }
+        : null;
     res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=30");
-    return res.json({ ok: true, points });
+    return res.json({ ok: true, points, lastMid });
   } catch (e: any) {
     console.error("[v2/chart]", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// POST /api/v2/last-price — snapshot a market's last-known book mid (bps per
+// outcome) so the UI can hold it after the book is cleared even with no fills.
+// Called by the stale-order sweeper right before it cancels the seed ladder.
+// Body: { gameId, aBps, bBps, source? }
+v2Router.post("/last-price", async (req, res) => {
+  if (!requireSecret(req, res)) return;
+  try {
+    const b = req.body || {};
+    const gameId = String(b.gameId || "").trim();
+    const aBps = Math.round(Number(b.aBps));
+    const bBps = Math.round(Number(b.bBps));
+    if (!gameId || !Number.isFinite(aBps) || !Number.isFinite(bBps)) {
+      return res.status(400).json({ ok: false, error: "gameId, aBps, bBps required" });
+    }
+    await pool.query(
+      `INSERT INTO v2.last_prices (game_id, a_bps, b_bps, source, updated_at)
+       VALUES ($1, $2, $3, $4, now())
+       ON CONFLICT (game_id) DO UPDATE
+         SET a_bps = EXCLUDED.a_bps, b_bps = EXCLUDED.b_bps,
+             source = EXCLUDED.source, updated_at = now()`,
+      [gameId, aBps, bBps, String(b.source || "sweep")]
+    );
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[v2/last-price]", e?.message || e);
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });

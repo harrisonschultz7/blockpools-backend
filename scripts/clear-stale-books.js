@@ -44,6 +44,8 @@ require("dotenv").config({ path: path.join(__dirname, "../.env") });
 
 const GAMES_JSON = process.env.GAMES_JSON_PATH || path.join(__dirname, "../../frontend/src/data/games.json");
 const MATCHER_URL = (process.env.MATCHER_URL || "http://127.0.0.1:8090").replace(/\/+$/, "");
+const BACKEND_URL = (process.env.BACKEND_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
+const V2_SECRET = (process.env.V2_MATCHER_SECRET || "").trim();
 const AFTER_SEC = Number(process.env.STALE_CLEAR_AFTER_SEC || 3600);
 const MAX_AGE_SEC = Number(process.env.STALE_CLEAR_MAX_AGE_SEC || 43200);
 const DRY = process.argv.includes("--dry");
@@ -90,12 +92,16 @@ function marketIdsOf(g) {
   return [...ids];
 }
 
-// The operator/MM wallet's resting order hashes on a market (both outcomes,
-// bids + asks). Everything else in the book is left alone.
-async function operatorOrderHashes(marketId) {
+// Fetch a market's order book { bids:{0,1}, asks:{0,1} } from the matcher.
+async function fetchBook(marketId) {
   const res = await fetch(`${MATCHER_URL}/book?marketId=${encodeURIComponent(marketId)}`);
   if (!res.ok) throw new Error(`book HTTP ${res.status}`);
-  const book = await res.json(); // { bids: {0:[],1:[]}, asks: {0:[],1:[]} }
+  return res.json();
+}
+
+// The operator/MM wallet's resting order hashes in a book (both outcomes, bids +
+// asks). Everything else is left alone.
+function operatorHashesFromBook(book) {
   const entries = [
     ...(book.bids?.[0] || []), ...(book.bids?.[1] || []),
     ...(book.asks?.[0] || []), ...(book.asks?.[1] || []),
@@ -106,6 +112,29 @@ async function operatorOrderHashes(marketId) {
     .filter(Boolean);
 }
 
+// Per-outcome book MID in bps (0-10000), complementary — identical to the
+// frontend useV2BookPrices formula. Snapshotted before we clear so the UI can
+// hold the real price afterwards (prices are 1e6-scaled; /100 → bps).
+function bookMidBps(book) {
+  const SCALE = 1_000_000;
+  const bestBid = (a) => (a && a.length ? Math.max(...a.map((o) => Number(o.price))) : undefined);
+  const bestAsk = (a) => (a && a.length ? Math.min(...a.map((o) => Number(o.price))) : undefined);
+  const mid = (i) => {
+    const j = i === 0 ? 1 : 0;
+    const bidJ = bestBid(book.bids?.[j]);
+    const askJ = bestAsk(book.asks?.[j]);
+    const buys = [bestAsk(book.asks?.[i]), bidJ != null ? SCALE - bidJ : undefined].filter((x) => x != null);
+    const sells = [bestBid(book.bids?.[i]), askJ != null ? SCALE - askJ : undefined].filter((x) => x != null);
+    const ask = buys.length ? Math.min(...buys) : undefined;
+    const bid = sells.length ? Math.max(...sells) : undefined;
+    if (ask != null && bid != null) return (ask + bid) / 2 / 100;
+    if (ask != null) return ask / 100;
+    if (bid != null) return bid / 100;
+    return undefined;
+  };
+  return { aBps: mid(0), bBps: mid(1) };
+}
+
 async function cancelOrder(hash) {
   const res = await fetch(`${MATCHER_URL}/cancel`, {
     method: "POST",
@@ -113,6 +142,17 @@ async function cancelOrder(hash) {
     body: JSON.stringify({ hash }),
   });
   if (!res.ok) throw new Error(`cancel HTTP ${res.status}`);
+}
+
+// Persist the pre-clear book mid so the UI holds the real price after the sweep
+// (covers the "seeded but never traded" case — no fills to fall back on).
+async function postLastPrice(gameId, aBps, bBps) {
+  const res = await fetch(`${BACKEND_URL}/api/v2/last-price`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(V2_SECRET ? { "x-v2-secret": V2_SECRET } : {}) },
+    body: JSON.stringify({ gameId, aBps: Math.round(aBps), bBps: Math.round(bBps), source: "sweep" }),
+  });
+  if (!res.ok) throw new Error(`last-price HTTP ${res.status}`);
 }
 
 async function tick() {
@@ -135,11 +175,17 @@ async function tick() {
 
     for (const mid of marketIdsOf(g)) {
       try {
-        const hashes = await operatorOrderHashes(mid);
-        if (!hashes.length) continue;
+        const book = await fetchBook(mid);
+        const hashes = operatorHashesFromBook(book);
+        if (!hashes.length) continue; // nothing of ours to sweep (already cleared)
+        const px = bookMidBps(book); // pre-clear mid → snapshot before we cancel
         if (DRY) {
-          console.log(`WOULD cancel ${hashes.length} operator order(s) on ${g.gameId} ${mid} (kickoff ${ageMin}m ago)`);
+          console.log(`WOULD cancel ${hashes.length} operator order(s) + snapshot mid [${px.aBps},${px.bBps}] on ${g.gameId} ${mid} (kickoff ${ageMin}m ago)`);
           continue;
+        }
+        if (px.aBps != null && px.bBps != null) {
+          try { await postLastPrice(g.gameId, px.aBps, px.bBps); }
+          catch (err) { console.log(`    last-price snapshot failed: ${err.message}`); }
         }
         let n = 0;
         for (const h of hashes) {
