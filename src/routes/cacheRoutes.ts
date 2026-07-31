@@ -215,6 +215,86 @@ cacheRoutes.post("/user/:address/record-trade", async (req, res) => {
 });
 
 // ------------------------------------------------------------
+// Direct-write a complete-set MERGE as two SELL legs (one per outcome).
+// POST /cache/user/:address/record-merge
+// Body: { txHash, gameId|contract, sets, aBps?, outcomeACode?, outcomeBCode?, league?, timestamp? }
+//
+// Why: mergePositions (burning 1 of every outcome for $1) is a USER action on the
+// vault that the matcher never records, so a user who bought BOTH sides and merged
+// the set has the ~$1/set recovery MISSING from the ledger. Their history then
+// shows only the tiny leftover claim as the winning side's return (e.g. -96.6% on
+// a bet that actually netted ~-3%). Recording the merge as a SELL of `sets` shares
+// on EACH outcome — split at the merge-time book mid (aBps for outcome 0, the
+// complement for outcome 1, so the two legs sum to exactly `sets` USDC) — makes
+// getTradeAgg attribute the recovery per side, so per-position ROI is accurate.
+//
+// Dedup: ids `merge-<txHash>-0/1`.
+// ------------------------------------------------------------
+cacheRoutes.post("/user/:address/record-merge", async (req, res) => {
+  const address = normAddr(String(req.params.address));
+  if (!assertAddr(address)) return res.status(400).json({ ok: false, error: "Invalid address" });
+
+  const b = (req.body || {}) as Record<string, unknown>;
+  const txHash = b.txHash ? String(b.txHash) : null;
+  const gameId = b.gameId
+    ? String(b.gameId).toLowerCase()
+    : b.contract
+      ? String(b.contract).toLowerCase()
+      : "";
+  const sets = Number(b.sets);
+  // Merge-time book mid for outcome 0; outcome 1 is the complement so the two legs
+  // sum to exactly `sets` USDC (a complete set merges for $1). Falls back to 50/50.
+  let aBps = Number(b.aBps);
+  if (!Number.isFinite(aBps) || aBps <= 0 || aBps >= 10000) aBps = 5000;
+  const bBps = 10000 - aBps;
+  const tsNum = Number(b.timestamp);
+  const timestamp = Number.isFinite(tsNum) && tsNum > 0 ? Math.trunc(tsNum) : Math.floor(Date.now() / 1000);
+  const league = b.league != null ? String(b.league) : null;
+  const codeA = b.outcomeACode != null ? String(b.outcomeACode) : null;
+  const codeB = b.outcomeBCode != null ? String(b.outcomeBCode) : null;
+
+  if (!txHash || !gameId || !Number.isFinite(sets) || sets <= 0) {
+    return res.status(400).json({ ok: false, error: "txHash, gameId and positive sets are required" });
+  }
+
+  const leg = (outcomeIndex: 0 | 1, code: string | null, priceBps: number) => {
+    const proceeds = ((sets * priceBps) / 10000).toFixed(6);
+    return {
+      id: `merge-${txHash!.toLowerCase()}-${outcomeIndex}`,
+      type: "SELL",
+      side: outcomeIndex === 0 ? "A" : "B",
+      outcomeIndex,
+      outcomeCode: code,
+      timestamp,
+      txHash,
+      spotPriceBps: priceBps,
+      avgPriceBps: priceBps,
+      grossInDec: "0",
+      grossOutDec: proceeds,
+      feeDec: "0",
+      netStakeDec: "0",
+      netOutDec: proceeds,
+      costBasisClosedDec: "0",
+      realizedPnlDec: "0",
+      game: { id: gameId, league },
+      __source: "merge-direct",
+    };
+  };
+
+  try {
+    await upsertUserTradesAndGames({
+      user: address,
+      tradeRows: [leg(0, codeA, aBps), leg(1, codeB, bBps)],
+    });
+    bustUserCache(address);
+    return res.json({ ok: true, ids: [`merge-${txHash.toLowerCase()}-0`, `merge-${txHash.toLowerCase()}-1`] });
+  } catch (e: any) {
+    console.log(`[record-merge] err: ${String(e?.message || e)}`);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// ------------------------------------------------------------
 // Leaderboard
 // GET /cache/leaderboard?league=ALL&range=ALL&sort=ROI&page=1&pageSize=25
 // ------------------------------------------------------------
