@@ -16,6 +16,7 @@
 //   node dist/scripts/backfillUnmappedV2Fills.js --dry     # preview, writes nothing
 //   node dist/scripts/backfillUnmappedV2Fills.js           # apply
 
+import "dotenv/config"; // load .env (DATABASE_URL etc.) before ../db reads it
 import { pool } from "../db";
 import { recordV2Fill, V2FillInput } from "../services/v2/v2Persist";
 import {
