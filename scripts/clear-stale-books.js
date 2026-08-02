@@ -26,7 +26,7 @@
 //
 // Env (backend .env): GAMES_JSON_PATH, MATCHER_URL (default 127.0.0.1:8090),
 //   SWEEP_MAKERS (comma-sep wallets; default operator 0xD660fa35…),
-//   STALE_CLEAR_AFTER_SEC   (default 3600  = start 1h after kickoff),
+//   STALE_CLEAR_AFTER_SEC   (default 1800  = start 30m after kickoff),
 //   STALE_CLEAR_MAX_AGE_SEC (default 43200 = stop 12h after kickoff).
 // Run: node scripts/clear-stale-books.js               # one pass
 //      node scripts/clear-stale-books.js --loop 300    # every 5 min (systemd)
@@ -46,7 +46,7 @@ const GAMES_JSON = process.env.GAMES_JSON_PATH || path.join(__dirname, "../../fr
 const MATCHER_URL = (process.env.MATCHER_URL || "http://127.0.0.1:8090").replace(/\/+$/, "");
 const BACKEND_URL = (process.env.BACKEND_URL || "http://127.0.0.1:8080").replace(/\/+$/, "");
 const V2_SECRET = (process.env.V2_MATCHER_SECRET || "").trim();
-const AFTER_SEC = Number(process.env.STALE_CLEAR_AFTER_SEC || 3600);
+const AFTER_SEC = Number(process.env.STALE_CLEAR_AFTER_SEC || 1800);
 const MAX_AGE_SEC = Number(process.env.STALE_CLEAR_MAX_AGE_SEC || 43200);
 const DRY = process.argv.includes("--dry");
 
