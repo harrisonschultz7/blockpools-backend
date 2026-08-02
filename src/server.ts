@@ -42,6 +42,9 @@ import { startPortfolioSnapshotCron } from "./workers/portfolioSnapshotWorker";
 // ✅ Chart data from Supabase (league winner price history)
 import chartRouter from "./routes/chart";
 
+// ✅ Hot Markets — one-sided (house-exposed) markets for the home page
+import hotMarketsRouter from "./routes/hotMarkets";
+
 // ✅ Promo code redemption (legacy direct-credit flow)
 import promoRouter from "./routes/promo";
 
@@ -133,6 +136,9 @@ export function makeServer() {
   // ✅ Chart data from Supabase — MUST be before generic /api routers
   //   GET /api/chart/:contractAddress
   app.use("/api/chart", chartRouter);
+
+  //   GET /api/hot-markets/one-sided
+  app.use("/api/hot-markets", hotMarketsRouter);
 
   // ✅ Trade agg (query-based)
   //   GET /api/profile/trade-agg?user=0x...&page=1&pageSize=10&league=ALL&range=ALL
