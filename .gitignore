@@ -136,3 +136,6 @@ dist/
 src/dist/
 !src/cache/
 !src/cache/cacheKeys.ts
+
+# mm-ladder runtime state (seeded record + posted hashes)
+scripts/.mm-ladder-state.json
