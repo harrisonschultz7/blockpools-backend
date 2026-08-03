@@ -204,7 +204,7 @@ async function main() {
   const RPC = process.env.ARBITRUM_RPC_URL || process.env.RPC_URL;
   const EXCHANGE = process.env.EXCHANGE_ADDRESS;
   const KEY = process.env.MM_PRIVATE_KEY || process.env.PRIVATE_KEY;
-  if (!RPC || !EXCHANGE || !KEY) throw new Error("Set ARBITRUM_RPC_URL, EXCHANGE_ADDRESS, and MM_PRIVATE_KEY (or PRIVATE_KEY) in exchange-v2/.env");
+  if (!RPC || !EXCHANGE || !KEY) throw new Error("Set ARBITRUM_RPC_URL, EXCHANGE_ADDRESS, and MM_PRIVATE_KEY (or PRIVATE_KEY) in the backend .env");
 
   const provider = new ethers.JsonRpcProvider(RPC);
   const wallet = new ethers.Wallet(KEY, provider);
