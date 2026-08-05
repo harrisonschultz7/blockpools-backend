@@ -1231,6 +1231,116 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "MLB-LAA-BAL-2026-08-06-1786034100",
+      "mids": {
+        "LAA": 41,
+        "BAL": 59
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-OAK-CIN-2026-08-06-1786034400",
+      "mids": {
+        "OAK": 41,
+        "CIN": 59
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-NYM-CLE-2026-08-06-1786036200",
+      "mids": {
+        "NYM": 51,
+        "CLE": 49
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-PIT-MIL-2026-08-06-1786039800",
+      "mids": {
+        "PIT": 45,
+        "MIL": 55
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-TOR-CHC-2026-08-06-1786040400",
+      "mids": {
+        "TOR": 52,
+        "CHC": 48
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-DET-SEA-2026-08-06-1786047000",
+      "mids": {
+        "DET": 47,
+        "SEA": 53
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-WSH-PHI-2026-08-06-1786053900",
+      "mids": {
+        "WSH": 25,
+        "PHI": 75
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-CHW-BOS-2026-08-06-1786057800",
+      "mids": {
+        "CHW": 39,
+        "BOS": 61
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-MIA-ATL-2026-08-06-1786058100",
+      "mids": {
+        "MIA": 42,
+        "ATL": 58
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-MIN-KC-2026-08-06-1786059000",
+      "mids": {
+        "MIN": 48,
+        "KC": 52
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-SD-ARI-2026-08-06-1786066800",
+      "mids": {
+        "SD": 49,
+        "ARI": 51
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
