@@ -139,3 +139,4 @@ src/dist/
 
 # mm-ladder runtime state (seeded record + posted hashes)
 scripts/.mm-ladder-state.json
+scripts/.settle-alerts.json

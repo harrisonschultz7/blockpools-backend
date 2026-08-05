@@ -43,6 +43,38 @@ const VAULT_ABI = [
 
 const OUTCOME_A = 0, OUTCOME_B = 1, OUTCOME_DRAW = 2, OUTCOME_VOID = 3;
 
+// ---- flag email alerts (reuse the app's Resend config) --------------------
+// Set SETTLE_ALERT_EMAIL (comma-sep) in the backend .env to get an email when a
+// game is flagged (resolved void/draw, held for manual settlement). RESEND_API_KEY
+// + RESEND_FROM_EMAIL are the same vars the welcome email already uses.
+const ALERT_TO = (process.env.SETTLE_ALERT_EMAIL || "").trim();
+const ALERT_STATE = path.join(__dirname, ".settle-alerts.json");
+const ALERT_REPEAT_MS = Number(process.env.SETTLE_ALERT_REPEAT_HOURS || 12) * 3600 * 1000;
+
+function loadAlerts() { try { return JSON.parse(fs.readFileSync(ALERT_STATE, "utf8")); } catch { return {}; } }
+function saveAlerts(a) { try { fs.writeFileSync(ALERT_STATE, JSON.stringify(a, null, 2)); } catch {} }
+
+/** Email the operator about game(s) flagged for manual settlement.
+ *  No-op unless SETTLE_ALERT_EMAIL + RESEND_API_KEY are set. */
+async function emailFlagged(flagged) {
+  if (!ALERT_TO || !process.env.RESEND_API_KEY) return false;
+  let Resend;
+  try { ({ Resend } = require("resend")); } catch { return false; }
+  const rows = flagged.map((f) =>
+    `<li><b>${f.gameId}</b> (${f.teams})<br><code>node scripts/settle-v2.js --market ${f.gameId} --winner &lt;0|1|void&gt;</code><br><small>${f.msg}</small></li>`
+  ).join("");
+  try {
+    const r = await new Resend(process.env.RESEND_API_KEY).emails.send({
+      from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
+      to: ALERT_TO.split(",").map((s) => s.trim()).filter(Boolean),
+      subject: `🚩 ${flagged.length} v2 game(s) need manual settlement`,
+      html: `<p>The v2 settler flagged the following game(s) — they resolved to a void/draw and were <b>NOT</b> settled on-chain (a real winner voiding is almost always a data error). Verify each result, then settle manually:</p><ul>${rows}</ul>`,
+    });
+    console.log(`  📧 flag alert emailed to ${ALERT_TO}${r?.data?.id ? ` (${r.data.id})` : ""}`);
+    return true;
+  } catch (e) { console.warn(`  flag email failed: ${e.message}`); return false; }
+}
+
 // ---- pure helpers (unit-tested by settle-v2.verify.js) --------------------
 
 /** kickoff epoch (lockTime) for the settlement window: explicit field, else the
@@ -283,6 +315,19 @@ async function main() {
     if (flagged.length) {
       console.warn(`\n🚩🚩 ${flagged.length} GAME(S) FLAGGED — resolved to void/draw and NOT settled on-chain. Review each, then settle manually:`);
       for (const f of flagged) console.warn(`   ${f.gameId} (${f.teams})  →  node scripts/settle-v2.js --market ${f.gameId} --winner <0|1|void>`);
+
+      // Email the operator — only on the unattended full sweep (a manual --market
+      // run is interactive), de-duped so a persistently-flagged game re-alerts at
+      // most every SETTLE_ALERT_REPEAT_HOURS instead of every pass.
+      if (!marketFilter) {
+        const alerts = loadAlerts();
+        const now = Date.now();
+        const fresh = flagged.filter((f) => !alerts[f.gameId] || now - alerts[f.gameId] > ALERT_REPEAT_MS);
+        if (fresh.length && (await emailFlagged(fresh))) for (const f of fresh) alerts[f.gameId] = now;
+        const still = new Set(flagged.map((f) => f.gameId)); // prune settled games so a recurrence re-alerts
+        for (const gid of Object.keys(alerts)) if (!still.has(gid)) delete alerts[gid];
+        saveAlerts(alerts);
+      }
     }
   };
 
