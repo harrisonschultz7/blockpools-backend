@@ -249,6 +249,28 @@ function teamMatchesOneSide(apiName: string, wantName: string, wantCode?: string
   return false;
 }
 
+/**
+ * How STRONGLY an API team name matches a wanted team — used to disambiguate a
+ * winner between the two market sides. Higher = stronger:
+ *   3 full canonical name, 2 code/acronym, 1 shared last-word "mascot" (weak), 0 none.
+ * The mascot tier is the loose one that caused the White Sox / Red Sox false
+ * ambiguity — scoring it below an exact-name match lets the real winner win.
+ */
+function matchStrength(apiName: string, wantName: string, wantCode?: string): number {
+  const nApi = norm(apiName);
+  if (!nApi) return 0;
+  if (canonName(apiName) === canonName(wantName)) return 3;
+  const apiAcr = acronym(apiName);
+  const code = trimU(wantCode);
+  if (code && apiAcr && apiAcr === code) return 2;
+  const wantAcr = acronym(wantName);
+  if (wantAcr && apiAcr && apiAcr === wantAcr) return 2;
+  const ap = nApi.split(" ").filter(Boolean);
+  const wp = norm(wantName).split(" ").filter(Boolean);
+  if (ap.length && wp.length && ap[ap.length - 1] === wp[wp.length - 1]) return 1;
+  return 0;
+}
+
 function unorderedTeamsMatchByTokens(
   homeName: string, awayName: string, AName: string, BName: string, ACode?: string, BCode?: string
 ): boolean {
@@ -438,16 +460,16 @@ async function resolveOutcome(p: {
   if (!isFinalStatus(best.status)) return { ...base, isFinal: false, outcome: null };
 
   let outcome: number;
-  if (best.homeScore > best.awayScore) {
-    const homeIsA = teamMatchesOneSide(best.homeName, teamAName, teamACode);
-    const homeIsB = teamMatchesOneSide(best.homeName, teamBName, teamBCode);
-    outcome = homeIsA && !homeIsB ? OUTCOME_A : homeIsB && !homeIsA ? OUTCOME_B : OUTCOME_VOID;
-  } else if (best.awayScore > best.homeScore) {
-    const awayIsA = teamMatchesOneSide(best.awayName, teamAName, teamACode);
-    const awayIsB = teamMatchesOneSide(best.awayName, teamBName, teamBCode);
-    outcome = awayIsA && !awayIsB ? OUTCOME_A : awayIsB && !awayIsA ? OUTCOME_B : OUTCOME_VOID;
-  } else {
+  if (best.homeScore === best.awayScore) {
     outcome = OUTCOME_DRAW;
+  } else {
+    // Winner's name → whichever market side it matches MORE STRONGLY. Void only
+    // when both sides match equally well (a real ambiguity), so a shared mascot
+    // (weak, strength 1) can never tie an exact-name match (strength 3).
+    const winnerName = best.homeScore > best.awayScore ? best.homeName : best.awayName;
+    const sA = matchStrength(winnerName, teamAName, teamACode);
+    const sB = matchStrength(winnerName, teamBName, teamBCode);
+    outcome = sA > sB ? OUTCOME_A : sB > sA ? OUTCOME_B : OUTCOME_VOID;
   }
 
   return { ...base, isFinal: true, outcome };

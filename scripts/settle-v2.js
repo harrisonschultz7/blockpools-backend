@@ -98,6 +98,7 @@ module.exports = { lockTimeOf, dateWindow, binaryVector, groupSubVector, matchWi
 const DRY = process.argv.includes("--dry");
 const marketFilter = argValue("--market");
 const loopSec = Number(argValue("--loop") || 0);
+const winnerOverride = argValue("--winner"); // manual force-resolve: 0 | 1 | void (requires --market)
 
 function argValue(flag) {
   const i = process.argv.indexOf(flag);
@@ -144,8 +145,10 @@ async function postJson(url, body) {
   }
 }
 
-/** Build the list of on-chain reportPayouts calls for one games.json entry. */
-function planForGame(g, apiOutcome) {
+/** Build the list of on-chain reportPayouts calls for one games.json entry.
+ *  `allowVoid` is true only for a manual --winner override; automatic runs must
+ *  NEVER settle a void/draw (see the guard below). */
+function planForGame(g, apiOutcome, allowVoid) {
   const kind =
     Array.isArray(g.outcomes) && g.outcomes.length >= 2
       ? "group"
@@ -159,14 +162,24 @@ function planForGame(g, apiOutcome) {
 
   if (kind === "binary") {
     if (!g.marketId) return { skip: "no marketId" };
-    // A draw on a 2-outcome market → even refund.
     const winIdx = winner === 0 ? 0 : winner === 1 ? 1 : null;
+    // GUARD: a moneyline that resolves to void/draw (apiOutcome 2 or 3) almost
+    // always means the feed/team-matching failed to pick a winner (e.g. the
+    // shared-"Sox" false ambiguity) — NOT a real void. Auto-reporting [1,1]
+    // half-pays the actual winner. So we DON'T settle it: flag for a human, who
+    // verifies and forces the correct result with --winner <0|1|void>.
+    if (winIdx === null && !allowVoid) {
+      return { flag: `apiOutcome=${apiOutcome} → no clear winner. NOT auto-settled. Verify, then: --market ${g.gameId} --winner <0|1|void>` };
+    }
     return { calls: [{ marketId: g.marketId, vector: binaryVector(winIdx), label: `${g.teamACode}/${g.teamBCode}` }] };
   }
 
   // group (3-way / league-winner). League-winner isn't match-resolvable, but a
   // 3-way is: winner sub-market Yes, losers No.
-  if (winner == null) return { skip: "void/unknown outcome for group" };
+  if (winner == null) {
+    if (!allowVoid) return { flag: `apiOutcome=${apiOutcome} → no clear winner for group. NOT auto-settled. Verify, then --market ${g.gameId} --winner <idx|void>` };
+    return { skip: "void/unknown outcome for group (override)" };
+  }
   if (g.outcomes.length > 3) return { skip: "league-winner not match-resolvable" };
   const calls = g.outcomes
     .filter((o) => o.marketId)
@@ -189,26 +202,42 @@ async function main() {
   const vault = new ethers.Contract(VAULT, VAULT_ABI, wallet);
   console.log(`settle-v2: vault=${VAULT} resolver=${wallet.address}${DRY ? " (DRY RUN)" : ""}`);
 
+  if (winnerOverride != null && !marketFilter) {
+    throw new Error("--winner requires --market <gameId> (refusing to force-resolve every v2 market)");
+  }
+
   const tick = async () => {
     let games = loadV2Games();
     if (marketFilter) games = games.filter((g) => g.gameId === marketFilter || g.slug === marketFilter);
     if (!games.length) return console.log("no matching v2 markets");
 
+    const flagged = [];
     for (const g of games) {
       try {
         let api;
-        try {
-          api = await settlementOutcome(g);
-        } catch (e) {
-          console.log(`  ${g.gameId}: settlement lookup failed (${e.message}) — retry next pass`);
-          continue;
-        }
-        if (!api.found || !api.isFinal || api.outcome == null) {
-          console.log(`  ${g.gameId}: not final yet (found=${api.found} status="${api.status || ""}")`);
-          continue;
+        if (winnerOverride != null) {
+          const ov = String(winnerOverride).toLowerCase() === "void" ? OUTCOME_VOID : Number(winnerOverride);
+          api = { found: true, isFinal: true, outcome: ov };
+          console.log(`  ${g.gameId}: MANUAL override → outcome=${ov} (0=A/${g.teamACode}, 1=B/${g.teamBCode}, void=refund)`);
+        } else {
+          try {
+            api = await settlementOutcome(g);
+          } catch (e) {
+            console.log(`  ${g.gameId}: settlement lookup failed (${e.message}) — retry next pass`);
+            continue;
+          }
+          if (!api.found || !api.isFinal || api.outcome == null) {
+            console.log(`  ${g.gameId}: not final yet (found=${api.found} status="${api.status || ""}")`);
+            continue;
+          }
         }
 
-        const plan = planForGame(g, Number(api.outcome));
+        const plan = planForGame(g, Number(api.outcome), winnerOverride != null);
+        if (plan.flag) {
+          flagged.push({ gameId: g.gameId, teams: `${g.teamACode}/${g.teamBCode}`, msg: plan.flag });
+          console.warn(`  🚩 FLAG ${g.gameId} (${g.teamACode}/${g.teamBCode}): ${plan.flag}`);
+          continue;
+        }
         if (plan.skip) {
           console.log(`  ${g.gameId}: skip — ${plan.skip}`);
           continue;
@@ -249,6 +278,11 @@ async function main() {
       } catch (e) {
         console.log(`  ${g.gameId}: ERROR ${e.shortMessage || e.message}`);
       }
+    }
+
+    if (flagged.length) {
+      console.warn(`\n🚩🚩 ${flagged.length} GAME(S) FLAGGED — resolved to void/draw and NOT settled on-chain. Review each, then settle manually:`);
+      for (const f of flagged) console.warn(`   ${f.gameId} (${f.teams})  →  node scripts/settle-v2.js --market ${f.gameId} --winner <0|1|void>`);
     }
   };
 
