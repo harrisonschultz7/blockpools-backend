@@ -424,6 +424,7 @@ const _txInFlight = new Set();
 const _nextAt = new Map();      // marketId -> ms; per-market cadence gate (persists across ticks)
 const _ended = new Set();       // marketIds flattened + stopped (resolved / closed / past game window)
 const _lastMergeAt = new Map(); // marketId -> ms; merge cooldown (gas guard)
+const _lastSnap = new Map();    // gameId -> { aBps, at }; price-history snapshot throttle
 
 // RPC read caches. The bot polls many markets fast; without caching, vault
 // reads (markets + 2×sharesOf per market per tick) run ~20+ calls/sec and blow
@@ -525,6 +526,26 @@ async function ensureRedeem(marketId, ctx) {
 }
 
 /**
+ * Append a throttled book-mid snapshot to the price-history chart series. We
+ * already have the live fair each tick, so this is nearly free. Throttled to a
+ * ≥1¢ move OR a heartbeat (60s live / 10m pre-game) so the table stays tiny.
+ * Fire-and-forget — never blocks the tick or spams on a backend hiccup.
+ */
+function maybeSnapshot(gameId, fair0Cents, started, dry) {
+  if (dry || !gameId) return;
+  const aBps = Math.round(fair0Cents * 100);
+  const bBps = 10000 - aBps;
+  const prev = _lastSnap.get(gameId);
+  const now = Date.now();
+  const moved = !prev || Math.abs(aBps - prev.aBps) >= 100;    // ≥1¢
+  const stale = !prev || now - prev.at >= (started ? 60_000 : 600_000);
+  if (!moved && !stale) return;
+  _lastSnap.set(gameId, { aBps, at: now });
+  postJson(`${BACKEND_URL}/api/v2/price-point`, { gameId, aBps, bBps }, V2_SECRET ? { "x-v2-secret": V2_SECRET } : {})
+    .catch(() => { /* never block/spam on a backend hiccup */ });
+}
+
+/**
  * Reconcile one market: read live fair + book, decide the desired ladder, and
  * (unless within the reprice deadband) cancel our stale bids and post the new
  * ones. Returns a short status string.
@@ -555,12 +576,16 @@ async function reprice(tgt, ctx) {
   catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} feed error (${e.message}) → flat`, ended: false }; }
   if (fair.closed) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} Polymarket closed → flat`, ended: true }; }
 
-  // 3) Book + inventory.
-  const book = await fetchBook(marketId);
-  // Inventory only accrues once a game trades in earnest (post-kickoff), so skip
-  // the sharesOf reads pre-game to save RPC — assume flat. Any position taken is
-  // picked up the moment the game enters its live phase.
+  // Game phase — drives the snapshot heartbeat and whether we read inventory.
   const started = tgt.lockTime > 0 && Math.floor(Date.now() / 1000) >= tgt.lockTime;
+  // Throttled book-mid snapshot for the price-history chart (nearly free — we
+  // already have the fair). Captures the live line even when nobody's trading.
+  maybeSnapshot(game.gameId, fair.fair0Cents, started, dry);
+
+  // 3) Book + inventory. Inventory only accrues once a game trades in earnest
+  // (post-kickoff), so skip the sharesOf reads pre-game to save RPC — assume
+  // flat; any position is picked up the moment the game goes live.
+  const book = await fetchBook(marketId);
   let [sh0, sh1] = started ? await getShares(vault, wallet.address, marketId) : [0, 0];
 
   // 3.5) Auto-merge complete sets back to USDC (budget reset, keeps the spread).

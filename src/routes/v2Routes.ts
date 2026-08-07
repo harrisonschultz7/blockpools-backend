@@ -268,7 +268,7 @@ v2Router.get("/chart/:gameId", async (req, res) => {
   const gameId = String(req.params.gameId || "").trim();
   if (!gameId) return res.status(400).json({ ok: false, error: "gameId required" });
   try {
-    const [pointsRes, snapRes] = await Promise.all([
+    const [pointsRes, snapRes, histRes] = await Promise.all([
       pool.query(
         `SELECT timestamp AS ts, outcome_index, outcome_code, spot_price_bps
            FROM public.user_trade_events
@@ -281,6 +281,16 @@ v2Router.get("/chart/:gameId", async (req, res) => {
         [gameId]
       ),
       pool.query(`SELECT a_bps, b_bps FROM v2.last_prices WHERE game_id ILIKE $1 LIMIT 1`, [gameId]),
+      // Dense book-mid time series (throttled snapshots written by the seed bot) —
+      // gives the chart a line that moves with the live odds even with no trades.
+      pool.query(
+        `SELECT (extract(epoch from ts) * 1000)::bigint AS ts, a_bps, b_bps
+           FROM v2.price_history
+          WHERE game_id ILIKE $1
+          ORDER BY ts ASC
+          LIMIT 5000`,
+        [gameId]
+      ),
     ]);
     const points = pointsRes.rows
       .map((r: any) => ({
@@ -295,8 +305,11 @@ v2Router.get("/chart/:gameId", async (req, res) => {
       s && Number.isFinite(Number(s.a_bps)) && Number.isFinite(Number(s.b_bps))
         ? { aBps: Number(s.a_bps), bBps: Number(s.b_bps) }
         : null;
+    const history = histRes.rows
+      .map((r: any) => ({ ts: Number(r.ts), aBps: Number(r.a_bps), bBps: Number(r.b_bps) }))
+      .filter((h) => Number.isFinite(h.ts) && h.ts > 0 && Number.isFinite(h.aBps) && Number.isFinite(h.bBps));
     res.setHeader("Cache-Control", "public, max-age=10, stale-while-revalidate=30");
-    return res.json({ ok: true, points, lastMid });
+    return res.json({ ok: true, points, lastMid, history });
   } catch (e: any) {
     console.error("[v2/chart]", e?.message || e);
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
@@ -328,6 +341,37 @@ v2Router.post("/last-price", async (req, res) => {
     return res.json({ ok: true });
   } catch (e: any) {
     console.error("[v2/last-price]", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// POST /api/v2/price-point — APPEND a throttled book-mid snapshot to the price
+// history (the seed bot posts these on a >=1c move / periodically), so the chart
+// can draw a line that tracks the live odds even when nobody is trading. Unlike
+// /last-price (single overwritten row) this is an append-only time series.
+// Body: { gameId, aBps, bBps }. Guarded by the matcher secret.
+v2Router.post("/price-point", async (req, res) => {
+  if (!requireSecret(req, res)) return;
+  try {
+    const b = req.body || {};
+    const gameId = String(b.gameId || "").trim();
+    const aBps = Math.round(Number(b.aBps));
+    const bBps = Math.round(Number(b.bBps));
+    if (!gameId || !Number.isFinite(aBps) || !Number.isFinite(bBps)) {
+      return res.status(400).json({ ok: false, error: "gameId, aBps, bBps required" });
+    }
+    await pool.query(
+      `INSERT INTO v2.price_history (game_id, a_bps, b_bps) VALUES ($1, $2, $3)`,
+      [gameId, aBps, bBps]
+    );
+    // Cheap probabilistic retention (~60 days) so the table stays tiny — the
+    // writes are already throttled, so this rarely runs and never blocks a trade.
+    if (Math.random() < 0.01) {
+      await pool.query(`DELETE FROM v2.price_history WHERE ts < now() - interval '60 days'`);
+    }
+    return res.json({ ok: true });
+  } catch (e: any) {
+    console.error("[v2/price-point]", e?.message || e);
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
