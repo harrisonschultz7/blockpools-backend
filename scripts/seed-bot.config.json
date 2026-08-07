@@ -8,7 +8,7 @@
       "topSpreadCents": 2,
       "stepCents": 1,
       "maxExposureUsd": 100,
-      "cadenceSec": 1,
+      "cadenceSec": 3,
       "repriceDeadbandCents": 1,
       "inventoryCapShares": 200,
       "mergeMinShares": 5
