@@ -31,6 +31,61 @@ function requireSecret(req: any, res: any): boolean {
   return false;
 }
 
+// --- Bot control: runtime on/off switch for background bots (seed-bot.js) ----
+
+// GET /api/v2/seed-bot/control?bot=seed-bot → { ok, bot, enabled, note, updatedAt }
+// Public read (non-sensitive). The seed bot polls this each tick; if it can't be
+// read the bot fails safe (pauses + cancels its orders).
+v2Router.get("/seed-bot/control", async (req, res) => {
+  try {
+    const bot = String(req.query.bot || "seed-bot");
+    const { rows } = await pool.query(
+      `SELECT bot_name, enabled, note, updated_at FROM public.bot_control WHERE bot_name = $1 LIMIT 1`,
+      [bot]
+    );
+    const row = rows[0];
+    return res.json({
+      ok: true,
+      bot,
+      enabled: !!row?.enabled, // missing row ⇒ disabled (seeding is opt-in)
+      note: row?.note ?? null,
+      updatedAt: row?.updated_at ?? null,
+    });
+  } catch (e: any) {
+    console.error("[v2/seed-bot/control GET]", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// POST /api/v2/seed-bot/control { bot?, enabled, note? } — flip the switch.
+// Guarded by V2_MATCHER_SECRET (x-v2-secret) like the other write endpoints.
+v2Router.post("/seed-bot/control", async (req, res) => {
+  if (!requireSecret(req, res)) return;
+  try {
+    const bot = String(req.body?.bot || "seed-bot");
+    if (typeof req.body?.enabled !== "boolean") {
+      return res.status(400).json({ ok: false, error: "enabled (boolean) required" });
+    }
+    const note = req.body?.note != null ? String(req.body.note) : null;
+    const { rows } = await pool.query(
+      `INSERT INTO public.bot_control (bot_name, enabled, note, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (bot_name) DO UPDATE SET
+         enabled    = EXCLUDED.enabled,
+         note       = COALESCE(EXCLUDED.note, public.bot_control.note),
+         updated_at = now()
+       RETURNING bot_name, enabled, note, updated_at`,
+      [bot, !!req.body.enabled, note]
+    );
+    const row = rows[0];
+    console.log(`[v2/seed-bot/control] ${bot} → enabled=${row.enabled}`);
+    return res.json({ ok: true, bot: row.bot_name, enabled: row.enabled, note: row.note, updatedAt: row.updated_at });
+  } catch (e: any) {
+    console.error("[v2/seed-bot/control POST]", e?.message || e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 // --- Matcher lifecycle events (writes) --------------------------------------
 
 // POST /api/v2/order  — upsert an order (accept / rest / counter-fill update).

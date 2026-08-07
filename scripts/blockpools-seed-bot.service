@@ -1,0 +1,44 @@
+# BlockPools live order-book seeding bot — reads a fair price from Polymarket
+# every second and seeds a bounded, user-first BID ladder on the configured v2
+# markets (see scripts/seed-bot.config.json). Runs beside the matcher on the VPS.
+#
+# IMPORTANT: do NOT add this bot's wallet to SWEEP_MAKERS. The kickoff+30m
+# sweeper (clear-stale-books) cancels STALE ladders; this bot re-prices to the
+# live line continuously, so the sweeper would fight it. Its safety is its own
+# dead-man's switch + inventory caps + the bot_control on/off flag.
+#
+# Install on the VPS:
+#   sudo cp /opt/blockpools/backend/scripts/blockpools-seed-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now blockpools-seed-bot.service
+#   journalctl -u blockpools-seed-bot.service -f      # watch it
+#
+# Requires in /opt/blockpools/backend/.env: ARBITRUM_RPC_URL, EXCHANGE_ADDRESS,
+# VAULT_ADDRESS, SEED_BOT_PRIVATE_KEY (dedicated bot wallet, funded + approved
+# via `node scripts/seed-bot.js --approve`), MATCHER_URL, BACKEND_URL,
+# V2_MATCHER_SECRET, GAMES_JSON_PATH. Optional: SEED_BOT_NAME, HOUSE_MAKERS.
+#
+# The daemon always runs; it only SEEDS while the bot_control flag is enabled.
+# Turn seeding on/off without stopping the service:
+#   curl -s -X POST http://127.0.0.1:8080/api/v2/seed-bot/control \
+#     -H 'content-type: application/json' -H "x-v2-secret: $V2_MATCHER_SECRET" \
+#     -d '{"bot":"seed-bot","enabled":true}'
+# `systemctl stop blockpools-seed-bot` is the hard kill.
+
+[Unit]
+Description=BlockPools live order-book seeding bot (Polymarket-priced)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+ExecStart=/usr/bin/env node scripts/seed-bot.js --loop 1
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
