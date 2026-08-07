@@ -278,14 +278,51 @@ function loadV2Games() {
   for (const list of Object.values(raw)) if (Array.isArray(list)) for (const g of list) if (g?.v2) out.push(g);
   return out;
 }
-/** Auto-derive a Polymarket slug from a game when the config doesn't set one. */
-function deriveSlug(g) {
-  const lg = String(g.league || "").toLowerCase();
-  const a = String(g.teamACode || g.teamA || "").toLowerCase();
-  const b = String(g.teamBCode || g.teamB || "").toLowerCase();
-  const date = String(g.date || (String(g.gameId || "").match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || "");
-  if (!lg || !a || !b || !date) return null;
-  return `${lg}-${a}-${b}-${date}`; // NOTE: Polymarket slug is away-home; verify per game.
+/** YYYY-MM-DD ± days (UTC). */
+function addDaysISO(iso, days) {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+// gameId -> resolved slug (positive, permanent); and a negative-result backoff.
+const _slugCache = new Map();
+const _slugNextProbe = new Map();
+
+/**
+ * Discover a game's Polymarket slug by probing variants — team order (away-home
+ * vs home-away) × kickoff date ±1 (Polymarket dates by UTC, which can be a day
+ * ahead of the local game date) — and verifying BOTH team names appear in the
+ * market's outcomes so we never bind to the wrong game. Positive results are
+ * cached permanently; misses back off 30 min so a not-yet-posted market is
+ * retried, not hammered. Returns a slug or null.
+ */
+async function resolvePolySlug(game) {
+  const gid = String(game.gameId || "");
+  if (_slugCache.has(gid)) return _slugCache.get(gid);
+  if (Date.now() < (_slugNextProbe.get(gid) || 0)) return null;
+  const lg = String(game.league || "").toLowerCase();
+  const a = String(game.teamACode || game.teamA || "").toLowerCase();
+  const b = String(game.teamBCode || game.teamB || "").toLowerCase();
+  const base = String(game.date || (gid.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || "");
+  if (!lg || !a || !b || !base) { _slugNextProbe.set(gid, Date.now() + 30 * 60_000); return null; }
+  const cands = [];
+  for (const d of [base, addDaysISO(base, 1), addDaysISO(base, -1)]) cands.push(`${lg}-${a}-${b}-${d}`, `${lg}-${b}-${a}-${d}`);
+  for (const slug of cands) {
+    try {
+      const arr = await getJson(`${POLY_GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
+      const m = Array.isArray(arr) ? arr[0] : arr;
+      if (!m) continue;
+      const outcomes = JSON.parse(m.outcomes || "[]");
+      if (outcomes.length < 2) continue;
+      const okA = outcomes.some((o) => sameTeam(o, game.teamAName || a));
+      const okB = outcomes.some((o) => sameTeam(o, game.teamBName || b));
+      if (okA && okB) { _slugCache.set(gid, slug); console.log(`  ↳ ${gid} → Polymarket ${slug}`); return slug; }
+    } catch { /* try next variant */ }
+  }
+  _slugNextProbe.set(gid, Date.now() + 30 * 60_000);
+  return null;
 }
 /** kickoff epoch: explicit lockTime, else trailing -<epoch> of the gameId. */
 function lockTimeOf(g) {
@@ -294,23 +331,67 @@ function lockTimeOf(g) {
   return m ? Number(m[1]) : 0;
 }
 
-/** Resolve config.markets → [{ label, game, marketId, slug, params }]. */
+/**
+ * Resolve targets = explicit config.markets (always) + every v2 game whose
+ * league is in config.autoLeagues AND whose kickoff is inside the active window
+ * [kickoff - preSeedLeadHours, kickoff + maxGameHours]. Deduped by marketId,
+ * sorted soonest-kickoff-first, capped at config.maxMarkets. Phase (pre/live)
+ * is recomputed each call so a game transitions pre→live on its own; auto games
+ * get their slug resolved lazily in reprice (slug: null here).
+ * Returns [{ label, game, marketId, slug, params, lockTime }].
+ */
 function resolveTargets(config, games) {
-  const targets = [];
+  const now = Math.floor(Date.now() / 1000);
+  const leadSec = Number(config.preSeedLeadHours ?? 24) * 3600;
+  const maxGameSec = Number(config.maxGameHours ?? 5) * 3600;
+  const seen = new Set();
+  const out = [];
+
+  const phaseParams = (g, override) => {
+    const started = lockTimeOf(g) > 0 && now >= lockTimeOf(g);
+    return { ...config.defaults[started ? "live" : "pre"], ...(override || {}) };
+  };
+  const add = (g, explicitSlug, override) => {
+    const key = String(g.marketId).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const codeA = g.teamACode || g.teamA || "A";
+    const codeB = g.teamBCode || g.teamB || "B";
+    out.push({
+      label: `${g.gameId} · ${codeA}/${codeB}`, game: g, marketId: g.marketId,
+      slug: explicitSlug || null, params: phaseParams(g, override), lockTime: lockTimeOf(g),
+    });
+  };
+
+  // Explicit markets — always included (a pinned game / slug override), no window filter.
   for (const m of config.markets || []) {
     const g = games.find((x) =>
       (m.gameId && x.gameId === m.gameId) || (m.slug && x.slug === m.slug) || (m.marketId && x.marketId === m.marketId));
     if (!g) { console.warn(`  ⚠️  no v2 game found for ${m.gameId || m.slug || m.marketId} — skipping`); continue; }
-    if (!g.marketId) { console.warn(`  ⚠️  ${g.gameId} has no marketId (group markets not supported yet) — skipping`); continue; }
-    const started = lockTimeOf(g) > 0 && Math.floor(Date.now() / 1000) >= lockTimeOf(g);
-    const params = { ...config.defaults[started ? "live" : "pre"], ...(m.params || {}) };
-    const slug = m.polymarketSlug || deriveSlug(g);
-    if (!slug) { console.warn(`  ⚠️  no Polymarket slug for ${g.gameId} — set polymarketSlug in config — skipping`); continue; }
-    const codeA = g.teamACode || g.teamA || "A";
-    const codeB = g.teamBCode || g.teamB || "B";
-    targets.push({ label: `${g.gameId} · ${codeA}/${codeB}`, game: g, marketId: g.marketId, slug, params });
+    if (!g.marketId) { console.warn(`  ⚠️  ${g.gameId} has no marketId — skipping`); continue; }
+    add(g, m.polymarketSlug || null, m.params);
   }
-  return targets;
+
+  // Auto leagues — all in-window v2 games.
+  const autoLeagues = (config.autoLeagues || []).map((s) => String(s).toUpperCase());
+  if (autoLeagues.length) {
+    const inWindow = [];
+    for (const g of games) {
+      if (!g.marketId || seen.has(String(g.marketId).toLowerCase())) continue;
+      if (!autoLeagues.includes(String(g.league || "").toUpperCase())) continue;
+      const lt = lockTimeOf(g);
+      if (lt <= 0) continue;                 // can't phase an unknown kickoff
+      if (now < lt - leadSec) continue;      // too far ahead
+      if (now > lt + maxGameSec) continue;   // ended / too old
+      inWindow.push(g);
+    }
+    inWindow.sort((a, b) => lockTimeOf(a) - lockTimeOf(b));
+    const cap = Number(config.maxMarkets ?? 24);
+    if (inWindow.length > cap) console.warn(`  ⚠️  ${inWindow.length} auto games in window; capping at maxMarkets=${cap} (soonest kickoff first)`);
+    for (const g of inWindow.slice(0, cap)) add(g, null, null);
+  }
+
+  return out;
 }
 
 // ── Control flag (backend bot_control) ────────────────────────────────────────
@@ -328,6 +409,9 @@ const _lastTop = new Map(); // marketId -> { 0: cents, 1: cents }
 // In-flight on-chain tx guard (merge/redeem) per market, so fast ticks don't
 // double-submit while a tx is still pending.
 const _txInFlight = new Set();
+const _nextAt = new Map();      // marketId -> ms; per-market cadence gate (persists across ticks)
+const _ended = new Set();       // marketIds flattened + stopped (resolved / closed / past game window)
+const _lastMergeAt = new Map(); // marketId -> ms; merge cooldown (gas guard)
 
 /**
  * Recycle complete sets back to USDC while the market is live. Holding shares of
@@ -342,6 +426,10 @@ function ensureMerge(marketId, sh0, sh1, ctx, params) {
   const sets = Math.floor(Math.min(sh0, sh1));
   const minMerge = Number(params.mergeMinShares ?? 5);
   if (dry || sets < minMerge || _txInFlight.has(marketId)) return 0;
+  // Cooldown: don't fire a merge tx (gas) more than once per mergeCooldownSec.
+  const cooldownMs = 1000 * Number(params.mergeCooldownSec ?? 30);
+  if (Date.now() - (_lastMergeAt.get(marketId) || 0) < cooldownMs) return 0;
+  _lastMergeAt.set(marketId, Date.now());
   _txInFlight.add(marketId);
   vault.mergePositions(marketId, BigInt(sets) * SHARE_SCALE)
     .then((tx) => tx.wait())
@@ -384,23 +472,30 @@ async function ensureRedeem(marketId, ctx) {
  */
 async function reprice(tgt, ctx) {
   const { wallet, domain, vault, houseSet, dry } = ctx;
-  const { marketId, slug, params, game, label } = tgt;
+  const { marketId, params, game, label } = tgt;
+  let slug = tgt.slug;
 
-  // 1) Resolved market → pull our bids and redeem any winning shares for USDC.
+  // 1) Resolved market → pull our bids and redeem any winning shares. Terminal.
   let vm = null;
   try { vm = await vault.markets(marketId); } catch { /* transient RPC → treat as open */ }
   if (vm?.resolved) {
     await flatten(marketId, ctx);
     const redeeming = await ensureRedeem(marketId, ctx);
     _lastTop.delete(marketId);
-    return `${label} resolved → flat${redeeming ? " + redeem" : ""}`;
+    return { msg: `${label} resolved → flat${redeeming ? " + redeem" : ""}`, ended: true };
   }
 
-  // 2) Live fair from Polymarket. Any failure = dead-man's switch (go flat).
+  // 2) Resolve the Polymarket slug on first sight (auto games); cached after.
+  if (!slug) {
+    slug = await resolvePolySlug(game);
+    if (!slug) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} no Polymarket market yet → flat`, ended: false }; }
+  }
+
+  // 3) Live fair from Polymarket. Any failure = dead-man's switch (go flat).
   let fair;
   try { fair = await polyFair(slug, game.teamAName || game.teamACode, game.teamBName || game.teamBCode); }
-  catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return `${label} feed error (${e.message}) → flat`; }
-  if (fair.closed) { await flatten(marketId, ctx); _lastTop.delete(marketId); return `${label} Polymarket closed → flat`; }
+  catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} feed error (${e.message}) → flat`, ended: false }; }
+  if (fair.closed) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} Polymarket closed → flat`, ended: true }; }
 
   // 3) Book + inventory.
   const book = await fetchBook(marketId);
@@ -434,12 +529,12 @@ async function reprice(tgt, ctx) {
     (top[o] == null && prev[o] == null) ||
     (top[o] != null && prev[o] != null && Math.abs(top[o] - prev[o]) < deadband));
   if (withinDeadband && current.length) {
-    return `${label} fair ${fair.fair0Cents}¢ | inv ${sh0.toFixed(0)}/${sh1.toFixed(0)} | steady`;
+    return { msg: `${label} fair ${fair.fair0Cents}¢ | inv ${sh0.toFixed(0)}/${sh1.toFixed(0)} | steady`, ended: false };
   }
 
   if (dry) {
     const fmt = orders.map((l) => `o${l.outcome}@${l.cents}¢×${l.shares}`).join(" ");
-    return `${label} DRY fair ${fair.fair0Cents}¢ top ${top[0]}/${top[1]} inv ${sh0.toFixed(0)}/${sh1.toFixed(0)} | would rest: ${fmt || "(none — inv capped)"}`;
+    return { msg: `${label} DRY fair ${fair.fair0Cents}¢ top ${top[0]}/${top[1]} inv ${sh0.toFixed(0)}/${sh1.toFixed(0)} | would rest: ${fmt || "(none — inv capped)"}`, ended: false };
   }
 
   // 6) Cancel our stale bids, post the new ladder.
@@ -458,7 +553,7 @@ async function reprice(tgt, ctx) {
     } catch (e) { console.warn(`    post failed (${label} o${l.outcome}@${l.cents}¢): ${e.message}`); }
   }
   _lastTop.set(marketId, top);
-  return `${label} fair ${fair.fair0Cents}¢ top ${top[0]}/${top[1]} | inv ${sh0.toFixed(0)}/${sh1.toFixed(0)} | -${cancelled} +${posted}`;
+  return { msg: `${label} fair ${fair.fair0Cents}¢ top ${top[0]}/${top[1]} | inv ${sh0.toFixed(0)}/${sh1.toFixed(0)} | -${cancelled} +${posted}`, ended: false };
 }
 
 /** Cancel every house bid on a market (dead-man / disabled / resolved). */
@@ -562,14 +657,27 @@ async function main() {
     // Matcher must be up to read books / post.
     if (!dry && !(await matcherReachable())) return console.error(`✗ matcher unreachable at ${MATCHER_URL} — skipping tick`);
 
-    // Per-market cadence: live games every tick, pre-game on the pre cadence.
+    // Per-market lifecycle + cadence: skip games we've already stopped, retire a
+    // game once it's past its window (flatten once, no orders on a final game),
+    // and gate each market by its phase cadence (pre-game slow, live fast).
     const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    const maxGameSec = Number(cfg.maxGameHours ?? 5) * 3600;
     for (const t of targets) {
-      const cadenceMs = 1000 * Number(t.params.cadenceSec || 1);
-      if (t._nextAt && nowMs < t._nextAt && _lastTop.has(t.marketId)) continue; // not due yet
-      try { console.log(`  ${await reprice(t, ctx)}`); }
-      catch (e) { console.warn(`  ${t.label}: ${e.message}`); }
-      t._nextAt = nowMs + cadenceMs;
+      if (_ended.has(t.marketId)) continue; // already flattened + stopped this run
+      if (t.lockTime > 0 && nowSec > t.lockTime + maxGameSec) {
+        if (!dry) { const n = await flatten(t.marketId, ctx); if (n) console.log(`  ${t.label} game window over → flattened ${n}, stop`); }
+        _ended.add(t.marketId); _nextAt.delete(t.marketId);
+        continue;
+      }
+      const cadenceMs = 1000 * Number(t.params.cadenceSec || 2);
+      if (nowMs < (_nextAt.get(t.marketId) || 0) && _lastTop.has(t.marketId)) continue; // not due yet
+      try {
+        const r = await reprice(t, ctx);
+        console.log(`  ${r.msg}`);
+        if (r.ended && !dry) { _ended.add(t.marketId); _nextAt.delete(t.marketId); continue; }
+      } catch (e) { console.warn(`  ${t.label}: ${e.message}`); }
+      _nextAt.set(t.marketId, nowMs + cadenceMs);
     }
   };
 

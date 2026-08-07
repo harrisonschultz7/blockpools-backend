@@ -1,34 +1,41 @@
 {
-  "_comment": "Live Polymarket-priced order-book seeding bot. `defaults` sets the risk profile per game phase; `markets` is the allowlist of games to seed. Start with ONE explicit game for a live test. Edits apply live (config re-read each tick).",
+  "_comment": "Live Polymarket-priced order-book seeding bot. `autoLeagues` auto-seeds ALL v2 games of those leagues inside the active window [kickoff - preSeedLeadHours, kickoff + maxGameHours]; `markets[]` pins specific games or overrides a Polymarket slug. Each game reprices at pre.cadenceSec before kickoff and live.cadenceSec once started, then STOPS (flatten) when it resolves, Polymarket closes it, or it passes maxGameHours. maxExposureUsd is PER GAME notional — the wallet's USDC balance is the true global cap across all games. Edits apply live (config re-read each tick).",
 
   "defaults": {
     "live": {
-      "_comment": "In-play: tighter exposure, wider spread, fast cadence. maxExposureUsd is the MOST USDC this ladder can spend on the game.",
+      "_comment": "In-play: tighter exposure, wider spread, 2s cadence.",
       "rungs": 3,
       "topSpreadCents": 2,
       "stepCents": 1,
-      "maxExposureUsd": 100,
-      "cadenceSec": 3,
+      "maxExposureUsd": 25,
+      "cadenceSec": 2,
       "repriceDeadbandCents": 1,
-      "inventoryCapShares": 200,
-      "mergeMinShares": 5
+      "inventoryCapShares": 100,
+      "mergeMinShares": 5,
+      "mergeCooldownSec": 30
     },
     "pre": {
-      "_comment": "Pre-game / longer-term: more exposure, tighter to fair, slow cadence.",
+      "_comment": "Pre-game: tighter to fair, refresh every 60s.",
       "rungs": 3,
       "topSpreadCents": 1,
       "stepCents": 1,
-      "maxExposureUsd": 150,
-      "cadenceSec": 3600,
+      "maxExposureUsd": 25,
+      "cadenceSec": 60,
       "repriceDeadbandCents": 1,
-      "inventoryCapShares": 400,
-      "mergeMinShares": 5
+      "inventoryCapShares": 150,
+      "mergeMinShares": 5,
+      "mergeCooldownSec": 60
     }
   },
 
+  "autoLeagues": ["MLB"],
+  "preSeedLeadHours": 24,
+  "maxGameHours": 5,
+  "maxMarkets": 24,
+
   "markets": [
     {
-      "_comment": "NFL CAR (Panthers, outcome 0) vs ARI (Cardinals, outcome 1), HOF game. Polymarket slug is dated 08-07 (kickoff is midnight UTC). Verified live: https://gamma-api.polymarket.com/markets?slug=nfl-car-ari-2026-08-07",
+      "_comment": "Optional pinned games / slug overrides. Keeping the NFL HOF game so the bot cleanly flattens any leftover orders from the earlier test, then retires it.",
       "gameId": "NFL-CAR-ARI-2026-08-06-1786060800",
       "polymarketSlug": "nfl-car-ari-2026-08-07",
       "params": {}

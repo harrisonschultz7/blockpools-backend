@@ -1,6 +1,7 @@
-# BlockPools live order-book seeding bot — reads a fair price from Polymarket
-# every second and seeds a bounded, user-first BID ladder on the configured v2
-# markets (see scripts/seed-bot.config.json). Runs beside the matcher on the VPS.
+# BlockPools live order-book seeding bot — reads a fair price from Polymarket and
+# seeds a bounded, user-first BID ladder on the configured v2 markets, repricing
+# per-game (pre-game 60s, live 2s) and stopping when a game finals. Auto-seeds
+# all in-window games of config.autoLeagues. Runs beside the matcher on the VPS.
 #
 # IMPORTANT: do NOT add this bot's wallet to SWEEP_MAKERS. The kickoff+30m
 # sweeper (clear-stale-books) cancels STALE ladders; this bot re-prices to the
@@ -34,7 +35,7 @@ Wants=network-online.target
 Type=simple
 User=bp
 WorkingDirectory=/opt/blockpools/backend
-ExecStart=/usr/bin/env node scripts/seed-bot.js --loop 1
+ExecStart=/usr/bin/env node scripts/seed-bot.js --loop 2
 Restart=on-failure
 RestartSec=15
 StandardOutput=journal
