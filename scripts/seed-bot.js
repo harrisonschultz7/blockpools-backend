@@ -426,18 +426,35 @@ const _lastMergeAt = new Map(); // marketId -> ms; merge cooldown (gas guard)
 // ~30× with negligible staleness for a seeding bot.
 const _marketCache = new Map(); // marketId -> { vm, at }
 const _sharesCache = new Map(); // marketId -> { sh0, sh1, at }
-const MARKET_TTL_MS = 60_000;
-const SHARES_TTL_MS = 20_000;
+
+// ── RPC budget controls (tunable from config; refreshed each tick) ────────────
+// The bot's ONLY provider reads are vault.markets() + sharesOf(). Cached reads
+// are reused for the TTL; maxReadsPerSec is a HARD ceiling — over it, the bot
+// serves the cached value instead of calling. That bounds the monthly bill:
+//   worst case ≈ maxReadsPerSec × 2.63M reads/month (~26 CU each on Alchemy).
+let _rpcCfg = { marketTtlMs: 300_000, sharesTtlMs: 60_000, maxReadsPerSec: 3 };
+let _rpcWindow = { sec: 0, n: 0 };
+let _rpcTotal = 0;
+let _rpcLogAt = 0, _rpcLogTotal = 0;
+function rpcAllow(cost) {
+  const s = Math.floor(Date.now() / 1000);
+  if (_rpcWindow.sec !== s) _rpcWindow = { sec: s, n: 0 };
+  if (_rpcWindow.n + cost > _rpcCfg.maxReadsPerSec) return false;
+  _rpcWindow.n += cost; _rpcTotal += cost;
+  return true;
+}
 
 async function getMarket(vault, marketId) {
   const c = _marketCache.get(marketId);
-  if (c && Date.now() - c.at < MARKET_TTL_MS) return c.vm;
+  if (c && Date.now() - c.at < _rpcCfg.marketTtlMs) return c.vm;
+  if (!rpcAllow(1)) return c ? c.vm : null; // over the rate cap → serve cached (null = treat as open)
   try { const vm = await vault.markets(marketId); _marketCache.set(marketId, { vm, at: Date.now() }); return vm; }
-  catch { return c ? c.vm : null; } // transient RPC → reuse last known (null = treat as open)
+  catch { return c ? c.vm : null; } // transient RPC → reuse last known
 }
 async function getShares(vault, addr, marketId) {
   const c = _sharesCache.get(marketId);
-  if (c && Date.now() - c.at < SHARES_TTL_MS) return [c.sh0, c.sh1];
+  if (c && Date.now() - c.at < _rpcCfg.sharesTtlMs) return [c.sh0, c.sh1];
+  if (!rpcAllow(2)) return c ? [c.sh0, c.sh1] : [0, 0]; // over the rate cap → serve cached
   try {
     const [sh0, sh1] = await Promise.all([
       vault.sharesOf(marketId, 0, addr).then((x) => Number(x) / 1e6).catch(() => (c ? c.sh0 : 0)),
@@ -534,7 +551,11 @@ async function reprice(tgt, ctx) {
 
   // 3) Book + inventory.
   const book = await fetchBook(marketId);
-  let [sh0, sh1] = await getShares(vault, wallet.address, marketId);
+  // Inventory only accrues once a game trades in earnest (post-kickoff), so skip
+  // the sharesOf reads pre-game to save RPC — assume flat. Any position taken is
+  // picked up the moment the game enters its live phase.
+  const started = tgt.lockTime > 0 && Math.floor(Date.now() / 1000) >= tgt.lockTime;
+  let [sh0, sh1] = started ? await getShares(vault, wallet.address, marketId) : [0, 0];
 
   // 3.5) Auto-merge complete sets back to USDC (budget reset, keeps the spread).
   //      Subtract locally so this tick's ladder sees the post-merge inventory.
@@ -677,6 +698,18 @@ async function main() {
     let cfg, games;
     try { cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); games = loadV2Games(); }
     catch (e) { return console.error(`config/games load error: ${e.message}`); }
+
+    // Refresh RPC budget controls from config (hot-reloaded) + log usage/min so
+    // the on-chain read burn is visible at a glance.
+    _rpcCfg = {
+      marketTtlMs: 1000 * Number(cfg.marketTtlSec ?? 300),
+      sharesTtlMs: 1000 * Number(cfg.sharesTtlSec ?? 60),
+      maxReadsPerSec: Number(cfg.maxRpcReadsPerSec ?? 3),
+    };
+    if (Date.now() - _rpcLogAt > 60_000) {
+      if (_rpcLogAt) console.log(`[rpc] ${_rpcTotal} vault reads total (${_rpcTotal - _rpcLogTotal}/min; cap ${_rpcCfg.maxReadsPerSec}/s)`);
+      _rpcLogAt = Date.now(); _rpcLogTotal = _rpcTotal;
+    }
     const targets = resolveTargets(cfg, games);
     if (!targets.length) { if (dry) console.log("(no targets resolved — check config.markets gameId vs games.json, and that the entry has v2:true + marketId)"); return; }
 

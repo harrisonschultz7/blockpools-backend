@@ -33,6 +33,11 @@
   "maxGameHours": 5,
   "maxMarkets": 24,
 
+  "_rpc_comment": "RPC budget controls (the bot's ONLY on-chain reads are vault.markets + sharesOf; Polymarket prices + order placement are HTTP, not RPC). Cached reads are reused for the TTL; sharesOf is skipped entirely pre-game. maxRpcReadsPerSec is a HARD ceiling — over it, cached values are served. Monthly worst case ~= maxRpcReadsPerSec x 2.63M reads (~26 CU each on Alchemy). At 3/s that's a ceiling ~205M CU/mo; real steady-state is a small fraction of that.",
+  "marketTtlSec": 300,
+  "sharesTtlSec": 60,
+  "maxRpcReadsPerSec": 3,
+
   "markets": [
     {
       "_comment": "Optional pinned games / slug overrides. Keeping the NFL HOF game so the bot cleanly flattens any leftover orders from the earlier test, then retires it.",
