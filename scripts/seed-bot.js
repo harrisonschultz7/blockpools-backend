@@ -37,7 +37,8 @@
 //   `systemctl stop blockpools-seed-bot` is the hard kill.
 //
 // ── Env (backend .env) ────────────────────────────────────────────────────────
-//   ARBITRUM_RPC_URL / RPC_URL, EXCHANGE_ADDRESS, VAULT_ADDRESS,
+//   SEED_BOT_RPC_URL (dedicated bot RPC; falls back to ARBITRUM_RPC_URL / RPC_URL),
+//   EXCHANGE_ADDRESS, VAULT_ADDRESS,
 //   SEED_BOT_PRIVATE_KEY (falls back to MM_PRIVATE_KEY, then PRIVATE_KEY),
 //   MATCHER_URL (default http://127.0.0.1:8090),
 //   BACKEND_URL (default http://127.0.0.1:8080), V2_MATCHER_SECRET (for control read),
@@ -49,6 +50,11 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "../.env") });
 const { ethers } = require("ethers");
+
+// Make stdout synchronous so logs flush to journald live. Node buffers piped
+// stdout (non-TTY) and would otherwise only flush on exit/crash — which is why
+// a healthy run showed no logs until it errored.
+try { process.stdout._handle && process.stdout._handle.setBlocking && process.stdout._handle.setBlocking(true); } catch {}
 
 // ── EIP-712 order typing — must mirror Exchange.sol (name "BlockPoolsExchange",
 //    version "1"). Identical to mm-ladder.js. ─────────────────────────────────
@@ -413,6 +419,35 @@ const _nextAt = new Map();      // marketId -> ms; per-market cadence gate (pers
 const _ended = new Set();       // marketIds flattened + stopped (resolved / closed / past game window)
 const _lastMergeAt = new Map(); // marketId -> ms; merge cooldown (gas guard)
 
+// RPC read caches. The bot polls many markets fast; without caching, vault
+// reads (markets + 2×sharesOf per market per tick) run ~20+ calls/sec and blow
+// the provider's monthly cap. markets() rarely changes (resolved flips once,
+// lockTime is static) and sharesOf only moves on a fill, so short TTLs cut RPC
+// ~30× with negligible staleness for a seeding bot.
+const _marketCache = new Map(); // marketId -> { vm, at }
+const _sharesCache = new Map(); // marketId -> { sh0, sh1, at }
+const MARKET_TTL_MS = 60_000;
+const SHARES_TTL_MS = 20_000;
+
+async function getMarket(vault, marketId) {
+  const c = _marketCache.get(marketId);
+  if (c && Date.now() - c.at < MARKET_TTL_MS) return c.vm;
+  try { const vm = await vault.markets(marketId); _marketCache.set(marketId, { vm, at: Date.now() }); return vm; }
+  catch { return c ? c.vm : null; } // transient RPC → reuse last known (null = treat as open)
+}
+async function getShares(vault, addr, marketId) {
+  const c = _sharesCache.get(marketId);
+  if (c && Date.now() - c.at < SHARES_TTL_MS) return [c.sh0, c.sh1];
+  try {
+    const [sh0, sh1] = await Promise.all([
+      vault.sharesOf(marketId, 0, addr).then((x) => Number(x) / 1e6).catch(() => (c ? c.sh0 : 0)),
+      vault.sharesOf(marketId, 1, addr).then((x) => Number(x) / 1e6).catch(() => (c ? c.sh1 : 0)),
+    ]);
+    _sharesCache.set(marketId, { sh0, sh1, at: Date.now() });
+    return [sh0, sh1];
+  } catch { return c ? [c.sh0, c.sh1] : [0, 0]; }
+}
+
 /**
  * Recycle complete sets back to USDC while the market is live. Holding shares of
  * BOTH outcomes means min(sh0,sh1) complete sets worth $1 each; mergePositions
@@ -430,6 +465,7 @@ function ensureMerge(marketId, sh0, sh1, ctx, params) {
   const cooldownMs = 1000 * Number(params.mergeCooldownSec ?? 30);
   if (Date.now() - (_lastMergeAt.get(marketId) || 0) < cooldownMs) return 0;
   _lastMergeAt.set(marketId, Date.now());
+  _sharesCache.delete(marketId); // force a fresh inventory read next tick (post-merge)
   _txInFlight.add(marketId);
   vault.mergePositions(marketId, BigInt(sets) * SHARE_SCALE)
     .then((tx) => tx.wait())
@@ -476,8 +512,7 @@ async function reprice(tgt, ctx) {
   let slug = tgt.slug;
 
   // 1) Resolved market → pull our bids and redeem any winning shares. Terminal.
-  let vm = null;
-  try { vm = await vault.markets(marketId); } catch { /* transient RPC → treat as open */ }
+  const vm = await getMarket(vault, marketId);
   if (vm?.resolved) {
     await flatten(marketId, ctx);
     const redeeming = await ensureRedeem(marketId, ctx);
@@ -499,10 +534,7 @@ async function reprice(tgt, ctx) {
 
   // 3) Book + inventory.
   const book = await fetchBook(marketId);
-  let [sh0, sh1] = await Promise.all([
-    vault.sharesOf(marketId, 0, wallet.address).then((x) => Number(x) / 1e6).catch(() => 0),
-    vault.sharesOf(marketId, 1, wallet.address).then((x) => Number(x) / 1e6).catch(() => 0),
-  ]);
+  let [sh0, sh1] = await getShares(vault, wallet.address, marketId);
 
   // 3.5) Auto-merge complete sets back to USDC (budget reset, keeps the spread).
   //      Subtract locally so this tick's ladder sees the post-merge inventory.
@@ -570,14 +602,19 @@ async function flatten(marketId, ctx) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   const args = process.argv.slice(2);
-  const RPC = process.env.ARBITRUM_RPC_URL || process.env.RPC_URL;
+  // Prefer a DEDICATED RPC for the bot (SEED_BOT_RPC_URL) so its polling can't
+  // drain — or be throttled by — the shared app key. Falls back to the app RPC.
+  const RPC = process.env.SEED_BOT_RPC_URL || process.env.ARBITRUM_RPC_URL || process.env.RPC_URL;
   const EXCHANGE = process.env.EXCHANGE_ADDRESS;
   const KEY = process.env.SEED_BOT_PRIVATE_KEY || process.env.MM_PRIVATE_KEY || process.env.PRIVATE_KEY;
-  if (!RPC || !EXCHANGE || !KEY) throw new Error("Set ARBITRUM_RPC_URL, EXCHANGE_ADDRESS, and SEED_BOT_PRIVATE_KEY (or MM_PRIVATE_KEY/PRIVATE_KEY) in the backend .env");
+  if (!RPC || !EXCHANGE || !KEY) throw new Error("Set SEED_BOT_RPC_URL (or ARBITRUM_RPC_URL), EXCHANGE_ADDRESS, and SEED_BOT_PRIVATE_KEY (or MM_PRIVATE_KEY/PRIVATE_KEY) in the backend .env");
 
   const provider = new ethers.JsonRpcProvider(RPC);
   const wallet = new ethers.Wallet(KEY, provider);
-  const chainId = Number((await provider.getNetwork()).chainId);
+  // Hardcode Arbitrum One (42161) instead of an RPC getNetwork() round-trip —
+  // removes a startup RPC dependency (a dead/throttled RPC crash-looped the
+  // service here). Override via CHAIN_ID only if the deployment ever moves.
+  const chainId = Number(process.env.CHAIN_ID || 42161);
   const domain = buildDomain(chainId, EXCHANGE);
   const VAULT_ADDRESS = process.env.VAULT_ADDRESS || "0x14BD1fd3911C22173FeaEcBfD670D09c1143A594";
   const vault = new ethers.Contract(
