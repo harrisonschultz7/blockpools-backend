@@ -295,6 +295,9 @@ function addDaysISO(iso, days) {
 // gameId -> resolved slug (positive, permanent); and a negative-result backoff.
 const _slugCache = new Map();
 const _slugNextProbe = new Map();
+// BlockPools ↔ Polymarket team-CODE differences (extend as found). The team-NAME
+// check in resolvePolySlug still guards against a wrong match.
+const POLY_CODE_ALIAS = { chw: "cws", cws: "chw" };
 
 /**
  * Discover a game's Polymarket slug by probing variants — team order (away-home
@@ -313,8 +316,11 @@ async function resolvePolySlug(game) {
   const b = String(game.teamBCode || game.teamB || "").toLowerCase();
   const base = String(game.date || (gid.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || "");
   if (!lg || !a || !b || !base) { _slugNextProbe.set(gid, Date.now() + 30 * 60_000); return null; }
+  const av = POLY_CODE_ALIAS[a] ? [a, POLY_CODE_ALIAS[a]] : [a];
+  const bv = POLY_CODE_ALIAS[b] ? [b, POLY_CODE_ALIAS[b]] : [b];
   const cands = [];
-  for (const d of [base, addDaysISO(base, 1), addDaysISO(base, -1)]) cands.push(`${lg}-${a}-${b}-${d}`, `${lg}-${b}-${a}-${d}`);
+  for (const d of [base, addDaysISO(base, 1), addDaysISO(base, -1)])
+    for (const x of av) for (const y of bv) cands.push(`${lg}-${x}-${y}-${d}`, `${lg}-${y}-${x}-${d}`);
   for (const slug of cands) {
     try {
       const arr = await getJson(`${POLY_GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
@@ -540,7 +546,7 @@ async function reprice(tgt, ctx) {
   // 2) Resolve the Polymarket slug on first sight (auto games); cached after.
   if (!slug) {
     slug = await resolvePolySlug(game);
-    if (!slug) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} no Polymarket market yet → flat`, ended: false }; }
+    if (!slug) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} no Polymarket market yet → flat (retry 5m)`, ended: false, retryMs: 300_000 }; }
   }
 
   // 3) Live fair from Polymarket. Any failure = dead-man's switch (go flat).
@@ -741,13 +747,15 @@ async function main() {
         continue;
       }
       const cadenceMs = 1000 * Number(t.params.cadenceSec || 2);
-      if (nowMs < (_nextAt.get(t.marketId) || 0) && _lastTop.has(t.marketId)) continue; // not due yet
+      if (nowMs < (_nextAt.get(t.marketId) || 0)) continue; // not due yet (purely time-based gate)
+      let waitMs = cadenceMs;
       try {
         const r = await reprice(t, ctx);
         console.log(`  ${r.msg}`);
         if (r.ended && !dry) { _ended.add(t.marketId); _nextAt.delete(t.marketId); continue; }
+        if (r.retryMs) waitMs = r.retryMs; // e.g. back off a game with no Polymarket market
       } catch (e) { console.warn(`  ${t.label}: ${e.message}`); }
-      _nextAt.set(t.marketId, nowMs + cadenceMs);
+      _nextAt.set(t.marketId, nowMs + waitMs);
     }
   };
 
