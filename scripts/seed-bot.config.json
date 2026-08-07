@@ -10,7 +10,8 @@
       "maxExposureUsd": 100,
       "cadenceSec": 1,
       "repriceDeadbandCents": 1,
-      "inventoryCapShares": 200
+      "inventoryCapShares": 200,
+      "mergeMinShares": 5
     },
     "pre": {
       "_comment": "Pre-game / longer-term: more exposure, tighter to fair, slow cadence.",
@@ -20,7 +21,8 @@
       "maxExposureUsd": 150,
       "cadenceSec": 3600,
       "repriceDeadbandCents": 1,
-      "inventoryCapShares": 400
+      "inventoryCapShares": 400,
+      "mergeMinShares": 5
     }
   },
 

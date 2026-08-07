@@ -212,39 +212,52 @@ async function cancelHash(hash) { try { await postJson(`${MATCHER_URL}/cancel`, 
 
 // ── Ladder construction ───────────────────────────────────────────────────────
 /**
- * Desired bid levels for one market given the live fair and current book.
- * Sits behind users (never at/above the best user bid) and honors inventory skew.
- * Returns { levels:[{outcome,cents}], top:{0,1} }.
+ * Desired bid ladder for one market, given the live fair, current book, and our
+ * inventory. Two risk controls fold into ONE knob (inventoryCapShares):
+ *
+ *   • Skew: each side's budget weight = max(0, 1 - shares[side]/cap). As we get
+ *     long a side its bids shrink smoothly; the OFFSETTING (short) side is
+ *     emphasized in proportion to how lopsided we are, pushing liquidity to the
+ *     side that nets us back toward flat.
+ *   • Hard cap: that same weight hits 0 exactly at the cap, so we simply stop
+ *     bidding a side once we hold `cap` shares of it — no separate cap needed.
+ *
+ * Also sits one tick BEHIND the best user bid so real user liquidity fills first.
+ * Returns { perSide: {0:{levels:[cents…],budget}, 1:{…}}, top:{0,1} }.
  */
-function desiredLevels({ fair0Cents, params, book, houseSet, shares0, shares1 }) {
-  const { rungs, topSpreadCents, stepCents, inventoryCapShares } = params;
-  const levels = [];
-  const top = { 0: null, 1: null };
+function desiredLadder({ fair0Cents, params, book, houseSet, shares0, shares1 }) {
+  const { rungs, topSpreadCents, stepCents, inventoryCapShares, maxExposureUsd } = params;
+  const cap = Number(inventoryCapShares) > 0 ? Number(inventoryCapShares) : Infinity;
   const sideFair = { 0: fair0Cents, 1: 100 - fair0Cents };
   const sideShares = { 0: shares0, 1: shares1 };
-  for (const outcome of [0, 1]) {
-    // Inventory skew: if we're already long this outcome past the cap, stop
-    // buying more of it (don't add to a one-sided position on a live game).
-    if (sideShares[outcome] >= inventoryCapShares) continue;
-    let topCents = sideFair[outcome] - topSpreadCents;
-    const userBest = bestUserBidCents(book, outcome, houseSet);
+  const top = { 0: null, 1: null };
+  const perSide = { 0: { levels: [], budget: 0 }, 1: { levels: [], budget: 0 } };
+
+  // Skew weights (0 at the cap = hard stop) + offsetting-side emphasis.
+  const w = { 0: Math.max(0, 1 - sideShares[0] / cap), 1: Math.max(0, 1 - sideShares[1] / cap) };
+  const imbalance = cap === Infinity ? 0 : Math.max(0, Math.min(1, Math.abs(sideShares[0] - sideShares[1]) / cap));
+  const shortSide = sideShares[0] > sideShares[1] ? 1 : 0;
+  w[shortSide] *= 1 + imbalance; // push extra liquidity to the side that flattens us
+  const wSum = w[0] + w[1];
+  if (wSum <= 0) return { perSide, top }; // both sides capped → seed nothing
+
+  for (const o of [0, 1]) {
+    if (w[o] <= 0) continue;
+    let topCents = sideFair[o] - topSpreadCents;
+    const userBest = bestUserBidCents(book, o, houseSet);
     if (userBest != null) topCents = Math.min(topCents, userBest - 1); // one tick behind users
     topCents = clampCents(topCents);
-    top[outcome] = topCents;
+    top[o] = topCents;
+    const levels = [];
     for (let k = 0; k < rungs; k++) {
       const cents = topCents - k * stepCents;
       if (cents < 1) break;
-      levels.push({ outcome, cents });
+      levels.push(cents);
     }
+    perSide[o].levels = levels;
+    perSide[o].budget = (Number(maxExposureUsd) || 0) * (w[o] / wSum);
   }
-  return { levels, top };
-}
-
-/** Size shares so Σ(price × shares) == maxExposureUsd across all levels. */
-function sizeShares(levels, maxExposureUsd) {
-  if (!levels.length) return 0;
-  const priceSumDollars = levels.reduce((s, l) => s + l.cents / 100, 0) || 1;
-  return Math.max(1, Math.floor((Number(maxExposureUsd) || 0) / priceSumDollars));
+  return { perSide, top };
 }
 
 function buildOrder(maker, marketId, outcome, cents, shares) {
@@ -312,6 +325,57 @@ async function readEnabled() {
 
 // ── Per-market reprice state (in-memory; deadband memory) ─────────────────────
 const _lastTop = new Map(); // marketId -> { 0: cents, 1: cents }
+// In-flight on-chain tx guard (merge/redeem) per market, so fast ticks don't
+// double-submit while a tx is still pending.
+const _txInFlight = new Set();
+
+/**
+ * Recycle complete sets back to USDC while the market is live. Holding shares of
+ * BOTH outcomes means min(sh0,sh1) complete sets worth $1 each; mergePositions
+ * burns them and returns USDC — freeing budget with ZERO directional risk and
+ * locking in the spread we bought them at. Fire-and-forget (guarded) so it never
+ * blocks the tick. Returns the set count being merged (to subtract locally this
+ * tick); 0 if nothing to do.
+ */
+function ensureMerge(marketId, sh0, sh1, ctx, params) {
+  const { vault, dry } = ctx;
+  const sets = Math.floor(Math.min(sh0, sh1));
+  const minMerge = Number(params.mergeMinShares ?? 5);
+  if (dry || sets < minMerge || _txInFlight.has(marketId)) return 0;
+  _txInFlight.add(marketId);
+  vault.mergePositions(marketId, BigInt(sets) * SHARE_SCALE)
+    .then((tx) => tx.wait())
+    .then(() => console.log(`  ↩ merged ${sets} set(s) → +$${sets} USDC recycled (${marketId.slice(0, 10)}…)`))
+    .catch((e) => console.warn(`  merge failed (${marketId.slice(0, 10)}…): ${e.message}`))
+    .finally(() => _txInFlight.delete(marketId));
+  return sets;
+}
+
+/**
+ * After a market resolves, collect our winnings: redeem() pays out winning
+ * shares and zeroes the position. Fire-and-forget (guarded). Returns true if a
+ * redeem was submitted.
+ */
+async function ensureRedeem(marketId, ctx) {
+  const { vault, wallet, dry } = ctx;
+  if (dry || _txInFlight.has(marketId)) return false;
+  let held = 0;
+  try {
+    const [s0, s1] = await Promise.all([
+      vault.sharesOf(marketId, 0, wallet.address).then((x) => Number(x)).catch(() => 0),
+      vault.sharesOf(marketId, 1, wallet.address).then((x) => Number(x)).catch(() => 0),
+    ]);
+    held = s0 + s1;
+  } catch { return false; }
+  if (held <= 0) return false;
+  _txInFlight.add(marketId);
+  vault.redeem(marketId)
+    .then((tx) => tx.wait())
+    .then(() => console.log(`  ✔ redeemed resolved market (${marketId.slice(0, 10)}…)`))
+    .catch((e) => console.warn(`  redeem failed (${marketId.slice(0, 10)}…): ${e.message}`))
+    .finally(() => _txInFlight.delete(marketId));
+  return true;
+}
 
 /**
  * Reconcile one market: read live fair + book, decide the desired ladder, and
@@ -322,10 +386,15 @@ async function reprice(tgt, ctx) {
   const { wallet, domain, vault, houseSet, dry } = ctx;
   const { marketId, slug, params, game, label } = tgt;
 
-  // 1) Never seed a resolved market.
+  // 1) Resolved market → pull our bids and redeem any winning shares for USDC.
   let vm = null;
   try { vm = await vault.markets(marketId); } catch { /* transient RPC → treat as open */ }
-  if (vm?.resolved) { await flatten(marketId, ctx); _lastTop.delete(marketId); return `${label} resolved → flat`; }
+  if (vm?.resolved) {
+    await flatten(marketId, ctx);
+    const redeeming = await ensureRedeem(marketId, ctx);
+    _lastTop.delete(marketId);
+    return `${label} resolved → flat${redeeming ? " + redeem" : ""}`;
+  }
 
   // 2) Live fair from Polymarket. Any failure = dead-man's switch (go flat).
   let fair;
@@ -335,13 +404,26 @@ async function reprice(tgt, ctx) {
 
   // 3) Book + inventory.
   const book = await fetchBook(marketId);
-  const [sh0, sh1] = await Promise.all([
+  let [sh0, sh1] = await Promise.all([
     vault.sharesOf(marketId, 0, wallet.address).then((x) => Number(x) / 1e6).catch(() => 0),
     vault.sharesOf(marketId, 1, wallet.address).then((x) => Number(x) / 1e6).catch(() => 0),
   ]);
 
-  // 4) Desired ladder.
-  const { levels, top } = desiredLevels({ fair0Cents: fair.fair0Cents, params, book, houseSet, shares0: sh0, shares1: sh1 });
+  // 3.5) Auto-merge complete sets back to USDC (budget reset, keeps the spread).
+  //      Subtract locally so this tick's ladder sees the post-merge inventory.
+  const merged = ensureMerge(marketId, sh0, sh1, ctx, params);
+  if (merged) { sh0 = Math.max(0, sh0 - merged); sh1 = Math.max(0, sh1 - merged); }
+
+  // 4) Desired ladder (inventory-skewed, user-first) → per-side sizing.
+  const { perSide, top } = desiredLadder({ fair0Cents: fair.fair0Cents, params, book, houseSet, shares0: sh0, shares1: sh1 });
+  const orders = [];
+  for (const o of [0, 1]) {
+    const { levels, budget } = perSide[o];
+    if (!levels.length || budget <= 0) continue;
+    const priceSum = levels.reduce((s, c) => s + c / 100, 0) || 1;
+    const shares = Math.max(1, Math.floor(budget / priceSum)); // Σ(price×shares) == side budget
+    for (const cents of levels) orders.push({ outcome: o, cents, shares });
+  }
 
   // 5) Deadband: if our top on each side hasn't moved beyond repriceDeadbandCents
   //    and we still have live bids, do nothing (no churn on a stable line).
@@ -356,18 +438,16 @@ async function reprice(tgt, ctx) {
   }
 
   if (dry) {
-    const fmt = levels.map((l) => `o${l.outcome}@${l.cents}¢`).join(" ");
-    return `${label} DRY fair ${fair.fair0Cents}¢ top ${top[0]}/${top[1]} | would rest: ${fmt || "(none — inv capped)"}`;
+    const fmt = orders.map((l) => `o${l.outcome}@${l.cents}¢×${l.shares}`).join(" ");
+    return `${label} DRY fair ${fair.fair0Cents}¢ top ${top[0]}/${top[1]} inv ${sh0.toFixed(0)}/${sh1.toFixed(0)} | would rest: ${fmt || "(none — inv capped)"}`;
   }
 
   // 6) Cancel our stale bids, post the new ladder.
   let cancelled = 0;
   for (const b of current) if (await cancelHash(b.hash)) cancelled++;
-
-  const shares = sizeShares(levels, params.maxExposureUsd);
   let posted = 0;
-  for (const l of levels) {
-    const order = buildOrder(wallet.address, marketId, l.outcome, l.cents, shares);
+  for (const l of orders) {
+    const order = buildOrder(wallet.address, marketId, l.outcome, l.cents, l.shares);
     try {
       const sig = await wallet.signTypedData(domain, ORDER_TYPES, {
         ...order, shares: BigInt(order.shares), price: BigInt(order.price),
@@ -410,8 +490,12 @@ async function main() {
     [
       "function markets(bytes32) view returns (bool exists,bool resolved,uint8 outcomeCount,uint64 lockTime,uint32 payoutDenom)",
       "function sharesOf(bytes32 marketId, uint8 outcome, address user) view returns (uint256)",
+      // Writes (merge = recycle a complete set back to USDC while live;
+      // redeem = collect winnings after the market resolves). Signed by the bot.
+      "function mergePositions(bytes32 marketId, uint256 amount)",
+      "function redeem(bytes32 marketId)",
     ],
-    provider
+    wallet
   );
 
   // "House" makers we sit BEHIND-of and never treat as user liquidity: this bot
@@ -432,9 +516,15 @@ async function main() {
   // Balance / allowance sanity.
   try {
     const usdc = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider);
-    const [bal, alw] = await Promise.all([usdc.balanceOf(wallet.address), usdc.allowance(wallet.address, EXCHANGE)]);
-    console.log(`USDC balance ${ethers.formatUnits(bal, 6)}  allowance ${alw >= ethers.parseUnits("1", 30) ? "max" : ethers.formatUnits(alw, 6)}`);
+    const [bal, alw, eth] = await Promise.all([
+      usdc.balanceOf(wallet.address),
+      usdc.allowance(wallet.address, EXCHANGE),
+      provider.getBalance(wallet.address),
+    ]);
+    console.log(`USDC balance ${ethers.formatUnits(bal, 6)}  allowance ${alw >= ethers.parseUnits("1", 30) ? "max" : ethers.formatUnits(alw, 6)}  ETH ${ethers.formatEther(eth)}`);
     if (alw === 0n) console.warn("  ⚠️  allowance is 0 — run `--approve` first, or fills will revert.");
+    // merge/redeem are on-chain txs — the wallet needs a little Arbitrum ETH for gas.
+    if (eth < ethers.parseEther("0.0005")) console.warn("  ⚠️  low ETH — auto-merge/redeem txs will fail without gas; top up a little Arbitrum ETH.");
   } catch {}
 
   const dry = args.includes("--dry");
