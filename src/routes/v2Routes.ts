@@ -16,6 +16,7 @@ import {
   cancelV2Order,
   getOpenV2Orders,
   recordV2Resolution,
+  isMmWallet,
 } from "../services/v2/v2Persist";
 import { invalidateV2Markets, v2MarketsSource } from "../services/v2/v2MarketResolver";
 
@@ -97,6 +98,13 @@ v2Router.post("/order", async (req, res) => {
     const b = req.body || {};
     if (!b.hash || !b.maker || !b.marketId || b.signature == null) {
       return res.status(400).json({ ok: false, error: "hash, maker, marketId, signature required" });
+    }
+    // Skip persisting market-maker / seed-bot resting orders. They re-quote at
+    // high frequency (thousands of rows/market), the bot reconciles off the
+    // matcher's live book (not the DB), and nothing renders MM open orders from
+    // Supabase. Their FILLS still persist via /fill, so stats/PnL are intact.
+    if (isMmWallet(b.maker)) {
+      return res.json({ ok: true, skipped: "mm" });
     }
     await recordV2Order(b);
     return res.json({ ok: true });

@@ -85,6 +85,16 @@ const MM_WALLETS = new Set(
     .filter(Boolean)
 );
 
+/** True if `maker` is a market-maker / operator wallet. Such wallets are
+ *  excluded from the leaderboard AND — to stop the seed bot's high-frequency
+ *  re-quoting from writing thousands of ephemeral rows — from v2.orders
+ *  persistence entirely. Their FILLS are still recorded (keyed by txHash), so
+ *  stats/PnL are unaffected; only the resting-order churn is dropped. The bot
+ *  reconciles off the matcher's live book, so it never needed the DB rows. */
+export function isMmWallet(maker: any): boolean {
+  return MM_WALLETS.has(String(maker ?? "").toLowerCase());
+}
+
 function low(s: any): string {
   return String(s ?? "").toLowerCase();
 }
