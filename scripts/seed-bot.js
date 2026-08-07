@@ -293,7 +293,9 @@ function resolveTargets(config, games) {
     const params = { ...config.defaults[started ? "live" : "pre"], ...(m.params || {}) };
     const slug = m.polymarketSlug || deriveSlug(g);
     if (!slug) { console.warn(`  ⚠️  no Polymarket slug for ${g.gameId} — set polymarketSlug in config — skipping`); continue; }
-    targets.push({ label: `${g.gameId} · ${g.teamACode}/${g.teamBCode}`, game: g, marketId: g.marketId, slug, params });
+    const codeA = g.teamACode || g.teamA || "A";
+    const codeB = g.teamBCode || g.teamB || "B";
+    targets.push({ label: `${g.gameId} · ${codeA}/${codeB}`, game: g, marketId: g.marketId, slug, params });
   }
   return targets;
 }
