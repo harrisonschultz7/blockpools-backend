@@ -284,7 +284,8 @@ v2Router.get("/chart/:gameId", async (req, res) => {
       // Dense book-mid time series (throttled snapshots written by the seed bot) —
       // gives the chart a line that moves with the live odds even with no trades.
       pool.query(
-        `SELECT (extract(epoch from ts) * 1000)::bigint AS ts, a_bps, b_bps
+        // ts in unix SECONDS to match the fills `points` series above.
+        `SELECT extract(epoch from ts)::bigint AS ts, a_bps, b_bps
            FROM v2.price_history
           WHERE game_id ILIKE $1
           ORDER BY ts ASC
