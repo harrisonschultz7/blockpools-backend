@@ -454,13 +454,17 @@ async function main() {
     try { cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); games = loadV2Games(); }
     catch (e) { return console.error(`config/games load error: ${e.message}`); }
     const targets = resolveTargets(cfg, games);
-    if (!targets.length) return;
+    if (!targets.length) { if (dry) console.log("(no targets resolved — check config.markets gameId vs games.json, and that the entry has v2:true + marketId)"); return; }
 
-    // On/off switch (fail-safe: unreadable ⇒ paused ⇒ go flat).
-    const ctl = await readEnabled();
-    if (!ctl.enabled) {
-      if (!dry) { let n = 0; for (const t of targets) n += await flatten(t.marketId, ctx); if (n) console.log(`⏸  ${BOT_NAME} disabled${ctl.ok ? "" : ` (control unreadable: ${ctl.error})`} — flattened ${n} order(s)`); }
-      return;
+    // On/off switch (fail-safe: unreadable ⇒ paused ⇒ go flat). Skipped for
+    // --dry so you can preview the ladder while the bot is still switched OFF.
+    if (!dry) {
+      const ctl = await readEnabled();
+      if (!ctl.enabled) {
+        let n = 0; for (const t of targets) n += await flatten(t.marketId, ctx);
+        if (n) console.log(`⏸  ${BOT_NAME} disabled${ctl.ok ? "" : ` (control unreadable: ${ctl.error})`} — flattened ${n} order(s)`);
+        return;
+      }
     }
 
     // Matcher must be up to read books / post.
