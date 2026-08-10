@@ -129,36 +129,6 @@ function toTradeType(v: any): TradeType {
   return "BUY";
 }
 
-/**
- * Share-weighted average price (bps) across a set of fills for one position.
- *
- * Each fill's USD notional (grossInDec for a BUY, grossOutDec for a SELL) equals
- * price × shares, so cost / bps ∝ shares. Summing gives
- *   Σcost / Σ(cost/bps) = Σ(price·shares) / Σshares
- * i.e. total-cost / total-shares — the exact average the position slip shows.
- * Falls back to a plain mean of the fills' prices when notionals are missing.
- */
-function weightedAvgPriceBps(fills: PersistTradeRow[]): number | null {
-  let sumCost = 0;
-  let sumCostOverBps = 0;
-  let simpleSum = 0;
-  let simpleN = 0;
-  for (const f of fills) {
-    const bps = f.avgPriceBps;
-    if (bps == null || !Number.isFinite(bps) || bps <= 0) continue;
-    simpleSum += bps;
-    simpleN += 1;
-    const cost = Number(f.type === "SELL" ? f.grossOutDec : f.grossInDec);
-    if (Number.isFinite(cost) && cost > 0) {
-      sumCost += cost;
-      sumCostOverBps += cost / bps;
-    }
-  }
-  if (sumCost > 0 && sumCostOverBps > 0) return Math.round(sumCost / sumCostOverBps);
-  if (simpleN > 0) return Math.round(simpleSum / simpleN);
-  return null;
-}
-
 function toABSide(v: any): "A" | "B" | null {
   const s = String(v || "").toUpperCase().trim();
   if (s === "A") return "A";
@@ -666,52 +636,28 @@ export async function upsertUserTradesAndGames(opts: {
           nowSec - t.timestamp <= NOTIFY_MAX_AGE_SEC
       );
 
-      // Collapse fills into ONE notification per position. A single order fills
-      // against multiple resting orders (V2) — each fill is its own row with its
-      // own tx hash — which previously produced one "X buy STL at 50/49/48%" line
-      // per fill. Group by (trader, market, outcome, side) and emit a single
-      // notification whose price is the share-weighted average, so it reads as
-      // one trade at the same average price shown on the trader's position slip.
-      const groups = new Map<string, PersistTradeRow[]>();
-      for (const t of socialTrades) {
-        const key = [
-          String(t.user).toLowerCase(),
-          String(t.gameId).toLowerCase(),
-          t.outcomeIndex ?? "x",
-          t.type,
-        ].join("|");
-        const arr = groups.get(key);
-        if (arr) arr.push(t);
-        else groups.set(key, [t]);
-      }
-
+      // One call per fill. The emitter collapses fills of the SAME position
+      // (trader + market + outcome + side) within a short time window into a
+      // single notification, refreshing its price to the share-weighted average
+      // — so a multi-fill order reads as one "X buy STL at 49%" line matching
+      // the trader's position slip, instead of one line per fill. Fills arrive
+      // in separate persist batches (V2 records one fill at a time), so the
+      // collapse is keyed in the DB, not within this batch.
       Promise.all(
-        [...groups.values()].map((fills) => {
-          // Deterministic representative: the lexicographically smallest tx hash
-          // in the group. This keeps the emitter's dedupe key stable across
-          // re-ingestion regardless of the order fills arrive in the batch.
-          const withHash = fills.filter((f) => f.txHash && f.txHash.trim());
-          const rep = (withHash.length ? withHash : fills).reduce((a, b) =>
-            String(a.txHash ?? a.id).toLowerCase() <=
-            String(b.txHash ?? b.id).toLowerCase()
-              ? a
-              : b
-          );
-          return notifyTradeToFollowers({
-            tradeId: rep.id,
-            txHash: rep.txHash,
-            // Newest fill time — keeps the "already following at trade time"
-            // guard correct and stamps the notification with the latest fill.
-            tradeTimestampSec: Math.max(...fills.map((f) => f.timestamp || 0)),
-            traderAddress: rep.user,
-            type: rep.type as "BUY" | "SELL",
-            outcomeCode: rep.outcomeCode,
-            outcomeIndex: rep.outcomeIndex,
-            avgPriceBps: weightedAvgPriceBps(fills),
-            gameId: rep.gameId,
-            league: rep.league,
-          });
-        })
+        socialTrades.map((t) =>
+          notifyTradeToFollowers({
+            tradeId: t.id,
+            txHash: t.txHash,
+            tradeTimestampSec: t.timestamp,
+            traderAddress: t.user,
+            type: t.type as "BUY" | "SELL",
+            outcomeCode: t.outcomeCode,
+            outcomeIndex: t.outcomeIndex,
+            avgPriceBps: t.avgPriceBps,
+            gameId: t.gameId,
+            league: t.league,
+          })
+        )
       ).catch((err) =>
         console.error("[persistTrades] notifyTradeToFollowers failed:", err)
       );

@@ -69,6 +69,63 @@ async function resolveUserById(id: string): Promise<ResolvedUser | null> {
   }
 }
 
+/**
+ * Share-weighted average fill price (bps) for one position over a time window,
+ * read from public.user_trade_events. Each fill's USD notional (gross_in_dec for
+ * a BUY, gross_out_dec for a SELL) == price × shares, so cost / bps ∝ shares and
+ *   Σcost / Σ(cost/bps) = Σ(price·shares) / Σshares = total-cost / total-shares
+ * — the exact average the trader's position slip shows. Returns null when there
+ * are no priced fills in the window (caller falls back to the single fill's price).
+ */
+async function weightedAvgPriceBps(opts: {
+  traderAddress: string;
+  gameId: string;
+  outcomeIndex: number | null;
+  type: "BUY" | "SELL";
+  fromSec: number;
+  toSec: number;
+}): Promise<number | null> {
+  try {
+    // gross_in_dec / gross_out_dec are numeric columns; NULL rows drop out of
+    // both SUMs consistently (SUM ignores NULL, and NULL/x is NULL).
+    const costExpr = opts.type === "SELL" ? "gross_out_dec" : "gross_in_dec";
+    const { rows } = await pool.query(
+      `SELECT
+         SUM(${costExpr})                                   AS sum_cost,
+         SUM(${costExpr} / NULLIF(avg_price_bps, 0))        AS sum_cost_over_bps,
+         AVG(avg_price_bps)::float8                         AS simple_avg,
+         COUNT(*)::int                                      AS n
+       FROM public.user_trade_events
+       WHERE lower(user_address) = lower($1)
+         AND lower(game_id)      = lower($2)
+         AND outcome_index IS NOT DISTINCT FROM $3
+         AND type = $4
+         AND avg_price_bps IS NOT NULL AND avg_price_bps > 0
+         AND timestamp >= $5 AND timestamp < $6`,
+      [
+        opts.traderAddress,
+        opts.gameId,
+        opts.outcomeIndex,
+        opts.type,
+        opts.fromSec,
+        opts.toSec,
+      ]
+    );
+    const r = rows[0];
+    if (!r || !r.n) return null;
+    const sumCost = Number(r.sum_cost);
+    const sumCostOverBps = Number(r.sum_cost_over_bps);
+    if (Number.isFinite(sumCost) && Number.isFinite(sumCostOverBps) && sumCostOverBps > 0) {
+      return Math.round(sumCost / sumCostOverBps);
+    }
+    const simple = Number(r.simple_avg);
+    return Number.isFinite(simple) ? Math.round(simple) : null;
+  } catch (err) {
+    console.error("[notify] weightedAvgPriceBps failed", err);
+    return null;
+  }
+}
+
 async function resolveUserByAddress(addr: string): Promise<ResolvedUser | null> {
   const a = String(addr || "").toLowerCase();
   if (!a) return null;
@@ -97,9 +154,21 @@ async function resolveUserByAddress(addr: string): Promise<ResolvedUser | null> 
 /**
  * Bulk insert. Relies on the partial unique index
  * (recipient_id, type, dedupe_key) WHERE dedupe_key IS NOT NULL for
- * idempotency — re-emitting the same event is a no-op.
+ * idempotency.
+ *
+ * onConflict:
+ *   'nothing'        — re-emitting the same event is a no-op (the default; used
+ *                      for follow/promo/referral where the payload never changes).
+ *   'refresh-payload' — update the existing row's payload in place WITHOUT
+ *                      bumping created_at or clearing read_at. Used by trade
+ *                      alerts so successive fills of one order refine the shown
+ *                      average price on a single row instead of re-surfacing or
+ *                      re-incrementing the unread badge.
  */
-async function insertNotifications(rows: NotificationRow[]): Promise<void> {
+async function insertNotifications(
+  rows: NotificationRow[],
+  onConflict: "nothing" | "refresh-payload" = "nothing"
+): Promise<void> {
   if (!rows.length) return;
   try {
     const values: any[] = [];
@@ -115,13 +184,17 @@ async function insertNotifications(rows: NotificationRow[]): Promise<void> {
         r.dedupeKey ?? null
       );
     });
+    const conflictAction =
+      onConflict === "refresh-payload"
+        ? "DO UPDATE SET payload = EXCLUDED.payload"
+        : "DO NOTHING";
     await pool.query(
       `INSERT INTO public.notifications
          (recipient_id, type, actor_id, payload, dedupe_key)
        VALUES ${chunks.join(",")}
        ON CONFLICT (recipient_id, type, dedupe_key)
          WHERE dedupe_key IS NOT NULL
-         DO NOTHING`,
+         ${conflictAction}`,
       values
     );
   } catch (err) {
@@ -209,10 +282,38 @@ export async function notifyTradeToFollowers(opts: {
     const outcome =
       (opts.outcomeCode && opts.outcomeCode.trim()) ||
       (opts.outcomeIndex != null ? `Outcome ${opts.outcomeIndex + 1}` : "a market");
+
+    // Collapse fills of ONE order into a single notification. A market order
+    // fills against several resting orders, and each fill is persisted (and
+    // notified) separately — previously one "buy STL at 50/49/48%" line per
+    // fill. We bucket by a short time window and, for every fill in that window,
+    // recompute the SHARE-WEIGHTED average price across the trader's fills for
+    // this exact position (market + outcome + side) straight from
+    // user_trade_events (already committed by the caller before we run). Fills
+    // of the same order land in one bucket → one notification whose price ==
+    // total-cost / total-shares, matching the trader's position slip.
+    const WINDOW_SEC = 15 * 60;
+    const anchorSec =
+      typeof opts.tradeTimestampSec === "number" &&
+      Number.isFinite(opts.tradeTimestampSec) &&
+      opts.tradeTimestampSec > 0
+        ? opts.tradeTimestampSec
+        : Math.floor(Date.now() / 1000);
+    const bucket = Math.floor(anchorSec / WINDOW_SEC);
+    const bucketStart = bucket * WINDOW_SEC;
+    const bucketEnd = bucketStart + WINDOW_SEC;
+
+    const aggBps = await weightedAvgPriceBps({
+      traderAddress: opts.traderAddress,
+      gameId: opts.gameId,
+      outcomeIndex: opts.outcomeIndex,
+      type: opts.type,
+      fromSec: bucketStart,
+      toSec: bucketEnd,
+    });
+    const effBps = aggBps ?? opts.avgPriceBps;
     const pricePct =
-      opts.avgPriceBps != null && Number.isFinite(opts.avgPriceBps)
-        ? Math.round(opts.avgPriceBps / 100)
-        : null;
+      effBps != null && Number.isFinite(effBps) ? Math.round(effBps / 100) : null;
 
     const payload = {
       actorUsername: trader.username,
@@ -225,23 +326,29 @@ export async function notifyTradeToFollowers(opts: {
       league: opts.league,
     };
 
-    // Dedupe on the STABLE on-chain identity (tx hash + outcome index), not the
-    // synthetic row id — the indexer's id is unstable (e.g. a "trade-" vs
-    // "trade-trade-" prefix flip), which would otherwise re-fire the same trade
-    // under a new key on re-ingestion. Fall back to the row id only if no hash.
-    const stableKey =
-      opts.txHash && opts.txHash.trim()
-        ? `${opts.txHash.toLowerCase()}:${opts.outcomeIndex ?? "x"}`
-        : opts.tradeId;
+    // One key per (trader, market, outcome, side, time-bucket). Every fill of an
+    // order shares this key, so the first fill inserts the notification and later
+    // fills refresh its averaged price in place (refresh-payload) without adding
+    // rows or re-pinging the badge. A genuinely separate order lands in a later
+    // bucket → its own notification.
+    const positionKey = [
+      "trade",
+      trader.id,
+      String(opts.gameId).toLowerCase(),
+      opts.outcomeIndex ?? "x",
+      opts.type,
+      bucket,
+    ].join(":");
 
     await insertNotifications(
       followers.map((f: any) => ({
         recipientId: f.follower_id as string,
         type: "trade" as const,
         actorId: trader.id,
-        dedupeKey: `trade:${stableKey}`,
+        dedupeKey: positionKey,
         payload,
-      }))
+      })),
+      "refresh-payload"
     );
   } catch (err) {
     console.error("[notify] notifyTradeToFollowers failed (non-blocking)", err);
