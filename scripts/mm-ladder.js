@@ -101,7 +101,7 @@ function resolveTargets(config, games) {
       const seeded = g.outcomes.filter((oc) => mids[oc.code] != null);
       const perBudget = gameBudget / (seeded.length || 1);
       for (const oc of seeded) {
-        targets.push({ label: `${g.gameId || g.slug} · ${oc.code}`, marketId: oc.marketId, mid0: mids[oc.code], params, budgetUsd: perBudget });
+        targets.push({ label: `${g.gameId || g.slug} · ${oc.code}`, marketId: oc.marketId, mid0: mids[oc.code], params, budgetUsd: perBudget, group: true });
       }
     } else if (g.marketId) {
       // binary matchup or prop: single market, outcome 0 = teamA/YES.
@@ -111,7 +111,7 @@ function resolveTargets(config, games) {
       if (mid0 == null && mids[codeB] != null) mid0 = 100 - mids[codeB];
       if (mid0 == null && isProp(g)) mid0 = mids.YES;
       if (mid0 == null) { console.warn(`  ⚠️  no mid for ${g.gameId || g.slug} — skipping`); continue; }
-      targets.push({ label: `${g.gameId || g.slug} · ${codeA}/${codeB}`, marketId: g.marketId, mid0, params, budgetUsd: gameBudget });
+      targets.push({ label: `${g.gameId || g.slug} · ${codeA}/${codeB}`, marketId: g.marketId, mid0, params, budgetUsd: gameBudget, group: false });
     }
   }
   return targets;
@@ -268,7 +268,13 @@ async function main() {
 
     const state = loadState();
     const seeded = state.seeded || {}; // permanent "ever seeded" record (marketId -> label)
-    const targets = resolveTargets(config, games);
+    // --groups-only: seed ONLY multi-outcome group/futures markets (champions,
+    // division winners, specials) and leave binary games to the Polymarket seed
+    // bot. Use it to re-seed the futures after a matcher restart without the
+    // ladder colliding with the seed bot on the binary MLB markets.
+    const groupsOnly = args.includes("--groups-only");
+    const targets = resolveTargets(config, games).filter((t) => !groupsOnly || t.group);
+    if (groupsOnly) console.log(`--groups-only: ${targets.length} group sub-market(s) to consider (binary games left to the seed bot).`);
 
     // Decide which markets to seed. This script is for NEW games/markets only.
     // Skip a market if ANY of these hold (all but the first apply even to --reseed):
