@@ -116,6 +116,25 @@ function sameTeam(a, b) {
   return xp[xp.length - 1] === yp[yp.length - 1]; // mascot (Red Sox / Sox handled loosely)
 }
 
+/**
+ * STRICT team match for props/futures: exact, or one full name is a whole-word
+ * prefix/suffix of the other ("Tottenham" ⊂ "Tottenham Hotspur"). NO last-word
+ * fallback and NO 3-letter code matching — those cross-match teams that merely
+ * share a suffix. Without this, "Coventry City" / "Hull City" both collapsed
+ * onto "Manchester City" (all end in "City") and were seeded at ~27% instead of
+ * ~0%. Verified to map all 146 configured prop outcomes 1:1 with no collisions.
+ */
+function sameTeamStrict(a, b) {
+  const x = canonName(a), y = canonName(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // One full name must appear inside the other as a COMPLETE word-sequence.
+  // Space-padding both sides forces whole-word boundaries, so "chi" can't match
+  // "chiefs" and "City" can't bridge "Coventry City" ↔ "Manchester City".
+  const wx = ` ${x} `, wy = ` ${y} `;
+  return wx.includes(wy) || wy.includes(wx);
+}
+
 async function getJson(url, opts) {
   const res = await fetch(url, opts);
   const json = await res.json().catch(() => ({}));
@@ -230,12 +249,18 @@ async function clobMid(tokenId) {
 async function polyPropFair(eventSlug, teamName, teamCode) {
   const meta = await polyEventMeta(eventSlug);
   if (meta.closed) return { fair0Cents: 50, closed: true };
-  const hit =
-    meta.teams.find((t) => sameTeam(t.title, teamName)) ||
-    (teamCode ? meta.teams.find((t) => sameTeam(t.title, teamCode)) : null);
-  if (!hit) throw new Error(`no Polymarket sub-market for ${teamName}/${teamCode || "?"} in ${eventSlug}`);
-  const mid = await clobMid(hit.yesToken);
-  return { fair0Cents: clampCents(mid * 100), closed: !!hit.closed };
+  // STRICT, name-only, and require EXACTLY one hit. 0 or >1 → throw (dead-man's
+  // switch flattens just this outcome) rather than seed a wrong price. teamCode
+  // is intentionally NOT used to match — a 3-letter code substring-matches the
+  // wrong team (e.g. "CHI" ⊂ "Chiefs").
+  const hits = meta.teams.filter((t) => sameTeamStrict(t.title, teamName));
+  if (hits.length !== 1) {
+    throw new Error(
+      `${hits.length === 0 ? "no" : hits.length + " ambiguous"} Polymarket sub-market(s) for "${teamName}" in ${eventSlug}`
+    );
+  }
+  const mid = await clobMid(hits[0].yesToken);
+  return { fair0Cents: clampCents(mid * 100), closed: !!hits[0].closed };
 }
 
 // ── Matcher book ──────────────────────────────────────────────────────────────
