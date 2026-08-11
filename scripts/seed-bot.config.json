@@ -37,14 +37,42 @@
       "inventoryCapShares": 150,
       "mergeMinShares": 5,
       "mergeCooldownSec": 60
+    },
+    "prop": {
+      "_comment": "Futures/props (LEAGUE_WINNER, e.g. division/champion). Applied PER OUTCOME — each outcome is its own binary Yes/No market, priced from the Polymarket event's per-team Yes. maxExposureUsd is PER OUTCOME, so total exposure ≈ maxExposureUsd × (sum of outcomes across all configured props). Slow hourly reprice, small size, wider spread since futures are illiquid and long-dated.",
+      "rungs": 2,
+      "topSpreadCents": 2,
+      "stepCents": 1,
+      "maxExposureUsd": 10,
+      "cadenceSec": 3600,
+      "repriceDeadbandCents": 1,
+      "inventoryCapShares": 100,
+      "mergeMinShares": 5,
+      "mergeCooldownSec": 120
     }
   },
 
-  "autoLeagues": ["MLB"],
+  "autoLeagues": ["MLB", "NFL"],
   "preSeedLeadHours": 48,
   "preSeedNearHours": 24,
   "maxGameHours": 5,
   "maxMarkets": 24,
+
+  "_props_comment": "Multi-outcome futures to seed. Each maps a v2 LEAGUE_WINNER game (by gameId) to its Polymarket EVENT slug (polymarket.com/event/<slug>). The bot expands each into one bid ladder PER OUTCOME, pricing every outcome from that team's 'Will <team> win?' Yes midpoint in the event. Window-exempt (they seed year-round until the market resolves). Optional per-prop `params` overrides the `prop` phase defaults (e.g. maxExposureUsd).",
+  "props": [
+    { "gameId": "NFL-CHAMPION-2027-1802647800", "polymarketSlug": "pro-football-2027-champion-20260729185915366" },
+    { "gameId": "NFL-AFCEAST-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-afc-east-champion" },
+    { "gameId": "NFL-AFCNORTH-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-afc-north-champion" },
+    { "gameId": "NFL-AFCSOUTH-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-afc-south-champion" },
+    { "gameId": "NFL-AFCWEST-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-afc-west-champion" },
+    { "gameId": "NFL-NFCEAST-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-nfc-east-champion" },
+    { "gameId": "NFL-NFCNORTH-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-nfc-north-champion" },
+    { "gameId": "NFL-NFCSOUTH-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-nfc-south-champion" },
+    { "gameId": "NFL-NFCWEST-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-nfc-west-champion" },
+    { "gameId": "NBA-CHAMPION-2027-1813276800", "polymarketSlug": "nba-2027-champion" },
+    { "gameId": "NHL-CHAMPION-2027-1813104000", "polymarketSlug": "nhl-2027-champion-20260612185656162" },
+    { "gameId": "EPL-CHAMPION-2027-1811084400", "polymarketSlug": "epl-2027-champion-20260701200428749" }
+  ],
 
   "_rpc_comment": "RPC budget controls (the bot's ONLY on-chain reads are vault.markets + sharesOf; Polymarket prices + order placement are HTTP, not RPC). Cached reads are reused for the TTL; sharesOf is skipped entirely pre-game. maxRpcReadsPerSec is a HARD ceiling — over it, cached values are served. Monthly worst case ~= maxRpcReadsPerSec x 2.63M reads (~26 CU each on Alchemy). At 3/s that's a ceiling ~205M CU/mo; real steady-state is a small fraction of that.",
   "marketTtlSec": 300,
