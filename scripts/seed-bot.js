@@ -375,7 +375,7 @@ const _slugCache = new Map();
 const _slugNextProbe = new Map();
 // BlockPools ↔ Polymarket team-CODE differences (extend as found). The team-NAME
 // check in resolvePolySlug still guards against a wrong match.
-const POLY_CODE_ALIAS = { chw: "cws", cws: "chw" };
+const POLY_CODE_ALIAS = { chw: "cws", cws: "chw", lar: "la", la: "lar" };
 
 /**
  * Discover a game's Polymarket slug by probing variants — team order (away-home
