@@ -519,7 +519,15 @@ function resolveTargets(config, games) {
       out.push({
         label: `${g.gameId} · ${oc.code || oc.label}`,
         game: g, marketId: oc.marketId, slug: null, params, lockTime: lockTimeOf(g),
-        prop: { eventSlug: p.polymarketSlug, teamName: oc.label || oc.code, teamCode: oc.code || null },
+        prop: {
+          eventSlug: p.polymarketSlug,
+          teamName: oc.label || oc.code,
+          teamCode: oc.code || null,
+          // Sub-market id `PARENT::CODE` — the SAME key the fills (user_trade_events)
+          // and the /api/v2/chart endpoint use, so the per-outcome price snapshots
+          // we post line up with this outcome's chart. Mirrors subMarketGameId().
+          snapshotGameId: `${g.gameId}::${String(oc.code || oc.label).toUpperCase()}`,
+        },
       });
       n++;
     }
@@ -654,14 +662,18 @@ async function ensureRedeem(marketId, ctx) {
  * ≥1¢ move OR a heartbeat (60s live / 10m pre-game) so the table stays tiny.
  * Fire-and-forget — never blocks the tick or spams on a backend hiccup.
  */
-function maybeSnapshot(gameId, fair0Cents, started, dry) {
+function maybeSnapshot(gameId, fair0Cents, started, dry, heartbeatMs) {
   if (dry || !gameId) return;
   const aBps = Math.round(fair0Cents * 100);
   const bBps = 10000 - aBps;
   const prev = _lastSnap.get(gameId);
   const now = Date.now();
   const moved = !prev || Math.abs(aBps - prev.aBps) >= 100;    // ≥1¢
-  const stale = !prev || now - prev.at >= (started ? 60_000 : 600_000);
+  // Heartbeat: append a point even without a move so the line doesn't flatline
+  // through gaps. Props pass a long heartbeat (they barely move and there are
+  // many outcomes) so the history table stays lean; games default by phase.
+  const hb = heartbeatMs != null ? heartbeatMs : started ? 60_000 : 600_000;
+  const stale = !prev || now - prev.at >= hb;
   if (!moved && !stale) return;
   _lastSnap.set(gameId, { aBps, at: now });
   postJson(`${BACKEND_URL}/api/v2/price-point`, { gameId, aBps, bBps }, V2_SECRET ? { "x-v2-secret": V2_SECRET } : {})
@@ -708,10 +720,14 @@ async function reprice(tgt, ctx) {
 
   // Game phase — drives the snapshot heartbeat and whether we read inventory.
   const started = tgt.lockTime > 0 && Math.floor(Date.now() / 1000) >= tgt.lockTime;
-  // Throttled book-mid snapshot for the price-history chart. Skipped for props:
-  // one gameId spans many outcomes, so a single aBps/bBps series is meaningless
-  // and would clobber whatever the chart shows for the prop.
-  if (!isProp) maybeSnapshot(game.gameId, fair.fair0Cents, started, dry);
+  // Throttled book-mid snapshot for the price-history chart.
+  //  - Games: one binary series keyed by the game's gameId.
+  //  - Props: one series PER OUTCOME, keyed by the sub-market id `PARENT::CODE`
+  //    (matches the fills + /api/v2/chart), aBps = this outcome's Yes/win price.
+  //    started=false so the pre-game (10min) heartbeat applies; since props
+  //    reprice hourly, each reprice emits at most one point per outcome.
+  if (isProp) maybeSnapshot(tgt.prop.snapshotGameId, fair.fair0Cents, false, dry, 6 * 60 * 60 * 1000);
+  else maybeSnapshot(game.gameId, fair.fair0Cents, started, dry);
 
   // 3) Book + inventory. For games, inventory only accrues post-kickoff, so we
   // skip the sharesOf reads pre-game to save RPC. Props trade for months before

@@ -268,7 +268,7 @@ v2Router.get("/chart/:gameId", async (req, res) => {
   const gameId = String(req.params.gameId || "").trim();
   if (!gameId) return res.status(400).json({ ok: false, error: "gameId required" });
   try {
-    const [pointsRes, snapRes, histRes] = await Promise.all([
+    const [pointsRes, snapRes, histRes, subHistRes] = await Promise.all([
       pool.query(
         `SELECT timestamp AS ts, outcome_index, outcome_code, spot_price_bps
            FROM public.user_trade_events
@@ -292,6 +292,21 @@ v2Router.get("/chart/:gameId", async (req, res) => {
           LIMIT 5000`,
         [gameId]
       ),
+      // Group/league-winner (prop) markets: each outcome is its own sub-market
+      // `PARENT::CODE` with its OWN dense snapshots (a_bps = that team's win prob).
+      // Surface them as per-outcome points (code from the id suffix) so the chart
+      // draws a live line per team even with no trades. Empty for binary games
+      // (they have no `::` sub-markets — those use the a_bps/b_bps `history` above).
+      pool.query(
+        `SELECT extract(epoch from ts)::bigint AS ts,
+                upper(split_part(game_id, '::', 2)) AS code,
+                a_bps
+           FROM v2.price_history
+          WHERE game_id ILIKE $1 || '::%'
+          ORDER BY ts DESC
+          LIMIT 12000`,
+        [gameId]
+      ),
     ]);
     const points = pointsRes.rows
       .map((r: any) => ({
@@ -301,6 +316,19 @@ v2Router.get("/chart/:gameId", async (req, res) => {
         bps: Number(r.spot_price_bps),
       }))
       .filter((p) => Number.isFinite(p.ts) && p.ts > 0 && Number.isFinite(p.bps));
+    // Merge in the per-outcome sub-market snapshots (prop markets). Same {ts,
+    // code, bps} shape as fills, so the chart's per-code series picks them up and
+    // the line moves with the odds between trades. outcomeIndex omitted — the
+    // chart matches these by code.
+    for (const r of subHistRes.rows) {
+      const ts = Number(r.ts);
+      const bps = Number(r.a_bps);
+      const code = r.code ? String(r.code) : null;
+      if (code && Number.isFinite(ts) && ts > 0 && Number.isFinite(bps)) {
+        points.push({ ts, outcomeIndex: null, code, bps });
+      }
+    }
+    points.sort((a, b) => a.ts - b.ts);
     const s = snapRes.rows[0];
     const lastMid =
       s && Number.isFinite(Number(s.a_bps)) && Number.isFinite(Number(s.b_bps))
