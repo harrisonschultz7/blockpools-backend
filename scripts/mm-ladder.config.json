@@ -2281,6 +2281,66 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "NFL-DET-CIN-2026-08-13-1786662000",
+      "mids": {
+        "DET": 50,
+        "CIN": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-GB-PIT-2026-08-13-1786662000",
+      "mids": {
+        "GB": 50,
+        "PIT": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-IND-NE-2026-08-13-1786663800",
+      "mids": {
+        "IND": 50,
+        "NE": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-ARI-LV-2026-08-13-1786665600",
+      "mids": {
+        "ARI": 50,
+        "LV": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-LAC-HOU-2026-08-13-1786665600",
+      "mids": {
+        "LAC": 50,
+        "HOU": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-TEN-SF-2026-08-13-1786669200",
+      "mids": {
+        "TEN": 50,
+        "SF": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
