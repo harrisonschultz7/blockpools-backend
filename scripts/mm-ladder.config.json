@@ -2041,6 +2041,246 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "MLB-BAL-MIN-2026-08-12-1786556400",
+      "mids": {
+        "BAL": 50,
+        "MIN": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-PHI-STL-2026-08-12-1786558500",
+      "mids": {
+        "PHI": 50,
+        "STL": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-TB-OAK-2026-08-12-1786561500",
+      "mids": {
+        "TB": 50,
+        "OAK": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-COL-ARI-2026-08-12-1786563600",
+      "mids": {
+        "COL": 50,
+        "ARI": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-HOU-SF-2026-08-12-1786563900",
+      "mids": {
+        "HOU": 50,
+        "SF": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-MIL-SD-2026-08-12-1786565400",
+      "mids": {
+        "MIL": 50,
+        "SD": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-CLE-DET-2026-08-12-1786574400",
+      "mids": {
+        "CLE": 50,
+        "DET": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-PIT-MIA-2026-08-12-1786574400",
+      "mids": {
+        "PIT": 50,
+        "MIA": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-CHC-WSH-2026-08-12-1786574700",
+      "mids": {
+        "CHC": 50,
+        "WSH": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-SEA-NYY-2026-08-12-1786575600",
+      "mids": {
+        "SEA": 50,
+        "NYY": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-BOS-TOR-2026-08-12-1786576020",
+      "mids": {
+        "BOS": 50,
+        "TOR": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-NYM-ATL-2026-08-12-1786576500",
+      "mids": {
+        "NYM": 50,
+        "ATL": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-CIN-CHW-2026-08-12-1786578000",
+      "mids": {
+        "CIN": 50,
+        "CHW": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-TEX-LAA-2026-08-12-1786586400",
+      "mids": {
+        "TEX": 50,
+        "LAA": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-KC-LAD-2026-08-12-1786587000",
+      "mids": {
+        "KC": 50,
+        "LAD": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-CLE-DET-2026-08-13-1786641000",
+      "mids": {
+        "CLE": 50,
+        "DET": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-PIT-MIA-2026-08-13-1786641000",
+      "mids": {
+        "PIT": 50,
+        "MIA": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-SEA-NYY-2026-08-13-1786642500",
+      "mids": {
+        "SEA": 50,
+        "NYY": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-CIN-CHW-2026-08-13-1786644600",
+      "mids": {
+        "CIN": 50,
+        "CHW": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-BOS-TOR-2026-08-13-1786648020",
+      "mids": {
+        "BOS": 50,
+        "TOR": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-CHC-WSH-2026-08-13-1786651500",
+      "mids": {
+        "CHC": 50,
+        "WSH": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-PHI-MIN-2026-08-13-1786663800",
+      "mids": {
+        "PHI": 50,
+        "MIN": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-TEX-LAA-2026-08-13-1786673220",
+      "mids": {
+        "TEX": 50,
+        "LAA": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "MLB-MIL-LAD-2026-08-13-1786673400",
+      "mids": {
+        "MIL": 50,
+        "LAD": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
