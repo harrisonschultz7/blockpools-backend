@@ -2341,6 +2341,106 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "NFL-DEN-ATL-2026-08-14-1786748400",
+      "mids": {
+        "DEN": 50,
+        "ATL": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-TB-NYJ-2026-08-14-1786748400",
+      "mids": {
+        "TB": 50,
+        "NYJ": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-MIA-WAS-2026-08-14-1786748400",
+      "mids": {
+        "MIA": 50,
+        "WAS": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-CAR-BUF-2026-08-15-1786813200",
+      "mids": {
+        "CAR": 50,
+        "BUF": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-CLE-CHI-2026-08-15-1786813200",
+      "mids": {
+        "CLE": 50,
+        "CHI": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-MIN-NYG-2026-08-15-1786813200",
+      "mids": {
+        "MIN": 50,
+        "NYG": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-LAR-KC-2026-08-15-1786824000",
+      "mids": {
+        "LAR": 50,
+        "KC": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-JAX-NO-2026-08-15-1786824000",
+      "mids": {
+        "JAX": 50,
+        "NO": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-PHI-BAL-2026-08-15-1786834800",
+      "mids": {
+        "PHI": 50,
+        "BAL": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "NFL-DAL-SEA-2026-08-15-1786838400",
+      "mids": {
+        "DAL": 50,
+        "SEA": 50
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
