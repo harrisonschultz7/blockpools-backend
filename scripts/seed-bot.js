@@ -347,21 +347,36 @@ function lockTimeOf(g) {
  * Resolve targets = explicit config.markets (always) + every v2 game whose
  * league is in config.autoLeagues AND whose kickoff is inside the active window
  * [kickoff - preSeedLeadHours, kickoff + maxGameHours]. Deduped by marketId,
- * sorted soonest-kickoff-first, capped at config.maxMarkets. Phase (pre/live)
- * is recomputed each call so a game transitions pre→live on its own; auto games
- * get their slug resolved lazily in reprice (slug: null here).
+ * sorted soonest-kickoff-first, capped at config.maxMarkets. Phase (far/pre/
+ * live) is recomputed each call so a game transitions far→pre→live on its own;
+ * auto games get their slug resolved lazily in reprice (slug: null here).
  * Returns [{ label, game, marketId, slug, params, lockTime }].
  */
 function resolveTargets(config, games) {
   const now = Math.floor(Date.now() / 1000);
   const leadSec = Number(config.preSeedLeadHours ?? 24) * 3600;
+  // Boundary between the far (early, hourly) and pre (near, 60s) tiers. Defaults
+  // to the whole lead window so that, if unset, every pre-game uses `pre` exactly
+  // as before.
+  const nearSec = Number(config.preSeedNearHours ?? config.preSeedLeadHours ?? 24) * 3600;
   const maxGameSec = Number(config.maxGameHours ?? 5) * 3600;
   const seen = new Set();
   const out = [];
 
+  // Three tiers by time-to-kickoff, recomputed each call so a game walks
+  // far → pre → live on its own:
+  //   live: started (now >= kickoff)              — unchanged
+  //   pre:  within preSeedNearHours of kickoff    — unchanged
+  //   far:  preSeedNearHours..preSeedLeadHours out — hourly seeding (falls back
+  //         to `pre` params if no `far` phase is configured).
   const phaseParams = (g, override) => {
-    const started = lockTimeOf(g) > 0 && now >= lockTimeOf(g);
-    return { ...config.defaults[started ? "live" : "pre"], ...(override || {}) };
+    const lt = lockTimeOf(g);
+    const started = lt > 0 && now >= lt;
+    let phase = "pre";
+    if (started) phase = "live";
+    else if (lt > 0 && now < lt - nearSec) phase = "far";
+    const base = config.defaults[phase] || config.defaults.pre;
+    return { ...base, ...(override || {}) };
   };
   const add = (g, explicitSlug, override) => {
     const key = String(g.marketId).toLowerCase();

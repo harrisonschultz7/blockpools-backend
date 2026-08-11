@@ -15,7 +15,7 @@
       "mergeCooldownSec": 30
     },
     "pre": {
-      "_comment": "Pre-game: tighter to fair, refresh every 60s.",
+      "_comment": "Pre-game (within preSeedNearHours of kickoff): tighter to fair, refresh every 60s.",
       "rungs": 3,
       "topSpreadCents": 1,
       "stepCents": 1,
@@ -25,11 +25,24 @@
       "inventoryCapShares": 150,
       "mergeMinShares": 5,
       "mergeCooldownSec": 60
+    },
+    "far": {
+      "_comment": "Early pre-game (preSeedNearHours..preSeedLeadHours out, e.g. 24-48h): same ladder as pre, just repriced hourly so far-out games are seeded without churn. Falls back to `pre` if omitted.",
+      "rungs": 3,
+      "topSpreadCents": 1,
+      "stepCents": 1,
+      "maxExposureUsd": 35,
+      "cadenceSec": 3600,
+      "repriceDeadbandCents": 1,
+      "inventoryCapShares": 150,
+      "mergeMinShares": 5,
+      "mergeCooldownSec": 60
     }
   },
 
   "autoLeagues": ["MLB"],
-  "preSeedLeadHours": 24,
+  "preSeedLeadHours": 48,
+  "preSeedNearHours": 24,
   "maxGameHours": 5,
   "maxMarkets": 24,
 
