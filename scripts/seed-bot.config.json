@@ -27,12 +27,12 @@
       "mergeCooldownSec": 60
     },
     "far": {
-      "_comment": "Early pre-game (preSeedNearHours..preSeedLeadHours out, e.g. 24-48h): same ladder as pre, just repriced hourly so far-out games are seeded without churn. Falls back to `pre` if omitted.",
+      "_comment": "Early pre-game (preSeedNearHours..preSeedLeadHours out, i.e. games OUTSIDE 48h): same ladder as pre, just repriced once a day so far-out games carry fresh odds instead of 50/50, with negligible churn/cost. Falls back to `pre` if omitted.",
       "rungs": 3,
       "topSpreadCents": 1,
       "stepCents": 1,
       "maxExposureUsd": 35,
-      "cadenceSec": 3600,
+      "cadenceSec": 86400,
       "repriceDeadbandCents": 1,
       "inventoryCapShares": 150,
       "mergeMinShares": 5,
@@ -53,10 +53,10 @@
   },
 
   "autoLeagues": ["MLB", "NFL"],
-  "preSeedLeadHours": 48,
-  "preSeedNearHours": 24,
+  "preSeedLeadHours": 168,
+  "preSeedNearHours": 48,
   "maxGameHours": 5,
-  "maxMarkets": 24,
+  "maxMarkets": 150,
 
   "_props_comment": "Multi-outcome futures to seed. Each maps a v2 LEAGUE_WINNER game (by gameId) to its Polymarket EVENT slug (polymarket.com/event/<slug>). The bot expands each into one bid ladder PER OUTCOME, pricing every outcome from that team's 'Will <team> win?' Yes midpoint in the event. Window-exempt (they seed year-round until the market resolves). Optional per-prop `params` overrides the `prop` phase defaults (e.g. maxExposureUsd).",
   "props": [
