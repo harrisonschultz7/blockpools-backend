@@ -185,6 +185,59 @@ async function polyFair(slug, teamAName, teamBName) {
   return { fair0Cents: clampCents(midA * 100), closed: meta.closed };
 }
 
+// ── Polymarket EVENT fair (multi-outcome futures / props) ───────────────────────
+// A champion/division future is a Polymarket EVENT (/event/<slug>) containing one
+// binary "Will <team> win?" sub-market per team (groupItemTitle = team, outcomes
+// ["Yes","No"]). Each BlockPools prop OUTCOME is its own binary market whose
+// side-0 ("<team> wins") fair == that team's Yes midpoint. We cache the per-team
+// token map (static-ish) but read the midpoint live each call.
+const _polyEventCache = new Map(); // eventSlug -> { at, closed, teams:[{title, yesToken, closed}] }
+
+async function polyEventMeta(eventSlug) {
+  const c = _polyEventCache.get(eventSlug);
+  if (c && Date.now() - c.at < 10 * 60_000) return c; // refresh token map every 10m
+  const arr = await getJson(`${POLY_GAMMA}/events?slug=${encodeURIComponent(eventSlug)}`);
+  const e = Array.isArray(arr) ? arr[0] : arr;
+  if (!e || !Array.isArray(e.markets)) throw new Error(`no Polymarket event for slug ${eventSlug}`);
+  const teams = [];
+  for (const m of e.markets) {
+    let oc = [], tk = [];
+    try { oc = JSON.parse(m.outcomes || "[]"); } catch { /* skip */ }
+    try { tk = JSON.parse(m.clobTokenIds || "[]"); } catch { /* skip */ }
+    const yi = oc.findIndex((o) => String(o).trim().toLowerCase() === "yes");
+    if (yi < 0 || !tk[yi]) continue;
+    teams.push({ title: m.groupItemTitle || m.question || "", yesToken: tk[yi], closed: !!m.closed });
+  }
+  if (!teams.length) throw new Error(`Polymarket event ${eventSlug} has no Yes/No sub-markets`);
+  const meta = { at: Date.now(), closed: !!e.closed, teams };
+  _polyEventCache.set(eventSlug, meta);
+  return meta;
+}
+
+/** CLOB midpoint (0..1) for one token; throws on failure (no market-slug fallback). */
+async function clobMid(tokenId) {
+  const j = await getJson(`${POLY_CLOB}/midpoint?token_id=${tokenId}`);
+  const mid = Number(j.mid);
+  if (Number.isFinite(mid) && mid > 0 && mid < 1) return mid;
+  throw new Error(`no CLOB midpoint for token ${tokenId}`);
+}
+
+/**
+ * Fair (cents) for a prop OUTCOME's side 0 ("<team> wins") = that team's Yes
+ * midpoint in the Polymarket event. Returns { fair0Cents, closed } or throws
+ * (→ dead-man's switch flattens just that one outcome).
+ */
+async function polyPropFair(eventSlug, teamName, teamCode) {
+  const meta = await polyEventMeta(eventSlug);
+  if (meta.closed) return { fair0Cents: 50, closed: true };
+  const hit =
+    meta.teams.find((t) => sameTeam(t.title, teamName)) ||
+    (teamCode ? meta.teams.find((t) => sameTeam(t.title, teamCode)) : null);
+  if (!hit) throw new Error(`no Polymarket sub-market for ${teamName}/${teamCode || "?"} in ${eventSlug}`);
+  const mid = await clobMid(hit.yesToken);
+  return { fair0Cents: clampCents(mid * 100), closed: !!hit.closed };
+}
+
 // ── Matcher book ──────────────────────────────────────────────────────────────
 async function fetchBook(marketId) {
   return getJson(`${MATCHER_URL}/book?marketId=${encodeURIComponent(marketId)}`);
@@ -418,6 +471,36 @@ function resolveTargets(config, games) {
     for (const g of inWindow.slice(0, cap)) add(g, null, null);
   }
 
+  // Props (multi-outcome futures) — each configured event expands to ONE target
+  // per outcome, since each outcome is its own binary Yes/No market with its own
+  // marketId (there is no top-level marketId, so these are skipped by the
+  // game/auto paths above). Window-exempt: futures seed year-round until they
+  // resolve. Priced per-outcome from the Polymarket event (see polyPropFair).
+  const propPhase = config.defaults?.prop || config.defaults?.pre || {};
+  for (const p of config.props || []) {
+    const g = games.find((x) =>
+      (p.gameId && x.gameId === p.gameId) || (p.slug && x.slug === p.slug) || (p.marketId && x.marketId === p.marketId));
+    if (!g) { console.warn(`  ⚠️  no v2 prop game for ${p.gameId || p.slug} — skipping`); continue; }
+    if (!p.polymarketSlug) { console.warn(`  ⚠️  prop ${g.gameId} has no polymarketSlug — skipping`); continue; }
+    const outs = Array.isArray(g.outcomes) ? g.outcomes : [];
+    if (!outs.length) { console.warn(`  ⚠️  prop ${g.gameId} has no outcomes[] — skipping`); continue; }
+    const params = { ...propPhase, ...(p.params || {}) };
+    let n = 0;
+    for (const oc of outs) {
+      if (!oc.marketId) continue;
+      const key = String(oc.marketId).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        label: `${g.gameId} · ${oc.code || oc.label}`,
+        game: g, marketId: oc.marketId, slug: null, params, lockTime: lockTimeOf(g),
+        prop: { eventSlug: p.polymarketSlug, teamName: oc.label || oc.code, teamCode: oc.code || null },
+      });
+      n++;
+    }
+    console.log(`  ↳ prop ${g.gameId} → ${p.polymarketSlug} (${n} outcomes)`);
+  }
+
   return out;
 }
 
@@ -569,6 +652,7 @@ async function reprice(tgt, ctx) {
   const { wallet, domain, vault, houseSet, dry } = ctx;
   const { marketId, params, game, label } = tgt;
   let slug = tgt.slug;
+  const isProp = !!tgt.prop;
 
   // 1) Resolved market → pull our bids and redeem any winning shares. Terminal.
   const vm = await getMarket(vault, marketId);
@@ -579,29 +663,37 @@ async function reprice(tgt, ctx) {
     return { msg: `${label} resolved → flat${redeeming ? " + redeem" : ""}`, ended: true };
   }
 
-  // 2) Resolve the Polymarket slug on first sight (auto games); cached after.
-  if (!slug) {
+  // 2) Resolve the Polymarket slug on first sight (auto GAMES only); cached after.
+  //    Props carry an explicit event slug (tgt.prop.eventSlug) — no discovery.
+  if (!isProp && !slug) {
     slug = await resolvePolySlug(game);
     if (!slug) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} no Polymarket market yet → flat (retry 5m)`, ended: false, retryMs: 300_000 }; }
   }
 
   // 3) Live fair from Polymarket. Any failure = dead-man's switch (go flat).
+  //    Games: one binary market (teamA vs teamB). Props: this outcome's team's
+  //    "Yes" (win) midpoint within the event.
   let fair;
-  try { fair = await polyFair(slug, game.teamAName || game.teamACode, game.teamBName || game.teamBCode); }
-  catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} feed error (${e.message}) → flat`, ended: false }; }
+  try {
+    fair = isProp
+      ? await polyPropFair(tgt.prop.eventSlug, tgt.prop.teamName, tgt.prop.teamCode)
+      : await polyFair(slug, game.teamAName || game.teamACode, game.teamBName || game.teamBCode);
+  } catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} feed error (${e.message}) → flat`, ended: false }; }
   if (fair.closed) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} Polymarket closed → flat`, ended: true }; }
 
   // Game phase — drives the snapshot heartbeat and whether we read inventory.
   const started = tgt.lockTime > 0 && Math.floor(Date.now() / 1000) >= tgt.lockTime;
-  // Throttled book-mid snapshot for the price-history chart (nearly free — we
-  // already have the fair). Captures the live line even when nobody's trading.
-  maybeSnapshot(game.gameId, fair.fair0Cents, started, dry);
+  // Throttled book-mid snapshot for the price-history chart. Skipped for props:
+  // one gameId spans many outcomes, so a single aBps/bBps series is meaningless
+  // and would clobber whatever the chart shows for the prop.
+  if (!isProp) maybeSnapshot(game.gameId, fair.fair0Cents, started, dry);
 
-  // 3) Book + inventory. Inventory only accrues once a game trades in earnest
-  // (post-kickoff), so skip the sharesOf reads pre-game to save RPC — assume
-  // flat; any position is picked up the moment the game goes live.
+  // 3) Book + inventory. For games, inventory only accrues post-kickoff, so we
+  // skip the sharesOf reads pre-game to save RPC. Props trade for months before
+  // their (far-future) lockTime, so they must ALWAYS read inventory — otherwise
+  // the skew/cap safety never engages and a side could accumulate unbounded.
   const book = await fetchBook(marketId);
-  let [sh0, sh1] = started ? await getShares(vault, wallet.address, marketId) : [0, 0];
+  let [sh0, sh1] = (started || isProp) ? await getShares(vault, wallet.address, marketId) : [0, 0];
 
   // 3.5) Auto-merge complete sets back to USDC (budget reset, keeps the spread).
   //      Subtract locally so this tick's ladder sees the post-merge inventory.
