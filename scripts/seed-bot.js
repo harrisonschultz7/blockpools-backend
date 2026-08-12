@@ -241,6 +241,15 @@ async function clobMid(tokenId) {
   throw new Error(`no CLOB midpoint for token ${tokenId}`);
 }
 
+// Outcome-label → alternate name(s) for cases where Polymarket's sub-market
+// groupItemTitle differs from our display label. Polymarket still lists the Utah
+// NHL club under its OLD "Utah Hockey Club" name; our app uses the renamed "Utah
+// Mammoth", so the strict name match misses it and Utah never seeds. Keyed by
+// canonName(label); each alt is also run through sameTeamStrict.
+const PROP_NAME_ALIASES = {
+  "utah mammoth": ["Utah Hockey Club"],
+};
+
 /**
  * Fair (cents) for a prop OUTCOME's side 0 ("<team> wins") = that team's Yes
  * midpoint in the Polymarket event. Returns { fair0Cents, closed } or throws
@@ -252,8 +261,10 @@ async function polyPropFair(eventSlug, teamName, teamCode) {
   // STRICT, name-only, and require EXACTLY one hit. 0 or >1 → throw (dead-man's
   // switch flattens just this outcome) rather than seed a wrong price. teamCode
   // is intentionally NOT used to match — a 3-letter code substring-matches the
-  // wrong team (e.g. "CHI" ⊂ "Chiefs").
-  const hits = meta.teams.filter((t) => sameTeamStrict(t.title, teamName));
+  // wrong team (e.g. "CHI" ⊂ "Chiefs"). Aliases cover Polymarket names that
+  // differ from our label (e.g. Utah Mammoth ↔ Utah Hockey Club).
+  const names = [teamName, ...(PROP_NAME_ALIASES[canonName(teamName)] || [])];
+  const hits = meta.teams.filter((t) => names.some((n) => sameTeamStrict(t.title, n)));
   if (hits.length !== 1) {
     throw new Error(
       `${hits.length === 0 ? "no" : hits.length + " ambiguous"} Polymarket sub-market(s) for "${teamName}" in ${eventSlug}`
