@@ -42,6 +42,8 @@ const ALREADY_SENT = new Set<string>([
   "bgee355@gmail.com",
   "adrianop1414@gmail.com",
   "max.r.mccullough@gmail.com",
+  "rschacht25@gmail.com",
+  "tommy.rice6@gmail.com",
 ]);
 
 type Recipient = { email: string; preferredLocale: string | null };
