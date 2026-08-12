@@ -2441,6 +2441,176 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "NFL-NFC-CHAMPION-SPECIAL-2027-1800820800",
+      "mids": {
+        "LAR": 24,
+        "SEA": 13,
+        "DET": 9,
+        "PHI": 8,
+        "SF": 8,
+        "GB": 8,
+        "DAL": 6,
+        "CHI": 6,
+        "TB": 5,
+        "WAS": 5,
+        "MIN": 4,
+        "NYG": 3,
+        "CAR": 2,
+        "ATL": 2,
+        "NO": 2,
+        "ARI": 1
+      },
+      "params": {
+        "budgetUsd": 200
+      }
+    },
+    {
+      "gameId": "NFL-AFC-CHAMPION-SPECIAL-2027-1800833400",
+      "mids": {
+        "BAL": 16,
+        "BUF": 15,
+        "LAC": 11,
+        "KC": 10,
+        "HOU": 9,
+        "NE": 9,
+        "DEN": 8,
+        "CIN": 7,
+        "JAX": 6,
+        "IND": 3,
+        "CLE": 2,
+        "PIT": 2,
+        "LV": 2,
+        "MIA": 1,
+        "NYJ": 1,
+        "TEN": 1
+      },
+      "params": {
+        "budgetUsd": 200
+      }
+    },
+    {
+      "gameId": "NHL-EAST-CHAMPION-SPECIAL-2027-1811808000",
+      "mids": {
+        "FLA": 22,
+        "CAR": 19,
+        "TBL": 16,
+        "WSH": 8,
+        "PHI": 8,
+        "MTL": 6,
+        "BUF": 7,
+        "OTT": 6,
+        "NJD": 7,
+        "PIT": 5,
+        "TOR": 5,
+        "BOS": 6,
+        "NYR": 5,
+        "NYI": 5,
+        "CBJ": 2,
+        "DET": 1
+      },
+      "params": {
+        "budgetUsd": 200
+      }
+    },
+    {
+      "gameId": "NHL-WEST-CHAMPION-SPECIAL-2027-1811808000",
+      "mids": {
+        "COL": 22,
+        "EDM": 15,
+        "VGK": 15,
+        "SJS": 12,
+        "DAL": 11,
+        "MIN": 11,
+        "UTA": 7,
+        "ANA": 7,
+        "LAK": 6,
+        "WPG": 3,
+        "STL": 2,
+        "CHI": 2,
+        "CGY": 3,
+        "NSH": 3,
+        "SEA": 3,
+        "VAN": 1
+      },
+      "params": {
+        "budgetUsd": 200
+      }
+    },
+    {
+      "gameId": "NFL-MVP-SPECIAL-2026-1802394000",
+      "mids": {
+        "JA": 13,
+        "JHE": 10,
+        "LJ": 10,
+        "JB": 9,
+        "DM": 9,
+        "CW": 8,
+        "DP": 8,
+        "MS": 7,
+        "PM": 7,
+        "BP": 6,
+        "JL": 4,
+        "JHU": 4,
+        "JGI": 4,
+        "BN": 2,
+        "TL": 2,
+        "JD": 3,
+        "BM": 2,
+        "JGO": 2,
+        "SD": 2,
+        "SB": 1,
+        "CM": 1,
+        "PN": 1,
+        "BR": 1,
+        "JS": 1,
+        "JJ": 1,
+        "DH": 1,
+        "MG": 1,
+        "DA": 1
+      },
+      "params": {
+        "budgetUsd": 200
+      }
+    },
+    {
+      "gameId": "NBA-ROY-SPECIAL-2027-1807574400",
+      "mids": {
+        "CB": 23,
+        "CW": 22,
+        "AD": 21,
+        "DP": 19,
+        "DA": 6,
+        "MB": 4,
+        "YL": 3,
+        "KF": 3,
+        "BB": 4,
+        "KW": 1,
+        "CCE": 1,
+        "AM": 1,
+        "JJ": 1,
+        "LP": 1,
+        "MJ": 1,
+        "NA": 1,
+        "CA": 1,
+        "AG": 1,
+        "CCA": 1,
+        "AK": 1,
+        "KP": 1,
+        "SD": 1,
+        "ZE": 1,
+        "EO": 1,
+        "HS": 1,
+        "BS": 1,
+        "KL": 1,
+        "TR": 1,
+        "DS": 1,
+        "JQ": 1
+      },
+      "params": {
+        "budgetUsd": 200
+      }
     }
   ]
 }
