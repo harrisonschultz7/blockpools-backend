@@ -23,6 +23,12 @@ import { getFundingWallet } from "./findFundingWallet";
 import { hasBetFundedEntry, writeLedgerEntry } from "./promotionFunding";
 import { triggerFundingWalletAttributionRefresh } from "./handlePromoTradeAttribution";
 import { upsertUserTradesAndGames } from "../persistTrades";
+import { resolveV2Market, V2MarketEntry } from "../v2/v2MarketResolver";
+import {
+  quoteV2MarketBuy,
+  ensureExchangeApproval,
+  placeV2Order,
+} from "./v2FreeBet";
 
 // Minimal pool ABI covering both pool variants in this codebase:
 //   - Multi-outcome (gamePoolMulti): buy(uint8 outcome, uint256, uint256)
@@ -55,6 +61,7 @@ export type PlaceFreeBetError =
   | "PRICE_OUT_OF_BAND"
   | "FUNDING_WALLET_MISMATCH"
   | "INSUFFICIENT_FUNDING_BALANCE"
+  | "INSUFFICIENT_BOOK_LIQUIDITY"
   | "ON_CHAIN_TX_FAILED";
 
 export class PlaceFreeBetException extends Error {
@@ -72,6 +79,11 @@ export type PlaceFreeBetInput = {
   poolAddress: string;
   outcomeIndex: number;
   userAddress: string;
+  // When present AND it resolves to a known v2 market, the bet is placed on the
+  // order book (funding wallet signs an EIP-712 order to the matcher) instead of
+  // an AMM pool. `poolAddress` is then ignored for on-chain purposes — the
+  // canonical game id is derived from the marketId via v2MarketResolver.
+  marketId?: string;
 };
 
 export type PlaceFreeBetResult = {
@@ -91,6 +103,16 @@ export async function placeFreeBet(
   const poolAddress = String(input.poolAddress).toLowerCase();
   const outcomeIndex = Number(input.outcomeIndex);
   const userAddress = String(input.userAddress).toLowerCase();
+
+  // v2 detection: if a marketId was supplied and it maps to a known v2 market,
+  // this is an order-book bet. `gameKey` is the identifier we store in
+  // promo_redemptions.pool_address AND look up in public.games — for v2 that's
+  // the game id (e.g. "MLB-…"), the SAME key recordV2Resolution writes
+  // is_final/winning_outcome_index under, so settlement lines up. For AMM it's
+  // the pool contract address, unchanged.
+  const marketId = input.marketId ? String(input.marketId) : "";
+  const v2Entry: V2MarketEntry | null = marketId ? resolveV2Market(marketId) : null;
+  const gameKey = (v2Entry ? String(v2Entry.gameId) : poolAddress).toLowerCase();
 
   // Idempotency short-circuit: if the ledger already has a bet_funded row for
   // this redemption, this is a retry — don't re-place.
@@ -154,7 +176,7 @@ export async function placeFreeBet(
   const gameQ = await pool.query(
     `SELECT game_id, league, is_final, lock_time, market_type
        FROM public.games WHERE lower(game_id) = $1`,
-    [poolAddress]
+    [gameKey]
   );
   const game = gameQ.rows[0];
   if (!game) {
@@ -174,7 +196,7 @@ export async function placeFreeBet(
   } else if (eligiblePools && eligiblePools.length) {
     const poolOk = eligiblePools
       .map((s) => String(s).toLowerCase())
-      .includes(poolAddress);
+      .includes(gameKey);
     if (!poolOk) {
       throw new PlaceFreeBetException("POOL_INELIGIBLE", { reason: "pool_not_allowed" });
     }
@@ -204,75 +226,6 @@ export async function placeFreeBet(
     });
   }
 
-  const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
-
-  // Defense in depth: also confirm the contract itself isn't locked/resolved.
-  try {
-    const [locked, resolved] = await Promise.all([
-      poolContract.isLocked(),
-      poolContract.isResolved(),
-    ]);
-    if (locked || resolved) {
-      throw new PlaceFreeBetException("POOL_LOCKED_OR_FINAL", {
-        reason: "contract_state",
-        locked,
-        resolved,
-      });
-    }
-  } catch (err: any) {
-    if (err instanceof PlaceFreeBetException) throw err;
-    // Best-effort — old pools may not implement these getters.
-    console.warn("[placeFreeBet] pool state read failed; relying on DB gate", err?.message);
-  }
-
-  // Odds guardrail (bps). Reject if the live price is outside the allowed
-  // band. min/max may be null, in which case that side is unbounded.
-  // Binary pools don't expose currentPriceBps — skip the read entirely if
-  // we're on a binary pool, or if no bounds are set on the campaign.
-  let priceBps: number | null = null;
-  const hasOddsBand = red.min_odds_bps != null || red.max_odds_bps != null;
-  const supportsPriceRead = marketType !== "BINARY";
-
-  if (supportsPriceRead) {
-    try {
-      const raw = await poolContract.currentPriceBps(outcomeIndex);
-      priceBps = Number(raw.toString());
-    } catch (err: any) {
-      if (hasOddsBand) {
-        throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
-          reason: "price_read_failed",
-          detail: err?.message,
-        });
-      }
-      console.warn(
-        "[placeFreeBet] currentPriceBps unavailable; skipping band check (no bounds on campaign)",
-        err?.message
-      );
-    }
-  } else if (hasOddsBand) {
-    // Binary pool with odds band on the campaign — we can't enforce it.
-    // Refuse rather than silently bypass.
-    throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
-      reason: "binary_pool_does_not_support_odds_band",
-      marketType,
-    });
-  }
-
-  if (priceBps != null) {
-    if (red.min_odds_bps != null && priceBps < Number(red.min_odds_bps)) {
-      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
-        priceBps,
-        min: red.min_odds_bps,
-      });
-    }
-    if (red.max_odds_bps != null && priceBps > Number(red.max_odds_bps)) {
-      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
-        priceBps,
-        max: red.max_odds_bps,
-      });
-    }
-  }
-
   const creditUsdc = String(red.credit_usdc ?? red.promo_credit_usdc);
   const grossAmount = parseUnits(creditUsdc, USDC_DECIMALS);
 
@@ -285,63 +238,196 @@ export async function placeFreeBet(
     });
   }
 
-  // Ensure USDC allowance for the pool. Approve generously (max uint256) once
-  // per pool to avoid one-extra-tx-per-bet overhead. If allowance already
-  // covers grossAmount, skip.
-  const usdcWithApprove = new Contract(usdc.address, ERC20_APPROVE_ABI, wallet);
-  const currentAllowance: BigNumber = await usdcWithApprove.allowance(
-    wallet.address,
-    poolAddress
-  );
-  if (currentAllowance.lt(grossAmount)) {
-    const MAX_UINT256 = BigNumber.from(
-      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-    );
-    const approveTx = await usdcWithApprove.approve(poolAddress, MAX_UINT256);
-    await approveTx.wait(PROMO_TX_CONFIRMATIONS);
-  }
+  // Odds guardrail (bps) — enforced identically for AMM and v2. min/max may be
+  // null (that side unbounded).
+  const hasOddsBand = red.min_odds_bps != null || red.max_odds_bps != null;
+  const enforceOddsBand = (bps: number) => {
+    if (red.min_odds_bps != null && bps < Number(red.min_odds_bps)) {
+      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", { priceBps: bps, min: red.min_odds_bps });
+    }
+    if (red.max_odds_bps != null && bps > Number(red.max_odds_bps)) {
+      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", { priceBps: bps, max: red.max_odds_bps });
+    }
+  };
 
-  // Place the buy. minSharesOut = 0 for now — we already gated on price band
-  // (when applicable) above. Tighten later via a quoteBuyTeam{A,B}/quoteBuy
-  // call + slippage if MEV/front-running is observed.
-  //
-  // Branch by market_type:
-  //   - BINARY  → buyTeamA(amount, minSharesOut) for outcome 0,
-  //               buyTeamB(amount, minSharesOut) for outcome 1.
-  //   - else    → buy(uint8 outcome, amount, minSharesOut) (multi).
   let txHash: string;
-  try {
-    let tx;
-    if (marketType === "BINARY") {
-      if (outcomeIndex === 0) {
-        tx = await poolContract.buyTeamA(grossAmount, 0, {
-          gasLimit: PROMO_BUY_GAS_LIMIT,
-        });
-      } else if (outcomeIndex === 1) {
-        tx = await poolContract.buyTeamB(grossAmount, 0, {
-          gasLimit: PROMO_BUY_GAS_LIMIT,
-        });
-      } else {
-        throw new PlaceFreeBetException("POOL_INELIGIBLE", {
-          reason: "binary_pool_only_supports_outcome_0_or_1",
-          outcomeIndex,
-        });
-      }
-    } else {
-      tx = await poolContract.buy(outcomeIndex, grossAmount, 0, {
-        gasLimit: PROMO_BUY_GAS_LIMIT,
+  let priceBps: number | null = null;
+  // v2 placement metadata, persisted on the 'placed' event so settleFreeBet can
+  // redeem/settle from the exact per-redemption share count without re-reading
+  // the book. Null for AMM bets.
+  let v2Meta:
+    | { marketId: string; shares: string; spentMicro: string; avgPriceBps: number }
+    | null = null;
+
+  if (v2Entry) {
+    // ── v2 (order-book) placement ──────────────────────────────────────────
+    // Fund the bet by signing a crossing BUY as the funding wallet and posting
+    // it to the matcher; the funding wallet ends up holding the outcome shares
+    // (same custody as the AMM path — the user never owns the stake).
+    if (outcomeIndex !== 0 && outcomeIndex !== 1) {
+      throw new PlaceFreeBetException("POOL_INELIGIBLE", {
+        reason: "v2_market_is_binary_outcome_0_or_1",
+        outcomeIndex,
       });
     }
-    const receipt = await tx.wait(PROMO_TX_CONFIRMATIONS);
-    if (!receipt || receipt.status !== 1) {
-      throw new PlaceFreeBetException("ON_CHAIN_TX_FAILED", { txHash: tx.hash });
+    await ensureExchangeApproval(grossAmount);
+
+    // Quote the market buy; require enough resting liquidity to fill the whole
+    // credit. If the book is thin (e.g. the seed bot isn't quoting this market
+    // yet) refuse and leave the redemption 'eligible' for a clean retry rather
+    // than resting a partially-fillable promo order.
+    const quote = await quoteV2MarketBuy(marketId, outcomeIndex, grossAmount.toString());
+    if (quote.insufficient || BigNumber.from(quote.shares).lte(0)) {
+      throw new PlaceFreeBetException("INSUFFICIENT_BOOK_LIQUIDITY", {
+        need: creditUsdc,
+        availableMicro: quote.availableAmount,
+      });
     }
-    txHash = tx.hash;
-  } catch (err: any) {
-    if (err instanceof PlaceFreeBetException) throw err;
-    throw new PlaceFreeBetException("ON_CHAIN_TX_FAILED", {
-      detail: err?.message ?? String(err),
-    });
+
+    // avgPrice is 1e6-scaled ($1 == 1e6 == 10000 bps) → bps = avgPrice / 100.
+    const avgBps = Math.round(Number(quote.avgPrice) / 100);
+    if (hasOddsBand) enforceOddsBand(avgBps);
+    priceBps = avgBps;
+
+    let place;
+    try {
+      place = await placeV2Order({
+        marketId,
+        outcome: outcomeIndex,
+        shares: quote.shares,
+        worstPriceScaled: quote.worstPrice,
+      });
+    } catch (err: any) {
+      throw new PlaceFreeBetException("ON_CHAIN_TX_FAILED", {
+        detail: err?.message ?? String(err),
+      });
+    }
+    if (!place.orderHash || BigNumber.from(place.filledShares).lte(0)) {
+      // Nothing crossed (the book moved between quote and submit) — the whole
+      // order was cancelled, no funds moved, safe to retry.
+      throw new PlaceFreeBetException("INSUFFICIENT_BOOK_LIQUIDITY", {
+        reason: "order_did_not_cross",
+        need: creditUsdc,
+      });
+    }
+    txHash = place.orderHash; // matcher order hash doubles as the tx identifier
+    // Actual USDC spent ≈ filledShares × avgPrice (both 1e6-scaled).
+    const spentMicro = BigNumber.from(place.filledShares)
+      .mul(BigNumber.from(quote.avgPrice))
+      .div(BigNumber.from(1_000_000));
+    v2Meta = {
+      marketId,
+      shares: place.filledShares,
+      spentMicro: spentMicro.toString(),
+      avgPriceBps: avgBps,
+    };
+  } else {
+    // ── AMM (game pool) placement — unchanged ──────────────────────────────
+    const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
+
+    // Defense in depth: also confirm the contract itself isn't locked/resolved.
+    try {
+      const [locked, resolved] = await Promise.all([
+        poolContract.isLocked(),
+        poolContract.isResolved(),
+      ]);
+      if (locked || resolved) {
+        throw new PlaceFreeBetException("POOL_LOCKED_OR_FINAL", {
+          reason: "contract_state",
+          locked,
+          resolved,
+        });
+      }
+    } catch (err: any) {
+      if (err instanceof PlaceFreeBetException) throw err;
+      // Best-effort — old pools may not implement these getters.
+      console.warn("[placeFreeBet] pool state read failed; relying on DB gate", err?.message);
+    }
+
+    // Binary pools don't expose currentPriceBps — skip the read entirely if
+    // we're on a binary pool, or if no bounds are set on the campaign.
+    const supportsPriceRead = marketType !== "BINARY";
+    if (supportsPriceRead) {
+      try {
+        const raw = await poolContract.currentPriceBps(outcomeIndex);
+        priceBps = Number(raw.toString());
+      } catch (err: any) {
+        if (hasOddsBand) {
+          throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
+            reason: "price_read_failed",
+            detail: err?.message,
+          });
+        }
+        console.warn(
+          "[placeFreeBet] currentPriceBps unavailable; skipping band check (no bounds on campaign)",
+          err?.message
+        );
+      }
+    } else if (hasOddsBand) {
+      // Binary pool with odds band on the campaign — we can't enforce it.
+      // Refuse rather than silently bypass.
+      throw new PlaceFreeBetException("PRICE_OUT_OF_BAND", {
+        reason: "binary_pool_does_not_support_odds_band",
+        marketType,
+      });
+    }
+
+    if (priceBps != null) enforceOddsBand(priceBps);
+
+    // Ensure USDC allowance for the pool. Approve generously (max uint256) once
+    // per pool to avoid one-extra-tx-per-bet overhead. If allowance already
+    // covers grossAmount, skip.
+    const usdcWithApprove = new Contract(usdc.address, ERC20_APPROVE_ABI, wallet);
+    const currentAllowance: BigNumber = await usdcWithApprove.allowance(
+      wallet.address,
+      poolAddress
+    );
+    if (currentAllowance.lt(grossAmount)) {
+      const MAX_UINT256 = BigNumber.from(
+        "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      );
+      const approveTx = await usdcWithApprove.approve(poolAddress, MAX_UINT256);
+      await approveTx.wait(PROMO_TX_CONFIRMATIONS);
+    }
+
+    // Place the buy. minSharesOut = 0 for now — we already gated on price band
+    // (when applicable) above.
+    //   - BINARY  → buyTeamA(amount, minSharesOut) for outcome 0,
+    //               buyTeamB(amount, minSharesOut) for outcome 1.
+    //   - else    → buy(uint8 outcome, amount, minSharesOut) (multi).
+    try {
+      let tx;
+      if (marketType === "BINARY") {
+        if (outcomeIndex === 0) {
+          tx = await poolContract.buyTeamA(grossAmount, 0, {
+            gasLimit: PROMO_BUY_GAS_LIMIT,
+          });
+        } else if (outcomeIndex === 1) {
+          tx = await poolContract.buyTeamB(grossAmount, 0, {
+            gasLimit: PROMO_BUY_GAS_LIMIT,
+          });
+        } else {
+          throw new PlaceFreeBetException("POOL_INELIGIBLE", {
+            reason: "binary_pool_only_supports_outcome_0_or_1",
+            outcomeIndex,
+          });
+        }
+      } else {
+        tx = await poolContract.buy(outcomeIndex, grossAmount, 0, {
+          gasLimit: PROMO_BUY_GAS_LIMIT,
+        });
+      }
+      const receipt = await tx.wait(PROMO_TX_CONFIRMATIONS);
+      if (!receipt || receipt.status !== 1) {
+        throw new PlaceFreeBetException("ON_CHAIN_TX_FAILED", { txHash: tx.hash });
+      }
+      txHash = tx.hash;
+    } catch (err: any) {
+      if (err instanceof PlaceFreeBetException) throw err;
+      throw new PlaceFreeBetException("ON_CHAIN_TX_FAILED", {
+        detail: err?.message ?? String(err),
+      });
+    }
   }
 
   // Persist DB transitions in one transaction so a redemption can't be marked
@@ -361,7 +447,7 @@ export async function placeFreeBet(
        WHERE id = $4
          AND status = 'eligible'
       `,
-      [poolAddress, outcomeIndex, txHash, redemptionId]
+      [gameKey, outcomeIndex, txHash, redemptionId]
     );
 
     await client.query(
@@ -371,11 +457,21 @@ export async function placeFreeBet(
       [
         redemptionId,
         JSON.stringify({
-          poolAddress,
+          poolAddress: gameKey,
           outcomeIndex,
           txHash,
           priceBps,
           creditUsdc,
+          // v2 order-book placement facts — read back by settleFreeBet to redeem
+          // the exact per-redemption share count at the vault (absent for AMM).
+          ...(v2Meta
+            ? {
+                v2: true,
+                marketId: v2Meta.marketId,
+                shares: v2Meta.shares, // 6dp share units held by the funding wallet
+                spentMicro: v2Meta.spentMicro,
+              }
+            : {}),
         }),
       ]
     );
@@ -423,6 +519,10 @@ export async function placeFreeBet(
   //   user via effective_user_address — no extra wiring needed here.
   // Amounts are the credit (gross≈net for a free bet); the subgraph reconcile
   // later replaces this with exact fee/shares values. Never blocks the response.
+  // For v2 the "stake" is the actual USDC that crossed (gross≈net); for AMM it's
+  // the credit. net_stake_dec/avg_price_bps here also serve as settleFreeBet's
+  // fallback per-redemption share source if the placement event is ever missing.
+  const stakeDec = v2Meta ? formatUnits(v2Meta.spentMicro, USDC_DECIMALS) : creditUsdc;
   try {
     await upsertUserTradesAndGames({
       user: wallet.address.toLowerCase(),
@@ -437,14 +537,14 @@ export async function placeFreeBet(
           txHash,
           spotPriceBps: priceBps,
           avgPriceBps: priceBps,
-          grossInDec: creditUsdc,
+          grossInDec: stakeDec,
           grossOutDec: "0",
           feeDec: "0",
-          netStakeDec: creditUsdc,
+          netStakeDec: stakeDec,
           netOutDec: "0",
           costBasisClosedDec: "0",
           realizedPnlDec: "0",
-          game: { id: poolAddress, league: game.league ?? null },
+          game: { id: gameKey, league: game.league ?? null },
           __source: "promo-direct",
         },
       ],
@@ -462,17 +562,22 @@ export async function placeFreeBet(
   // user-facing stats immediately. Retries with backoff to absorb subgraph
   // indexing lag. Never blocks placeFreeBet's response — the tx hash is
   // already returned to the caller.
-  triggerFundingWalletAttributionRefresh(txHash, redemptionId).catch((err) => {
-    console.error(
-      "[placeFreeBet] background attribution refresh threw (non-blocking)",
-      { redemptionId, txHash, err }
-    );
-  });
+  //
+  // v2 has NO subgraph (fills are matcher-persisted), so skip it there — the
+  // direct-write above is the authoritative stats row for a v2 free bet.
+  if (!v2Entry) {
+    triggerFundingWalletAttributionRefresh(txHash, redemptionId).catch((err) => {
+      console.error(
+        "[placeFreeBet] background attribution refresh threw (non-blocking)",
+        { redemptionId, txHash, err }
+      );
+    });
+  }
 
   return {
     redemptionId,
     txHash,
-    poolAddress,
+    poolAddress: gameKey,
     outcomeIndex,
     creditUsdc,
     status: "placed",

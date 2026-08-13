@@ -31,6 +31,7 @@ import {
 } from "../../config/promo";
 import { getFundingWallet } from "./findFundingWallet";
 import { writeLedgerEntry } from "./promotionFunding";
+import { redeemV2, v2SharesOf } from "./v2FreeBet";
 
 // Pool ABI subset for settlement, covering both pool variants:
 //   - Multi:  shares(address, uint8) view returns (uint256)
@@ -115,76 +116,103 @@ export async function settleFreeBet(
 
   // ── Win path: claim on-chain, transfer profit, then book the ledger. ─────
   const { wallet, usdc } = getFundingWallet();
-  const poolContract = new Contract(poolAddress, POOL_ABI, wallet);
 
-  // ── Per-redemption share count ───────────────────────────────────────────
-  // Reading the funding wallet's TOTAL shares for this outcome from the pool
-  // is the wrong measure when multiple redemptions sit on the same pool — the
-  // first one to settle would consume the entire wallet balance and the rest
-  // would get $0. Instead, compute shares from THIS redemption's own BUY row
-  // in user_trade_events: shares = net_stake / avg_price (each winning share
-  // pays $1, AMM-style).
-  let sharesHeld: BigNumber;
-  const tradeQ = await pool.query(
-    `SELECT net_stake_dec, avg_price_bps
-       FROM public.user_trade_events
-      WHERE promo_redemption_id = $1
-        AND type = 'BUY'
+  // Detect a v2 (order-book) redemption from its placement event. It carries the
+  // marketId + the exact 6dp share count the funding wallet holds — the same
+  // "1 share pays $1" convention the AMM math already uses (v2's vault.redeem
+  // pays $1 per winning share), so the downstream profit math is unchanged.
+  const placedQ = await pool.query(
+    `SELECT event_data
+       FROM public.promo_eligibility_events
+      WHERE redemption_id = $1 AND event_type = 'placed'
+      ORDER BY created_at DESC
       LIMIT 1`,
     [redemptionId]
   );
-  const tradeRow = tradeQ.rows[0];
-  if (tradeRow && tradeRow.net_stake_dec != null && tradeRow.avg_price_bps != null) {
-    const netStake = Number(tradeRow.net_stake_dec);
-    const avgPriceBps = Number(tradeRow.avg_price_bps);
-    // shares = (net_stake * 10000) / avg_price_bps. Each share is worth $1 on
-    // a win, so shares-as-USDC equals payout-as-USDC. Compute in floating
-    // point then convert to base units — net_stake is already in USDC, so
-    // the result is in USDC too.
-    const sharesUsdc =
-      avgPriceBps > 0 ? (netStake * 10_000) / avgPriceBps : 0;
-    sharesHeld = parseUnits(sharesUsdc.toFixed(USDC_DECIMALS), USDC_DECIMALS);
+  const placed: any = placedQ.rows[0]?.event_data || null;
+  const v2MarketId: string = placed && placed.v2 ? String(placed.marketId || "") : "";
+  const isV2 = !!v2MarketId;
+
+  // AMM-only contract handle (v2 never touches a per-game pool).
+  const poolContract = isV2 ? null : new Contract(poolAddress, POOL_ABI, wallet);
+
+  // ── Per-redemption share count ───────────────────────────────────────────
+  // Reading the funding wallet's TOTAL shares for this market/outcome is the
+  // wrong measure when multiple redemptions sit on the same market — the first
+  // one to settle would consume the entire wallet balance and the rest would
+  // get $0. So we prefer a per-redemption source:
+  //   v2  → the exact `shares` recorded on the placement event.
+  //   AMM → this redemption's BUY row: shares = net_stake / avg_price.
+  // Both fall back to an on-chain read, then to the credit, as a last resort.
+  let sharesHeld: BigNumber;
+  if (isV2 && placed?.shares != null) {
+    // Stored as 6dp share units; 1 share == $1 == 1 USDC micro-unit at payout.
+    sharesHeld = BigNumber.from(String(placed.shares));
   } else {
-    // No BUY row yet — fall back to on-chain read (legacy behavior). This
-    // path is conservative for single-redemption pools but unsafe for
-    // multi-redemption pools, so we log a warning.
-    console.warn(
-      "[settleFreeBet] no BUY row for redemption; falling back to on-chain shares read",
-      { redemptionId, poolAddress }
+    const tradeQ = await pool.query(
+      `SELECT net_stake_dec, avg_price_bps
+         FROM public.user_trade_events
+        WHERE promo_redemption_id = $1
+          AND type = 'BUY'
+        LIMIT 1`,
+      [redemptionId]
     );
-    try {
-      if (marketType === "BINARY") {
-        if (userOutcome === 0) {
-          sharesHeld = await poolContract.sharesTeamAByUser(wallet.address);
-        } else if (userOutcome === 1) {
-          sharesHeld = await poolContract.sharesTeamBByUser(wallet.address);
-        } else {
-          throw new Error(`binary outcome out of range: ${userOutcome}`);
-        }
-      } else {
-        sharesHeld = await poolContract.shares(wallet.address, userOutcome);
-      }
-    } catch (err: any) {
+    const tradeRow = tradeQ.rows[0];
+    if (tradeRow && tradeRow.net_stake_dec != null && tradeRow.avg_price_bps != null) {
+      const netStake = Number(tradeRow.net_stake_dec);
+      const avgPriceBps = Number(tradeRow.avg_price_bps);
+      // shares = (net_stake * 10000) / avg_price_bps. Each share is worth $1 on
+      // a win, so shares-as-USDC equals payout-as-USDC.
+      const sharesUsdc = avgPriceBps > 0 ? (netStake * 10_000) / avgPriceBps : 0;
+      sharesHeld = parseUnits(sharesUsdc.toFixed(USDC_DECIMALS), USDC_DECIMALS);
+    } else {
+      // No per-redemption row — fall back to an on-chain read (conservative for
+      // single-redemption markets, unsafe for multi; logged for ops).
       console.warn(
-        "[settleFreeBet] shares read failed; conservative payout fallback",
-        { redemptionId, marketType, err: err?.message }
+        "[settleFreeBet] no per-redemption share source; falling back to on-chain read",
+        { redemptionId, poolAddress, isV2 }
       );
-      sharesHeld = parseUnits(creditUsdc, USDC_DECIMALS);
+      try {
+        if (isV2) {
+          sharesHeld = await v2SharesOf(v2MarketId, userOutcome);
+        } else if (marketType === "BINARY") {
+          if (userOutcome === 0) {
+            sharesHeld = await poolContract!.sharesTeamAByUser(wallet.address);
+          } else if (userOutcome === 1) {
+            sharesHeld = await poolContract!.sharesTeamBByUser(wallet.address);
+          } else {
+            throw new Error(`binary outcome out of range: ${userOutcome}`);
+          }
+        } else {
+          sharesHeld = await poolContract!.shares(wallet.address, userOutcome);
+        }
+      } catch (err: any) {
+        console.warn(
+          "[settleFreeBet] shares read failed; conservative payout fallback",
+          { redemptionId, marketType, isV2, err: err?.message }
+        );
+        sharesHeld = parseUnits(creditUsdc, USDC_DECIMALS);
+      }
     }
   }
 
-  // Issue the on-chain claim. ANY revert here is treated as benign — the
-  // funding wallet either drained the pool earlier (during a sibling
-  // redemption's settlement) or has nothing to claim. Either way we proceed
-  // with the per-redemption share count computed above.
+  // Issue the on-chain claim/redeem. ANY revert is treated as benign — the
+  // funding wallet either already collected during a sibling redemption's
+  // settlement, or has nothing to collect. Either way we proceed with the
+  // per-redemption share count computed above.
+  //   v2  → vault.redeem(marketId): pays $1 per winning share to the wallet.
+  //   AMM → pool.claimWinnings().
   try {
-    const tx = await poolContract.claimWinnings({ gasLimit: PROMO_CLAIM_GAS_LIMIT });
-    await tx.wait(PROMO_TX_CONFIRMATIONS);
+    if (isV2) {
+      await redeemV2(v2MarketId);
+    } else {
+      const tx = await poolContract!.claimWinnings({ gasLimit: PROMO_CLAIM_GAS_LIMIT });
+      await tx.wait(PROMO_TX_CONFIRMATIONS);
+    }
   } catch (err: any) {
-    // Don't fail the redemption — the share count came from the trade row,
-    // not the wallet's live balance. Log for ops visibility.
-    console.warn("[settleFreeBet] claimWinnings reverted (likely already drained)", {
+    console.warn("[settleFreeBet] claim/redeem reverted (likely already collected)", {
       redemptionId,
+      isV2,
       msg: String(err?.message || "").slice(0, 200),
     });
   }

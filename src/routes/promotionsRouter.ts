@@ -21,6 +21,7 @@ import {
 const router = Router();
 
 const ADDR_RE = /^0x[a-f0-9]{40}$/i;
+const BYTES32_RE = /^0x[a-f0-9]{64}$/i;
 
 function notReady(_req: Request, res: Response) {
   return res.status(503).json({ error: "Promo framework disabled" });
@@ -546,20 +547,28 @@ router.get("/positions", async (req: Request, res: Response) => {
 
 // ── POST /api/promotions/place-bet ───────────────────────────────────────────
 //
-// Body: { redemptionId, poolAddress, outcomeIndex, userAddress }
+// Body: { redemptionId, poolAddress, outcomeIndex, userAddress, marketId? }
 //
 // Funding wallet places the bet on-chain and DB transitions to 'placed'.
+// When `marketId` (a bytes32) is present the bet is placed on the v2 order book
+// and `poolAddress` (the AMM pool) is not required.
 router.post("/place-bet", async (req: Request, res: Response) => {
-  const { redemptionId, poolAddress, outcomeIndex, userAddress } = (req.body ||
+  const { redemptionId, poolAddress, outcomeIndex, userAddress, marketId } = (req.body ||
     {}) as {
     redemptionId?: string;
     poolAddress?: string;
     outcomeIndex?: number | string;
     userAddress?: string;
+    marketId?: string;
   };
 
   if (!redemptionId) return res.status(400).json({ error: "Missing redemptionId" });
-  if (!poolAddress || !ADDR_RE.test(poolAddress)) {
+  const isV2 = !!marketId;
+  if (isV2) {
+    if (!BYTES32_RE.test(String(marketId))) {
+      return res.status(400).json({ error: "Invalid marketId" });
+    }
+  } else if (!poolAddress || !ADDR_RE.test(poolAddress)) {
     return res.status(400).json({ error: "Invalid poolAddress" });
   }
   if (!userAddress || !ADDR_RE.test(userAddress)) {
@@ -573,9 +582,10 @@ router.post("/place-bet", async (req: Request, res: Response) => {
   try {
     const result = await placeFreeBet({
       redemptionId,
-      poolAddress,
+      poolAddress: poolAddress || "",
       outcomeIndex: Math.trunc(oi),
       userAddress,
+      marketId: isV2 ? String(marketId) : undefined,
     });
     // Audit trail for successful placements — useful for tracing why a
     // bonus trade did/didn't reach the chain when a user reports issues.
@@ -594,6 +604,7 @@ router.post("/place-bet", async (req: Request, res: Response) => {
         POOL_LOCKED_OR_FINAL: 400,
         PRICE_OUT_OF_BAND: 400,
         INSUFFICIENT_FUNDING_BALANCE: 503,
+        INSUFFICIENT_BOOK_LIQUIDITY: 503,
         ON_CHAIN_TX_FAILED: 502,
       };
       const status = map[err.code] ?? 400;
