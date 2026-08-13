@@ -28,6 +28,7 @@ import {
   quoteV2MarketBuy,
   ensureExchangeApproval,
   placeV2Order,
+  v2MarketState,
 } from "./v2FreeBet";
 
 // Minimal pool ABI covering both pool variants in this codebase:
@@ -178,9 +179,25 @@ export async function placeFreeBet(
        FROM public.games WHERE lower(game_id) = $1`,
     [gameKey]
   );
-  const game = gameQ.rows[0];
+  let game = gameQ.rows[0];
   if (!game) {
-    throw new PlaceFreeBetException("POOL_INELIGIBLE", { reason: "game_not_found" });
+    if (v2Entry) {
+      // v2 markets share one Exchange/Vault and don't get a public.games row
+      // until the first trade or resolution is persisted — so a free bet can be
+      // the FIRST activity on a market. Synthesize the game context from the
+      // resolver; lock/resolution is gated on-chain (vault.markets) in the v2
+      // branch below, not from this (absent) row. The direct-write later creates
+      // the row via upsertUserTradesAndGames.
+      game = {
+        game_id: gameKey,
+        league: v2Entry.league,
+        is_final: false,
+        lock_time: null,
+        market_type: v2Entry.marketType,
+      };
+    } else {
+      throw new PlaceFreeBetException("POOL_INELIGIBLE", { reason: "game_not_found" });
+    }
   }
   const marketType = String(game.market_type || "").toUpperCase();
 
@@ -205,7 +222,10 @@ export async function placeFreeBet(
   if (game.is_final) {
     throw new PlaceFreeBetException("POOL_LOCKED_OR_FINAL", { reason: "is_final" });
   }
-  if (game.lock_time != null) {
+  // AMM pools lock at kickoff. v2 order-book markets trade live through the game,
+  // so we DON'T block on lock_time for v2 — the authoritative gate is the vault's
+  // on-chain `resolved` flag, checked in the v2 placement branch below.
+  if (!v2Entry && game.lock_time != null) {
     const lockMs = Number(game.lock_time) * 1000;
     if (lockMs <= Date.now()) {
       throw new PlaceFreeBetException("POOL_LOCKED_OR_FINAL", { reason: "lock_time_passed" });
@@ -270,6 +290,20 @@ export async function placeFreeBet(
         outcomeIndex,
       });
     }
+
+    // On-chain gate — the authoritative lock/resolution check for v2 (there's no
+    // per-game DB row). Market must exist on the vault and not be resolved.
+    const mkt = await v2MarketState(marketId);
+    if (!mkt.exists) {
+      throw new PlaceFreeBetException("POOL_INELIGIBLE", {
+        reason: "v2_market_not_on_chain",
+        marketId,
+      });
+    }
+    if (mkt.resolved) {
+      throw new PlaceFreeBetException("POOL_LOCKED_OR_FINAL", { reason: "v2_market_resolved" });
+    }
+
     await ensureExchangeApproval(grossAmount);
 
     // Quote the market buy; require enough resting liquidity to fill the whole

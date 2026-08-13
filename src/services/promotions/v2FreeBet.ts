@@ -195,6 +195,17 @@ export async function placeV2Order(opts: {
   };
 }
 
+/** On-chain market state from the vault — the authoritative lock/resolution
+ *  gate for a v2 free bet (v2 markets have no per-game DB row to gate on). */
+export async function v2MarketState(
+  marketId: string
+): Promise<{ exists: boolean; resolved: boolean; lockTime: number }> {
+  const { wallet } = getFundingWallet();
+  const vault = new Contract(PROMO_VAULT_ADDRESS, VAULT_ABI, wallet);
+  const m = await vault.markets(marketId);
+  return { exists: !!m.exists, resolved: !!m.resolved, lockTime: Number(m.lockTime) };
+}
+
 /** Funding wallet's current share holdings for a market outcome (6dp units). */
 export async function v2SharesOf(
   marketId: string,
