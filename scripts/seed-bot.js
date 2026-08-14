@@ -502,9 +502,19 @@ function resolveTargets(config, games) {
       inWindow.push(g);
     }
     inWindow.sort((a, b) => lockTimeOf(a) - lockTimeOf(b));
+    // LIVE (already-started) games are ALWAYS seeded — a full slate can have many
+    // live at once and none should be dropped for a quiet pre-game elsewhere. So
+    // maxMarkets caps only NOT-yet-started (pre/far) games, to bound pre-seed
+    // exposure. RPC stays bounded by maxRpcReadsPerSec (cached reads served over
+    // the cap), NOT by trimming live markets.
     const cap = Number(config.maxMarkets ?? 24);
-    if (inWindow.length > cap) console.warn(`  ⚠️  ${inWindow.length} auto games in window; capping at maxMarkets=${cap} (soonest kickoff first)`);
-    for (const g of inWindow.slice(0, cap)) add(g, null, null);
+    const live = inWindow.filter((g) => now >= lockTimeOf(g));
+    const pre = inWindow.filter((g) => now < lockTimeOf(g));
+    const targets = [...live, ...pre.slice(0, cap)];
+    if (pre.length > cap) {
+      console.warn(`  ⚠️  ${inWindow.length} auto games in window; seeding all ${live.length} live + ${cap}/${pre.length} pre-game (cap is pre-game only)`);
+    }
+    for (const g of targets) add(g, null, null);
   }
 
   // Props (multi-outcome futures) — each configured event expands to ONE target
