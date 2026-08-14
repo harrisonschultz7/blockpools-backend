@@ -68,6 +68,7 @@ import v2Router from "./routes/v2Routes";
 // ✅ Profile portfolio net-worth series (for the redesigned profile chart).
 //   POST /api/portfolio/:address/snapshot   GET /api/portfolio/:address/series
 import portfolioRouter from "./routes/portfolio";
+import marketsRouter from "./routes/marketsRouter";
 
 const PORT = Number(process.env.PORT || 3001);
 
@@ -187,6 +188,9 @@ export function makeServer() {
 
   // profile portfolio net-worth series
   app.use("/api/portfolio", portfolioRouter);
+
+  // cached AMM pool state for homepage cards (0 browser eth_calls)
+  app.use("/api/markets", marketsRouter);
 
   // ── Bare /api mounts (catch-all — must come last) ─────────────────────────────
   app.use("/api", wallRouter);
