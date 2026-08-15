@@ -530,8 +530,19 @@ router.get("/positions", async (req: Request, res: Response) => {
       JOIN public.user_trade_events e
         ON e.promo_redemption_id = r.id
        AND e.type = 'BUY'
-      LEFT JOIN public.games g
-        ON lower(g.game_id) = lower(r.pool_address)
+      -- Pick ONE games row, preferring the fully-populated one. Guards against a
+      -- case-duplicate game_id (e.g. "NFL-…" + "nfl-…") fanning the betslip into
+      -- two cards, one metadata-less. (Live "current value" is marked off the
+      -- matcher book on the frontend, same as the regular v2 card.)
+      LEFT JOIN LATERAL (
+        SELECT gg.game_id, gg.league, gg.team_a_name, gg.team_b_name,
+               gg.team_a_code, gg.team_b_code, gg.market_type, gg.lock_time,
+               gg.is_final, gg.winning_outcome_index, gg.market_question, gg.market_short
+          FROM public.games gg
+         WHERE lower(gg.game_id) = lower(r.pool_address)
+         ORDER BY (gg.team_a_code IS NOT NULL) DESC, (gg.market_type IS NOT NULL) DESC, gg.game_id
+         LIMIT 1
+      ) g ON true
       WHERE lower(r.user_address) = $1
         AND r.status = 'placed'
       ORDER BY e.timestamp DESC

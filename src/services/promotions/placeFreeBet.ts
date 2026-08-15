@@ -113,7 +113,12 @@ export async function placeFreeBet(
   // the pool contract address, unchanged.
   const marketId = input.marketId ? String(input.marketId) : "";
   const v2Entry: V2MarketEntry | null = marketId ? resolveV2Market(marketId) : null;
-  const gameKey = (v2Entry ? String(v2Entry.gameId) : poolAddress).toLowerCase();
+  // Preserve the CANONICAL case of a v2 gameId (v2 game_ids are UPPERCASE, e.g.
+  // "NFL-GB-PIT-…"). Lowercasing it made the direct-write create a DUPLICATE
+  // lowercase games row (metadata-less) beside the canonical one — ON CONFLICT
+  // (game_id) is case-sensitive — which fanned the betslip out into two cards.
+  // AMM pool addresses stay lowercased (case-insensitive hex).
+  const gameKey = v2Entry ? String(v2Entry.gameId) : poolAddress.toLowerCase();
 
   // Idempotency short-circuit: if the ledger already has a bet_funded row for
   // this redemption, this is a retry — don't re-place.
@@ -176,7 +181,7 @@ export async function placeFreeBet(
   // any pool — we still require the pool to exist in `games`.
   const gameQ = await pool.query(
     `SELECT game_id, league, is_final, lock_time, market_type
-       FROM public.games WHERE lower(game_id) = $1`,
+       FROM public.games WHERE lower(game_id) = lower($1)`,
     [gameKey]
   );
   let game = gameQ.rows[0];
@@ -213,7 +218,7 @@ export async function placeFreeBet(
   } else if (eligiblePools && eligiblePools.length) {
     const poolOk = eligiblePools
       .map((s) => String(s).toLowerCase())
-      .includes(gameKey);
+      .includes(gameKey.toLowerCase());
     if (!poolOk) {
       throw new PlaceFreeBetException("POOL_INELIGIBLE", { reason: "pool_not_allowed" });
     }
