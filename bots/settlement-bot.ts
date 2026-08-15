@@ -330,17 +330,26 @@ type GameMeta = {
   teamB?: string;
 };
 
+// The v1 AMM settler only handles v1 pools. A v2 game's `contractAddress` is the
+// shared Exchange, which has NONE of the v1 pool methods — reading it just
+// reverts (require(false)), never caches as settled, and gets re-read every run.
+// With ~128 v2 games that's a massive wasted Alchemy eth_call loop every 5 min.
+// v2 games settle via settle-v2.js, so skip anything flagged v2 here.
+function isV1Pool(it: any): boolean {
+  return !!(it && it.contractAddress && it.v2 !== true);
+}
+
 function normalizeGameList(raw: any): GameMeta[] {
   const out: GameMeta[] = [];
   if (!raw) return out;
 
   if (!Array.isArray(raw) && typeof raw === "object" && raw.contractAddress) {
-    out.push(raw as GameMeta);
+    if (isV1Pool(raw)) out.push(raw as GameMeta);
     return out;
   }
 
   if (Array.isArray(raw)) {
-    for (const it of raw) if (it && it.contractAddress) out.push(it as GameMeta);
+    for (const it of raw) if (isV1Pool(it)) out.push(it as GameMeta);
     return out;
   }
 
@@ -348,7 +357,7 @@ function normalizeGameList(raw: any): GameMeta[] {
     for (const arr of Object.values(raw)) {
       if (Array.isArray(arr)) {
         for (const it of arr) {
-          if (it && it.contractAddress) out.push(it as GameMeta);
+          if (isV1Pool(it)) out.push(it as GameMeta);
         }
       }
     }
