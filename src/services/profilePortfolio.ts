@@ -16,7 +16,7 @@ import { pool } from "../db";
 /* ===================== Types ===================== */
 
 export type League = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL";
-export type Range = "ALL" | "D90" | "D30";
+export type Range = "ALL" | "D90" | "D60" | "D30" | "D7";
 export type TradeType = "BUY" | "SELL" | "CLAIM";
 
 export type TradeEvent = {
@@ -76,11 +76,15 @@ function clampLeague(v: any): League {
 
 function clampRange(v: any): Range {
   const s = String(v ?? "ALL").toUpperCase();
-  return (["ALL", "D90", "D30"] as const).includes(s as any) ? (s as Range) : "ALL";
+  return (["ALL", "D90", "D60", "D30", "D7"] as const).includes(s as any)
+    ? (s as Range)
+    : "ALL";
 }
 
 function rangeWindowSeconds(range: Range): number | null {
+  if (range === "D7") return 7 * 24 * 60 * 60;
   if (range === "D30") return 30 * 24 * 60 * 60;
+  if (range === "D60") return 60 * 24 * 60 * 60;
   if (range === "D90") return 90 * 24 * 60 * 60;
   return null;
 }
@@ -765,6 +769,11 @@ export async function buildProfilePortfolio(req: Request) {
   // changed as you paginated. This query covers the full window regardless of
   // pagination.
   let roiNet: number | null = null;
+  // Realized-ledger sums exposed alongside roiNet so callers can render a $
+  // P&L that agrees with the % by construction:
+  //   realizedPnl = realizedReturn − realizedTraded;  roiNet = ratio − 1.
+  let realizedTraded = 0;
+  let realizedReturn = 0;
   try {
     const endTs = anchorTs ?? Math.floor(Date.now() / 1000);
     const winSec = rangeWindowSeconds(range);
@@ -782,9 +791,9 @@ export async function buildProfilePortfolio(req: Request) {
     const roiParams: any[] = [userLower, startTs, endTs];
     if (league !== "ALL") roiParams.push(league);
     const { rows: roiRows } = await pool.query(roiSql, roiParams);
-    const totalTraded = Number(roiRows?.[0]?.total_traded) || 0;
-    const totalReturn = Number(roiRows?.[0]?.total_return) || 0;
-    roiNet = totalTraded > 0 ? totalReturn / totalTraded - 1 : null;
+    realizedTraded = Number(roiRows?.[0]?.total_traded) || 0;
+    realizedReturn = Number(roiRows?.[0]?.total_return) || 0;
+    roiNet = realizedTraded > 0 ? realizedReturn / realizedTraded - 1 : null;
   } catch (e) {
     console.error("[profilePortfolio] realized ROI query failed:", e);
   }
@@ -813,6 +822,9 @@ export async function buildProfilePortfolio(req: Request) {
       wonFinal,
       pnlNet,
       roiNet,
+      realizedTraded,
+      realizedReturn,
+      realizedPnl: realizedReturn - realizedTraded,
       mostBetLeague,
     },
 
