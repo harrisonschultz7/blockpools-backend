@@ -872,6 +872,61 @@ router.get("/by-id", authPrivyOptional, async (req: AuthedRequest, res: Response
 });
 
 /**
+ * GET /api/profile/search?q=<username|wallet>&limit=10
+ * Public trader search for the header search bar.
+ * - username / display_name: case-insensitive "contains" match
+ * - primary_address / eoa_address: case-insensitive prefix match
+ * NOTE: keep registered before any "/:profileId"-style catch-all route.
+ */
+router.get("/search", async (req: AuthedRequest, res: Response) => {
+  try {
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 25);
+
+    if (q.length < 2) return res.json([]);
+
+    // Escape ILIKE wildcards in user input
+    const escaped = q.replace(/[\\%_]/g, (m) => `\\${m}`);
+    const contains = `%${escaped}%`;
+    const addrPrefix = `${escaped}%`;
+
+    const result = await pool.query(
+      `
+      SELECT
+        u.id,
+        u.primary_address,
+        u.eoa_address,
+        u.username,
+        u.display_name,
+        u.avatar_url,
+        u.created_at,
+        u.updated_at,
+        (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) AS "followersCount"
+      FROM users u
+      WHERE u.username     ILIKE $1 ESCAPE '\\'
+         OR u.display_name ILIKE $1 ESCAPE '\\'
+         OR u.primary_address ILIKE $2 ESCAPE '\\'
+         OR u.eoa_address     ILIKE $2 ESCAPE '\\'
+      ORDER BY
+        (u.username ILIKE $3 ESCAPE '\\') DESC,  -- prefix matches first
+        (SELECT COUNT(*) FROM user_follows WHERE following_id = u.id) DESC,
+        u.username ASC NULLS LAST
+      LIMIT $4
+      `,
+      [contains, addrPrefix, addrPrefix, limit]
+    );
+
+    const publicBaseUrl = getPublicBaseUrl(req);
+    return res.json(
+      (result.rows || []).map((r: any) => normalizeProfileRow(r, publicBaseUrl))
+    );
+  } catch (err) {
+    console.error("[GET /api/profile/search] error", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
  * POST /api/profile/:profileId/follow
  */
 router.post("/:profileId/follow", authPrivy, async (req: AuthedRequest, res: Response) => {
