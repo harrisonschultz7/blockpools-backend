@@ -41,9 +41,10 @@ const OPEN_TTL_MS      = 60_000; // open markets: per-side counts cached this lo
 //
 // hot   = the user's HOT_STREAK_LEN most-recent RESOLVED picks in the league were
 //         all wins. A "pick" per game is the outcome the user staked the most on.
-// sharp = 30-day ROI >= SHARP_ROI_PCT with >= SHARP_MIN_TRADES settled trades.
-//         Mirrors computeLiveRoi() in leagueChat.ts exactly, but grouped by
-//         (effective_user_address, league).
+// sharp = 30-day REALIZED ROI >= SHARP_ROI_PCT with >= SHARP_MIN_TRADES
+//         realized events. Reads public.user_realized_events (same canonical
+//         ledger as computeLiveRoi() in leagueChat.ts and masterMetrics.ts),
+//         grouped by (user_address, league).
 // A user qualifying for both is stored as 'hot' (Hot > Sharp); Whale is layered
 // on per-position at read time.
 
@@ -92,26 +93,18 @@ const REBUILD_SQL = `
     GROUP BY addr, league
     HAVING COUNT(*) = $2 AND bool_and(won)
   ),
-  filtered AS (
-    SELECT LOWER(e.effective_user_address) AS addr,
-           g.league AS league,
-           e.type, g.is_final, g.resolution_type,
-           COALESCE(e.gross_in_dec, 0)          AS gross_in,
-           COALESCE(e.net_out_dec, 0)           AS net_out,
-           COALESCE(e.cost_basis_closed_dec, 0) AS cost_basis_closed
-    FROM public.user_trade_events e
-    JOIN public.games g ON g.game_id = e.game_id
-    WHERE e.timestamp >= $1
-  ),
   agg AS (
-    SELECT addr, league,
-      ( COALESCE(SUM(gross_in)          FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
-        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
-      ) AS total_traded,
-      COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL', 'CLAIM')), 0) AS total_return,
-      COUNT(*) FILTER (WHERE type = 'BUY' AND is_final = true)           AS trades_settled
-    FROM filtered
-    GROUP BY addr, league
+    -- Canonical realized ROI (public.user_realized_events): each realized
+    -- return arrives WITH its matched stake, windowed on realized_at (when the
+    -- position closed). Mirrors computeLiveRoi() in leagueChat.ts and
+    -- masterMetrics.ts exactly.
+    SELECT user_address AS addr, league,
+      COALESCE(SUM(realized_cost),   0) AS total_traded,
+      COALESCE(SUM(realized_return), 0) AS total_return,
+      COUNT(*)                          AS trades_settled
+    FROM public.user_realized_events
+    WHERE realized_at >= $1
+    GROUP BY user_address, league
   ),
   sharp AS (
     SELECT addr, league

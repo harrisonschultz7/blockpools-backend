@@ -9,18 +9,28 @@ import {
 /**
  * IMPORTANT:
  * - Leaderboard totals must match Profile page totals.
- * - Profile totals are computed from the canonical backend ledger:
- *   public.user_trade_events + public.games
  *
- * Canonical semantics (MATCH tradeAggRoutes.ts):
- * - Total Traded = SUM(gross_in_dec) WHERE type='BUY'
- * - Total Return (cash back) = SUM(net_out_dec) WHERE type IN ('SELL','CLAIM')
- * - ROI = (TotalReturn / TotalTraded) - 1
+ * Two ledgers, two purposes:
  *
- * KEY FIX (multi-outcome + upcoming games compatibility):
- * - Range windows MUST be applied to the TRADE EVENT timestamp (e.timestamp),
- *   not the game lock time. Filtering by g.lock_time incorrectly excludes
- *   trades on games that haven't locked yet (common for EPL/UCL three-way).
+ * ACTIVITY (volume) — public.user_trade_events windowed on e.timestamp:
+ * - Total Traded = SUM(gross_in_dec) over BUYs placed in the window (open or
+ *   settled — it's an activity stat). Also feeds betsCount, games touched,
+ *   favoriteLeague and the GROSS_VOLUME/TOTAL_STAKED sorts.
+ *
+ * PERFORMANCE (ROI) — public.user_realized_events windowed on realized_at
+ * (see db/migrations/2026-08-16_user_realized_events.sql; shared with the
+ * league-chat expert gate, social tags and profile stats):
+ * - One row per realized cash event (SELL / CLAIM / LOSS) with the buy cost
+ *   basis MATCHED to it (average-cost per user+game+outcome cohort).
+ * - ROI = SUM(realized_return) / SUM(realized_cost) - 1, windowed by when the
+ *   position CLOSED (sell time, claim time, or game settlement for losses).
+ *   A payout can never appear in a window without the stake that produced it —
+ *   this is what fixed the 1,098%-style inflated 30d ROIs.
+ * - Open positions and unclaimed winnings are excluded; promo free-bet events
+ *   are excluded (user staked nothing).
+ *
+ * The Return columns (returnAmount/claimReturn/sellReturn) come from the
+ * realized ledger so they always pair coherently with roiNet.
  */
 
 type RangeKey = "ALL" | "D30" | "D90";
@@ -106,19 +116,19 @@ function cacheSet<T>(key: string, val: T, ttlMs: number) {
 export type LeaderboardRowApi = {
   id: string;
 
-  // Total Traded (Profile-consistent): BUY gross only
+  // Total Traded (ACTIVITY): BUY gross placed in the window, open or settled
   tradedGross: number;
 
-  // ✅ Explicit Return fields (prevents UI binding mistakes)
-  returnAmount: number; // SELL net_out + CLAIM net_out (canonical "Return")
-  claimReturn: number; // CLAIM net_out only
-  sellReturn: number; // SELL net_out only
+  // ✅ Explicit Return fields (REALIZED ledger — pairs with roiNet)
+  returnAmount: number; // realized SELL + CLAIM returns (canonical "Return")
+  claimReturn: number; // realized CLAIM returns only
+  sellReturn: number; // realized SELL returns only
 
   // Legacy fields (keep for UI compat)
   claimsFinal: number; // some UI uses as "return"
   wonFinal?: number; // some UI uses as "return"
 
-  // ROI = (return / totalBuy) - 1
+  // ROI = realized_return / realized_cost - 1 (matched-cohort, realized only)
   roiNet: number | null;
 
   tradesNet: number; // games touched
@@ -140,12 +150,14 @@ export type LeaderboardRowApi = {
 
 type DbAggRow = {
   user_id: string;
-  buy_gross: string | number | null;
-  claim_total: string | number | null;
-  sell_net_out: string | number | null; // net_out for SELL (cash back)
-  trade_count: string | number | null; // BUY+SELL event count
+  buy_gross: string | number | null; // ACTIVITY: BUY gross placed in window
+  trade_count: string | number | null; // ACTIVITY: BUY+SELL event count
   games_touched: string | number | null;
-  last_ts: string | number | null; // last TRADE EVENT ts (not lock_time)
+  last_ts: string | number | null; // last TRADE EVENT ts in window
+  // PERFORMANCE (realized ledger):
+  realized_cost: string | number | null;
+  realized_claim: string | number | null; // realized return from CLAIM events
+  realized_sell: string | number | null; // realized return from SELL events
 };
 
 async function getCandidateUsersFromDb(params: {
@@ -157,7 +169,8 @@ async function getCandidateUsersFromDb(params: {
   const max = Math.max(1, Math.min(params.limit, 2000));
 
   // ✅ Candidate selection = users with most recent TRADE EVENT in window
-  // (NOT game lock_time)
+  // (activity-based, so users with only-open positions still surface — their
+  // roiNet is simply null until something realizes).
   //
   // Key on effective_user_address (= COALESCE(beneficiary_address, user_address))
   // so promo (free-bet) activity funded by the promo wallet is attributed to the
@@ -201,93 +214,94 @@ async function fetchLeaderboardAggFromDb(params: {
     return { byUser: new Map(), buyByUserLeague: new Map() };
   }
 
-  // ✅ Main per-user rollup (canonical) — window by e.timestamp
-  // Key on effective_user_address so a user's promo (free-bet) BUY — funded by
-  // the promo wallet but stamped with beneficiary_address = the user — counts in
-  // buy_gross alongside the matching promo CLAIM (also attributed to the user).
-  // Keying on user_address counted the promo win but not the promo stake,
-  // inflating ROI.
-  const sqlAgg = `
-    WITH filtered AS (
-      SELECT
-        LOWER(e.effective_user_address) AS user_id,
-        g.league AS league,
-        e.game_id,
-        e.type,
-        g.is_final,
-        g.resolution_type,
-        (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in,
-        (CASE WHEN e.net_out_dec  IS NULL THEN 0 ELSE e.net_out_dec::numeric  END) AS net_out,
-        (CASE WHEN e.cost_basis_closed_dec IS NULL THEN 0 ELSE e.cost_basis_closed_dec::numeric END) AS cost_basis_closed,
-        e.timestamp::bigint AS ts
-      FROM public.user_trade_events e
-      JOIN public.games g ON g.game_id = e.game_id
-      WHERE e.timestamp >= $1
-        AND e.timestamp <= $2
-        AND g.league = ANY($3::text[])
-        AND LOWER(e.effective_user_address) = ANY($4::text[])
-    )
+  // ✅ ACTIVITY rollup — all trades PLACED in the window (e.timestamp), open or
+  // settled. This is what Total Traded / bets / games-touched display.
+  const sqlActivity = `
     SELECT
-      user_id,
-      -- Realized buy gross:
-      --   1) BUY rows where game is final (won/lost/claimed)
-      --   2) cost_basis_closed from SELL rows where game NOT yet final (sold before settlement)
-      -- Using is_final=false on the SELL filter avoids double-counting positions
-      -- that were sold AND then also settled/claimed after game ended.
-      (
-        COALESCE(SUM(gross_in) FILTER (WHERE type = 'BUY' AND is_final = true AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
-        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
-      )::numeric AS buy_gross,
-      SUM(net_out)  FILTER (WHERE type = 'CLAIM')::numeric     AS claim_total,
-      SUM(net_out)  FILTER (WHERE type = 'SELL')::numeric      AS sell_net_out,
-      COUNT(*)      FILTER (WHERE type IN ('BUY','SELL'))::int AS trade_count,
-      COUNT(DISTINCT game_id)::int                             AS games_touched,
-      MAX(ts)::bigint                                          AS last_ts
-    FROM filtered
-    GROUP BY user_id
+      LOWER(e.effective_user_address) AS user_id,
+      COALESCE(SUM(CASE WHEN e.type = 'BUY' THEN COALESCE(e.gross_in_dec::numeric, 0) ELSE 0 END), 0) AS buy_gross,
+      COUNT(*)      FILTER (WHERE e.type IN ('BUY','SELL'))::int AS trade_count,
+      COUNT(DISTINCT e.game_id)::int                             AS games_touched,
+      MAX(e.timestamp)::bigint                                   AS last_ts
+    FROM public.user_trade_events e
+    JOIN public.games g ON g.game_id = e.game_id
+    WHERE e.timestamp >= $1
+      AND e.timestamp <= $2
+      AND g.league = ANY($3::text[])
+      AND LOWER(e.effective_user_address) = ANY($4::text[])
+    GROUP BY LOWER(e.effective_user_address)
   `;
 
-  const resAgg = await pool.query(sqlAgg, [
-    params.start,
-    params.end,
-    params.leagues,
-    params.users,
+  // ✅ PERFORMANCE rollup — canonical realized ledger, windowed on realized_at.
+  // Every realized_return arrives WITH its matched realized_cost, so a payout
+  // can never be orphaned from its stake (the old ROI-inflation bug).
+  const sqlRealized = `
+    SELECT
+      user_address AS user_id,
+      COALESCE(SUM(realized_cost), 0)::numeric AS realized_cost,
+      COALESCE(SUM(realized_return) FILTER (WHERE kind = 'CLAIM'), 0)::numeric AS realized_claim,
+      COALESCE(SUM(realized_return) FILTER (WHERE kind = 'SELL'),  0)::numeric AS realized_sell
+    FROM public.user_realized_events
+    WHERE realized_at >= $1
+      AND realized_at <= $2
+      AND league = ANY($3::text[])
+      AND user_address = ANY($4::text[])
+    GROUP BY user_address
+  `;
+
+  const sqlParams = [params.start, params.end, params.leagues, params.users];
+  const [resActivity, resRealized] = await Promise.all([
+    pool.query(sqlActivity, sqlParams),
+    pool.query(sqlRealized, sqlParams),
   ]);
 
   const byUser = new Map<string, DbAggRow>();
-  for (const r of resAgg.rows || []) {
+  for (const r of resActivity.rows || []) {
     const u = asLower(r.user_id);
     if (!u) continue;
-    byUser.set(u, r as DbAggRow);
+    byUser.set(u, {
+      user_id: u,
+      buy_gross: r.buy_gross,
+      trade_count: r.trade_count,
+      games_touched: r.games_touched,
+      last_ts: r.last_ts,
+      realized_cost: 0,
+      realized_claim: 0,
+      realized_sell: 0,
+    });
+  }
+  for (const r of resRealized.rows || []) {
+    const u = asLower(r.user_id);
+    if (!u) continue;
+    const row = byUser.get(u) || {
+      user_id: u,
+      buy_gross: 0,
+      trade_count: 0,
+      games_touched: 0,
+      last_ts: 0,
+      realized_cost: 0,
+      realized_claim: 0,
+      realized_sell: 0,
+    };
+    row.realized_cost = r.realized_cost;
+    row.realized_claim = r.realized_claim;
+    row.realized_sell = r.realized_sell;
+    byUser.set(u, row);
   }
 
-  // ✅ Buy volume by (user,league) for favoriteLeague — window by e.timestamp
+  // ✅ ACTIVITY buy volume by (user,league) for favoriteLeague — e.timestamp window
   const sqlLeague = `
-    WITH filtered AS (
-      SELECT
-        LOWER(e.effective_user_address) AS user_id,
-        g.league AS league,
-        e.type,
-        g.is_final,
-        g.resolution_type,
-        (CASE WHEN e.gross_in_dec IS NULL THEN 0 ELSE e.gross_in_dec::numeric END) AS gross_in,
-        (CASE WHEN e.cost_basis_closed_dec IS NULL THEN 0 ELSE e.cost_basis_closed_dec::numeric END) AS cost_basis_closed
-      FROM public.user_trade_events e
-      JOIN public.games g ON g.game_id = e.game_id
-      WHERE e.timestamp >= $1
-        AND e.timestamp <= $2
-        AND g.league = ANY($3::text[])
-        AND LOWER(e.effective_user_address) = ANY($4::text[])
-    )
     SELECT
-      user_id,
-      league,
-      (
-        COALESCE(SUM(gross_in) FILTER (WHERE type='BUY' AND is_final = true AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
-        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
-      )::numeric AS buy_gross
-    FROM filtered
-    GROUP BY user_id, league
+      LOWER(e.effective_user_address) AS user_id,
+      g.league AS league,
+      COALESCE(SUM(CASE WHEN e.type = 'BUY' THEN COALESCE(e.gross_in_dec::numeric, 0) ELSE 0 END), 0) AS buy_gross
+    FROM public.user_trade_events e
+    JOIN public.games g ON g.game_id = e.game_id
+    WHERE e.timestamp >= $1
+      AND e.timestamp <= $2
+      AND g.league = ANY($3::text[])
+      AND LOWER(e.effective_user_address) = ANY($4::text[])
+    GROUP BY LOWER(e.effective_user_address), g.league
   `;
 
   const resLeague = await pool.query(sqlLeague, [
@@ -327,9 +341,9 @@ export async function getLeaderboardUsers(params: {
 
   const limit = Math.max(1, Math.min(params.limit || 250, 500));
 
-  // ✅ bump cache version (window semantics changed: lock_time -> timestamp)
+  // ✅ bump cache version (semantics: activity volume + realized ROI)
   const key = cacheKey({
-    v: "lb_users_db_v5_effective_user_address",
+    v: "lb_users_db_v7_activity_vol_realized_roi",
     league: params.league,
     range: params.range,
     sort: params.sort,
@@ -384,20 +398,23 @@ export async function getLeaderboardUsers(params: {
       ({
         user_id: u,
         buy_gross: 0,
-        claim_total: 0,
-        sell_net_out: 0,
         trade_count: 0,
         games_touched: 0,
         last_ts: 0,
+        realized_cost: 0,
+        realized_claim: 0,
+        realized_sell: 0,
       } as DbAggRow);
 
+    // ACTIVITY: Total Traded = BUYs placed in window (open or settled)
     const totalBuy = toNum(r.buy_gross);
-    const claimTotal = toNum(r.claim_total);
-    const sellNetOut = toNum(r.sell_net_out);
 
-    // Canonical: "Total Return" = CLAIM net_out + SELL net_out
+    // PERFORMANCE: realized returns paired with their matched stakes
+    const realizedCost = toNum(r.realized_cost);
+    const claimTotal = toNum(r.realized_claim);
+    const sellNetOut = toNum(r.realized_sell);
     const totalReturn = claimTotal + sellNetOut;
-    const roiNet = totalBuy > 0 ? totalReturn / totalBuy - 1 : null;
+    const roiNet = realizedCost > 0 ? totalReturn / realizedCost - 1 : null;
 
     // favorite league by BUY gross
     let fav: string | null = null;
