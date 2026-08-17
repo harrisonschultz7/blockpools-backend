@@ -394,6 +394,16 @@ function addDaysISO(iso, days) {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
+// resolveTargets runs EVERY tick (2s), so its per-target discovery/config
+// messages must print once per unique key, not once per tick — unthrottled they
+// flooded journald with ~19 lines/tick (~800k lines/day).
+const _loggedOnce = new Set();
+function logOnce(key, msg) {
+  if (_loggedOnce.has(key)) return;
+  _loggedOnce.add(key);
+  console.log(msg);
+}
+
 // gameId -> resolved slug (positive, permanent); and a negative-result backoff.
 const _slugCache = new Map();
 const _slugNextProbe = new Map();
@@ -496,8 +506,8 @@ function resolveTargets(config, games) {
   for (const m of config.markets || []) {
     const g = games.find((x) =>
       (m.gameId && x.gameId === m.gameId) || (m.slug && x.slug === m.slug) || (m.marketId && x.marketId === m.marketId));
-    if (!g) { console.warn(`  ⚠️  no v2 game found for ${m.gameId || m.slug || m.marketId} — skipping`); continue; }
-    if (!g.marketId) { console.warn(`  ⚠️  ${g.gameId} has no marketId — skipping`); continue; }
+    if (!g) { logOnce(`nogame:${m.gameId || m.slug || m.marketId}`, `  ⚠️  no v2 game found for ${m.gameId || m.slug || m.marketId} — skipping`); continue; }
+    if (!g.marketId) { logOnce(`nomkt:${g.gameId}`, `  ⚠️  ${g.gameId} has no marketId — skipping`); continue; }
     add(g, m.polymarketSlug || null, m.params);
   }
 
@@ -539,10 +549,10 @@ function resolveTargets(config, games) {
   for (const p of config.props || []) {
     const g = games.find((x) =>
       (p.gameId && x.gameId === p.gameId) || (p.slug && x.slug === p.slug) || (p.marketId && x.marketId === p.marketId));
-    if (!g) { console.warn(`  ⚠️  no v2 prop game for ${p.gameId || p.slug} — skipping`); continue; }
-    if (!p.polymarketSlug) { console.warn(`  ⚠️  prop ${g.gameId} has no polymarketSlug — skipping`); continue; }
+    if (!g) { logOnce(`noprop:${p.gameId || p.slug}`, `  ⚠️  no v2 prop game for ${p.gameId || p.slug} — skipping`); continue; }
+    if (!p.polymarketSlug) { logOnce(`noslug:${g.gameId}`, `  ⚠️  prop ${g.gameId} has no polymarketSlug — skipping`); continue; }
     const outs = Array.isArray(g.outcomes) ? g.outcomes : [];
-    if (!outs.length) { console.warn(`  ⚠️  prop ${g.gameId} has no outcomes[] — skipping`); continue; }
+    if (!outs.length) { logOnce(`noouts:${g.gameId}`, `  ⚠️  prop ${g.gameId} has no outcomes[] — skipping`); continue; }
     const params = { ...propPhase, ...(p.params || {}) };
     let n = 0;
     for (const oc of outs) {
@@ -565,7 +575,7 @@ function resolveTargets(config, games) {
       });
       n++;
     }
-    console.log(`  ↳ prop ${g.gameId} → ${p.polymarketSlug} (${n} outcomes)`);
+    logOnce(`prop:${g.gameId}`, `  ↳ prop ${g.gameId} → ${p.polymarketSlug} (${n} outcomes)`);
   }
 
   return out;

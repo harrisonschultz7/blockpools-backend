@@ -145,12 +145,5 @@
   "marketTtlSec": 300,
   "sharesTtlSec": 60,
   "maxRpcReadsPerSec": 3,
-  "markets": [
-    {
-      "_comment": "Optional pinned games / slug overrides. Keeping the NFL HOF game so the bot cleanly flattens any leftover orders from the earlier test, then retires it.",
-      "gameId": "NFL-CAR-ARI-2026-08-06-1786060800",
-      "polymarketSlug": "nfl-car-ari-2026-08-07",
-      "params": {}
-    }
-  ]
+  "markets": []
 }
