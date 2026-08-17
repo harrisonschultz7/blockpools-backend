@@ -1,9 +1,8 @@
 {
   "_comment": "Live Polymarket-priced order-book seeding bot. `autoLeagues` auto-seeds ALL v2 games of those leagues inside the active window [kickoff - preSeedLeadHours, kickoff + maxGameHours]; `markets[]` pins specific games or overrides a Polymarket slug. Each game reprices at pre.cadenceSec before kickoff and live.cadenceSec once started, then STOPS (flatten) when it resolves, Polymarket closes it, or it passes maxGameHours. maxExposureUsd is PER GAME notional — the wallet's USDC balance is the true global cap across all games. Edits apply live (config re-read each tick).",
-
   "defaults": {
     "live": {
-      "_comment": "In-play: tighter exposure, wider spread, 2s cadence.",
+      "_comment": "In-play: tighter exposure, wider spread, 2s cadence. maxFairSpreadCents: if Polymarket's own book is wider than this, its midpoint is not a real price — the bot goes flat instead of seeding it and probes again every uninformativeRetrySec.",
       "rungs": 3,
       "topSpreadCents": 2,
       "stepCents": 1,
@@ -12,7 +11,9 @@
       "repriceDeadbandCents": 1,
       "inventoryCapShares": 100,
       "mergeMinShares": 5,
-      "mergeCooldownSec": 30
+      "mergeCooldownSec": 30,
+      "maxFairSpreadCents": 20,
+      "uninformativeRetrySec": 60
     },
     "pre": {
       "_comment": "Pre-game (within preSeedNearHours of kickoff): tighter to fair, refresh every 60s.",
@@ -24,19 +25,23 @@
       "repriceDeadbandCents": 1,
       "inventoryCapShares": 150,
       "mergeMinShares": 5,
-      "mergeCooldownSec": 60
+      "mergeCooldownSec": 60,
+      "maxFairSpreadCents": 15,
+      "uninformativeRetrySec": 1800
     },
     "far": {
-      "_comment": "Early pre-game (preSeedNearHours..preSeedLeadHours out, i.e. games OUTSIDE 48h): same ladder as pre, just repriced once a day so far-out games carry fresh odds instead of 50/50, with negligible churn/cost. Falls back to `pre` if omitted.",
+      "_comment": "Early pre-game (preSeedNearHours..preSeedLeadHours out, i.e. games OUTSIDE 48h): same ladder as pre, repriced 4x/day (HTTP-only cost — pre-kickoff there are no sharesOf RPC reads, and the 1¢ deadband means a stable line posts nothing; set cadenceSec 86400 for strictly once-daily). Polymarket pre-opens far-out MLB games with a placeholder 13/87 book whose midpoint is exactly 50 — maxFairSpreadCents rejects that, so those games stay UNSEEDED (no mispriced 50/50 liquidity to pick off) and are probed every uninformativeRetrySec until the real book opens. Falls back to `pre` if omitted.",
       "rungs": 3,
       "topSpreadCents": 1,
       "stepCents": 1,
       "maxExposureUsd": 35,
-      "cadenceSec": 86400,
+      "cadenceSec": 21600,
       "repriceDeadbandCents": 1,
       "inventoryCapShares": 150,
       "mergeMinShares": 5,
-      "mergeCooldownSec": 60
+      "mergeCooldownSec": 60,
+      "maxFairSpreadCents": 15,
+      "uninformativeRetrySec": 21600
     },
     "prop": {
       "_comment": "Futures/props (LEAGUE_WINNER, e.g. division/champion). Applied PER OUTCOME — each outcome is its own binary Yes/No market, priced from the Polymarket event's per-team Yes. maxExposureUsd is PER OUTCOME, so total exposure ≈ maxExposureUsd × (sum of outcomes across all configured props). Slow hourly reprice, small size, wider spread since futures are illiquid and long-dated.",
@@ -48,43 +53,98 @@
       "repriceDeadbandCents": 1,
       "inventoryCapShares": 100,
       "mergeMinShares": 5,
-      "mergeCooldownSec": 120
+      "mergeCooldownSec": 120,
+      "maxFairSpreadCents": 15,
+      "uninformativeRetrySec": 21600
     }
   },
-
-  "autoLeagues": ["MLB", "NFL"],
+  "autoLeagues": [
+    "MLB",
+    "NFL"
+  ],
   "preSeedLeadHours": 168,
   "preSeedNearHours": 48,
   "maxGameHours": 5,
   "maxMarkets": 150,
-
   "_props_comment": "Multi-outcome futures to seed. Each maps a v2 LEAGUE_WINNER game (by gameId) to its Polymarket EVENT slug (polymarket.com/event/<slug>). The bot expands each into one bid ladder PER OUTCOME, pricing every outcome from that team's 'Will <team> win?' Yes midpoint in the event. Window-exempt (they seed year-round until the market resolves). Optional per-prop `params` overrides the `prop` phase defaults (e.g. maxExposureUsd).",
   "props": [
-    { "gameId": "NFL-CHAMPION-2027-1802647800", "polymarketSlug": "pro-football-2027-champion-20260729185915366" },
-    { "gameId": "NFL-AFCEAST-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-afc-east-champion" },
-    { "gameId": "NFL-AFCNORTH-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-afc-north-champion" },
-    { "gameId": "NFL-AFCSOUTH-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-afc-south-champion" },
-    { "gameId": "NFL-AFCWEST-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-afc-west-champion" },
-    { "gameId": "NFL-NFCEAST-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-nfc-east-champion" },
-    { "gameId": "NFL-NFCNORTH-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-nfc-north-champion" },
-    { "gameId": "NFL-NFCSOUTH-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-nfc-south-champion" },
-    { "gameId": "NFL-NFCWEST-DIVWINNER-2026-1799112000", "polymarketSlug": "pro-football-nfc-west-champion" },
-    { "gameId": "NBA-CHAMPION-2027-1813276800", "polymarketSlug": "nba-2027-champion" },
-    { "gameId": "NHL-CHAMPION-2027-1813104000", "polymarketSlug": "nhl-2027-champion-20260612185656162" },
-    { "gameId": "EPL-CHAMPION-2027-1811084400", "polymarketSlug": "epl-2027-champion-20260701200428749" },
-    { "gameId": "NFL-NFC-CHAMPION-SPECIAL-2027-1800820800", "polymarketSlug": "pro-football-2027-nfc-champion" },
-    { "gameId": "NFL-AFC-CHAMPION-SPECIAL-2027-1800833400", "polymarketSlug": "pro-football-2027-afc-champion" },
-    { "gameId": "NHL-EAST-CHAMPION-SPECIAL-2027-1811808000", "polymarketSlug": "nhl-2027-eastern-conference-champion-20260630185127005" },
-    { "gameId": "NHL-WEST-CHAMPION-SPECIAL-2027-1811808000", "polymarketSlug": "nhl-2027-western-conference-champion-20260630185319860" },
-    { "gameId": "NFL-MVP-SPECIAL-2026-1802394000", "polymarketSlug": "pro-football-2026-mvp-winner" },
-    { "gameId": "NBA-ROY-SPECIAL-2027-1807574400", "polymarketSlug": "nba-2026-27-rookie-of-the-year-20260624161716143" }
+    {
+      "gameId": "NFL-CHAMPION-2027-1802647800",
+      "polymarketSlug": "pro-football-2027-champion-20260729185915366"
+    },
+    {
+      "gameId": "NFL-AFCEAST-DIVWINNER-2026-1799112000",
+      "polymarketSlug": "pro-football-afc-east-champion"
+    },
+    {
+      "gameId": "NFL-AFCNORTH-DIVWINNER-2026-1799112000",
+      "polymarketSlug": "pro-football-afc-north-champion"
+    },
+    {
+      "gameId": "NFL-AFCSOUTH-DIVWINNER-2026-1799112000",
+      "polymarketSlug": "pro-football-afc-south-champion"
+    },
+    {
+      "gameId": "NFL-AFCWEST-DIVWINNER-2026-1799112000",
+      "polymarketSlug": "pro-football-afc-west-champion"
+    },
+    {
+      "gameId": "NFL-NFCEAST-DIVWINNER-2026-1799112000",
+      "polymarketSlug": "pro-football-nfc-east-champion"
+    },
+    {
+      "gameId": "NFL-NFCNORTH-DIVWINNER-2026-1799112000",
+      "polymarketSlug": "pro-football-nfc-north-champion"
+    },
+    {
+      "gameId": "NFL-NFCSOUTH-DIVWINNER-2026-1799112000",
+      "polymarketSlug": "pro-football-nfc-south-champion"
+    },
+    {
+      "gameId": "NFL-NFCWEST-DIVWINNER-2026-1799112000",
+      "polymarketSlug": "pro-football-nfc-west-champion"
+    },
+    {
+      "gameId": "NBA-CHAMPION-2027-1813276800",
+      "polymarketSlug": "nba-2027-champion"
+    },
+    {
+      "gameId": "NHL-CHAMPION-2027-1813104000",
+      "polymarketSlug": "nhl-2027-champion-20260612185656162"
+    },
+    {
+      "gameId": "EPL-CHAMPION-2027-1811084400",
+      "polymarketSlug": "epl-2027-champion-20260701200428749"
+    },
+    {
+      "gameId": "NFL-NFC-CHAMPION-SPECIAL-2027-1800820800",
+      "polymarketSlug": "pro-football-2027-nfc-champion"
+    },
+    {
+      "gameId": "NFL-AFC-CHAMPION-SPECIAL-2027-1800833400",
+      "polymarketSlug": "pro-football-2027-afc-champion"
+    },
+    {
+      "gameId": "NHL-EAST-CHAMPION-SPECIAL-2027-1811808000",
+      "polymarketSlug": "nhl-2027-eastern-conference-champion-20260630185127005"
+    },
+    {
+      "gameId": "NHL-WEST-CHAMPION-SPECIAL-2027-1811808000",
+      "polymarketSlug": "nhl-2027-western-conference-champion-20260630185319860"
+    },
+    {
+      "gameId": "NFL-MVP-SPECIAL-2026-1802394000",
+      "polymarketSlug": "pro-football-2026-mvp-winner"
+    },
+    {
+      "gameId": "NBA-ROY-SPECIAL-2027-1807574400",
+      "polymarketSlug": "nba-2026-27-rookie-of-the-year-20260624161716143"
+    }
   ],
-
   "_rpc_comment": "RPC budget controls (the bot's ONLY on-chain reads are vault.markets + sharesOf; Polymarket prices + order placement are HTTP, not RPC). Cached reads are reused for the TTL; sharesOf is skipped entirely pre-game. maxRpcReadsPerSec is a HARD ceiling — over it, cached values are served. Monthly worst case ~= maxRpcReadsPerSec x 2.63M reads (~26 CU each on Alchemy). At 3/s that's a ceiling ~205M CU/mo; real steady-state is a small fraction of that.",
   "marketTtlSec": 300,
   "sharesTtlSec": 60,
   "maxRpcReadsPerSec": 3,
-
   "markets": [
     {
       "_comment": "Optional pinned games / slug overrides. Keeping the NFL HOF game so the bot cleanly flattens any leftover orders from the earlier test, then retires it.",

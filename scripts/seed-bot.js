@@ -169,20 +169,34 @@ async function polyMeta(slug) {
   return meta;
 }
 
-/** CLOB midpoint (0..1) for one token; falls back to Gamma best bid/ask mid. */
-async function polyMidpoint(tokenId, slug, polyIdx) {
+/**
+ * Top-of-book for one CLOB token: { mid (0..1), spreadCents }. A midpoint alone
+ * is NOT a price — Polymarket pre-opens far-out game markets with a placeholder
+ * 13¢-bid/87¢-ask book whose midpoint is exactly 0.50, which the bot used to
+ * mistake for a real 50/50 line and seed a whole future slate at it. Reading the
+ * book instead lets the caller judge informativeness by the spread.
+ * Falls back to Gamma bestBid/bestAsk (outcome-0 oriented). Throws if neither
+ * source has a two-sided book.
+ */
+async function polyTop(tokenId, slug, polyIdx) {
   try {
-    const j = await getJson(`${POLY_CLOB}/midpoint?token_id=${tokenId}`);
-    const mid = Number(j.mid);
-    if (Number.isFinite(mid) && mid > 0 && mid < 1) return mid;
+    const b = await getJson(`${POLY_CLOB}/book?token_id=${tokenId}`);
+    const bids = Array.isArray(b?.bids) ? b.bids.map((e) => Number(e.price)).filter(Number.isFinite) : [];
+    const asks = Array.isArray(b?.asks) ? b.asks.map((e) => Number(e.price)).filter(Number.isFinite) : [];
+    if (bids.length && asks.length) {
+      const bb = Math.max(...bids), ba = Math.min(...asks);
+      const mid = (bb + ba) / 2;
+      if (mid > 0 && mid < 1) return { mid, spreadCents: (ba - bb) * 100 };
+    }
   } catch { /* fall through */ }
   // Fallback: Gamma bestBid/bestAsk on the market (outcome-0 oriented).
+  if (slug == null) throw new Error(`no CLOB book for token ${tokenId}`);
   const arr = await getJson(`${POLY_GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
   const m = Array.isArray(arr) ? arr[0] : arr;
   const bb = Number(m?.bestBid), ba = Number(m?.bestAsk);
   if (Number.isFinite(bb) && Number.isFinite(ba)) {
     const mid0 = (bb + ba) / 2; // this is outcome-0 (first token) oriented
-    return polyIdx === 0 ? mid0 : 1 - mid0;
+    return { mid: polyIdx === 0 ? mid0 : 1 - mid0, spreadCents: (ba - bb) * 100 };
   }
   throw new Error(`no Polymarket price for ${slug}`);
 }
@@ -190,9 +204,12 @@ async function polyMidpoint(tokenId, slug, polyIdx) {
 /**
  * Fair price (cents) for BlockPools outcome 0 (teamA), read live from Polymarket.
  * Aligns which Polymarket token is teamA by team name, so home/away can't flip.
- * Returns { fair0Cents, closed } or throws (→ dead-man's switch upstream).
+ * `uninformative` is set when the Polymarket book's spread exceeds
+ * maxSpreadCents (a placeholder / not-yet-open book) — the caller must NOT seed
+ * off that midpoint. Returns { fair0Cents, closed, uninformative, spreadCents }
+ * or throws (→ dead-man's switch upstream).
  */
-async function polyFair(slug, teamAName, teamBName) {
+async function polyFair(slug, teamAName, teamBName, maxSpreadCents) {
   const meta = await polyMeta(slug);
   let idxA = meta.outcomes.findIndex((o) => sameTeam(o, teamAName));
   if (idxA < 0) {
@@ -200,8 +217,9 @@ async function polyFair(slug, teamAName, teamBName) {
     if (idxB >= 0) idxA = idxB === 0 ? 1 : 0; // infer A as the other token
   }
   if (idxA < 0) throw new Error(`cannot align Polymarket outcomes [${meta.outcomes}] to ${teamAName}/${teamBName}`);
-  const midA = await polyMidpoint(meta.tokenIds[idxA], slug, idxA);
-  return { fair0Cents: clampCents(midA * 100), closed: meta.closed };
+  const { mid, spreadCents } = await polyTop(meta.tokenIds[idxA], slug, idxA);
+  const cap = Number(maxSpreadCents) > 0 ? Number(maxSpreadCents) : 15;
+  return { fair0Cents: clampCents(mid * 100), closed: meta.closed, uninformative: spreadCents > cap, spreadCents };
 }
 
 // ── Polymarket EVENT fair (multi-outcome futures / props) ───────────────────────
@@ -233,13 +251,7 @@ async function polyEventMeta(eventSlug) {
   return meta;
 }
 
-/** CLOB midpoint (0..1) for one token; throws on failure (no market-slug fallback). */
-async function clobMid(tokenId) {
-  const j = await getJson(`${POLY_CLOB}/midpoint?token_id=${tokenId}`);
-  const mid = Number(j.mid);
-  if (Number.isFinite(mid) && mid > 0 && mid < 1) return mid;
-  throw new Error(`no CLOB midpoint for token ${tokenId}`);
-}
+// (props read the CLOB book via polyTop — same informativeness guard as games)
 
 // Outcome-label → alternate name(s) for cases where Polymarket's sub-market
 // groupItemTitle differs from our display label. Polymarket still lists the Utah
@@ -255,7 +267,7 @@ const PROP_NAME_ALIASES = {
  * midpoint in the Polymarket event. Returns { fair0Cents, closed } or throws
  * (→ dead-man's switch flattens just that one outcome).
  */
-async function polyPropFair(eventSlug, teamName, teamCode) {
+async function polyPropFair(eventSlug, teamName, teamCode, maxSpreadCents) {
   const meta = await polyEventMeta(eventSlug);
   if (meta.closed) return { fair0Cents: 50, closed: true };
   // STRICT, name-only, and require EXACTLY one hit. 0 or >1 → throw (dead-man's
@@ -270,8 +282,9 @@ async function polyPropFair(eventSlug, teamName, teamCode) {
       `${hits.length === 0 ? "no" : hits.length + " ambiguous"} Polymarket sub-market(s) for "${teamName}" in ${eventSlug}`
     );
   }
-  const mid = await clobMid(hits[0].yesToken);
-  return { fair0Cents: clampCents(mid * 100), closed: !!hits[0].closed };
+  const { mid, spreadCents } = await polyTop(hits[0].yesToken, null, 0);
+  const cap = Number(maxSpreadCents) > 0 ? Number(maxSpreadCents) : 15;
+  return { fair0Cents: clampCents(mid * 100), closed: !!hits[0].closed, uninformative: spreadCents > cap, spreadCents };
 }
 
 // ── Matcher book ──────────────────────────────────────────────────────────────
@@ -730,14 +743,35 @@ async function reprice(tgt, ctx) {
 
   // 3) Live fair from Polymarket. Any failure = dead-man's switch (go flat).
   //    Games: one binary market (teamA vs teamB). Props: this outcome's team's
-  //    "Yes" (win) midpoint within the event.
+  //    "Yes" (win) midpoint within the event. Feed errors retry at
+  //    min(cadence, 15m) so a slow-cadence far game doesn't stall a whole
+  //    period on one transient error.
+  const feedRetryMs = Math.min(Number(params.cadenceSec || 2), 900) * 1000;
   let fair;
   try {
     fair = isProp
-      ? await polyPropFair(tgt.prop.eventSlug, tgt.prop.teamName, tgt.prop.teamCode)
-      : await polyFair(slug, game.teamAName || game.teamACode, game.teamBName || game.teamBCode);
-  } catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} feed error (${e.message}) → flat`, ended: false }; }
+      ? await polyPropFair(tgt.prop.eventSlug, tgt.prop.teamName, tgt.prop.teamCode, params.maxFairSpreadCents)
+      : await polyFair(slug, game.teamAName || game.teamACode, game.teamBName || game.teamBCode, params.maxFairSpreadCents);
+  } catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} feed error (${e.message}) → flat`, ended: false, retryMs: feedRetryMs }; }
   if (fair.closed) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} Polymarket closed → flat`, ended: true }; }
+
+  // 3.1) Placeholder book (spread wider than maxFairSpreadCents — Polymarket
+  // pre-opens far-out games at 13¢/87¢, midpoint exactly 50). That midpoint is
+  // NOT a price: seeding it would rest mispriced 50/50 liquidity for early
+  // bettors to pick off. Go flat (also pulls any stale mm-ladder 50/50 rungs)
+  // and probe again on uninformativeRetrySec until a real book appears — from
+  // then on the normal phase cadence takes over. No price snapshot is posted,
+  // so the chart doesn't record a bogus 50/50 line either.
+  if (fair.uninformative) {
+    await flatten(marketId, ctx); _lastTop.delete(marketId);
+    const retrySec = Number(params.uninformativeRetrySec) > 0
+      ? Number(params.uninformativeRetrySec)
+      : Math.max(300, Number(params.cadenceSec || 2));
+    return {
+      msg: `${label} Polymarket book not open yet (spread ${fair.spreadCents.toFixed(0)}¢) → flat (retry ${Math.round(retrySec / 60)}m)`,
+      ended: false, retryMs: retrySec * 1000,
+    };
+  }
 
   // Game phase — drives the snapshot heartbeat and whether we read inventory.
   const started = tgt.lockTime > 0 && Math.floor(Date.now() / 1000) >= tgt.lockTime;
