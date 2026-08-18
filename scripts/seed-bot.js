@@ -188,6 +188,21 @@ async function polyTop(tokenId, slug, polyIdx) {
       const mid = (bb + ba) / 2;
       if (mid > 0 && mid < 1) return { mid, spreadCents: (ba - bb) * 100 };
     }
+    // ONE-SIDED books still carry information at the extremes. Longshot futures
+    // outcomes (e.g. EPL FUL/IPS/HUL) often have ONLY asks — best ask 0.1¢,
+    // zero bids — which pins the price at ~0 as surely as a tight two-sided
+    // book would. Same, mirrored, for a near-certainty quoted only by ≥95¢
+    // bids. Without this, those outcomes threw "no CLOB book" and never seeded
+    // (empty book on our side while their peers show 1-3¢). A one-sided book
+    // in the MIDDLE of the range stays uninformative and falls through.
+    if (asks.length && !bids.length) {
+      const ba = Math.min(...asks);
+      if (ba > 0 && ba <= 0.05) return { mid: ba, spreadCents: 0 };
+    }
+    if (bids.length && !asks.length) {
+      const bb = Math.max(...bids);
+      if (bb >= 0.95 && bb < 1) return { mid: bb, spreadCents: 0 };
+    }
   } catch { /* fall through */ }
   // Fallback: Gamma bestBid/bestAsk on the market (outcome-0 oriented).
   if (slug == null) throw new Error(`no CLOB book for token ${tokenId}`);
