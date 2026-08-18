@@ -143,6 +143,30 @@
     {
       "gameId": "MLB-CHAMPION-2026-1793145600",
       "polymarketSlug": "mlb-world-series-champion-2026"
+    },
+    {
+      "gameId": "MLB-AL-CHAMPION-SPECIAL-2026-1791763200",
+      "polymarketSlug": "mlb-2026-american-league-champion"
+    },
+    {
+      "gameId": "MLB-NL-CHAMPION-SPECIAL-2026-1791763200",
+      "polymarketSlug": "mlb-2026-national-league-champion"
+    },
+    {
+      "gameId": "MLB-AL-MVP-SPECIAL-2026-1790553600",
+      "polymarketSlug": "pro-baseball-2026-al-mvp"
+    },
+    {
+      "gameId": "MLB-NL-MVP-SPECIAL-2026-1790553600",
+      "polymarketSlug": "mlb-2026-nl-mvp"
+    },
+    {
+      "gameId": "MLB-AL-CYYOUNG-SPECIAL-2026-1790553600",
+      "polymarketSlug": "mlb-2026-al-cy-young-winner"
+    },
+    {
+      "gameId": "MLB-NL-CYYOUNG-SPECIAL-2026-1790553600",
+      "polymarketSlug": "mlb-2026-nl-cy-young-winner"
     }
   ],
   "_rpc_comment": "RPC budget controls (the bot's ONLY on-chain reads are vault.markets + sharesOf; Polymarket prices + order placement are HTTP, not RPC). Cached reads are reused for the TTL; sharesOf is skipped entirely pre-game. maxRpcReadsPerSec is a HARD ceiling — over it, cached values are served. Monthly worst case ~= maxRpcReadsPerSec x 2.63M reads (~26 CU each on Alchemy). At 3/s that's a ceiling ~205M CU/mo; real steady-state is a small fraction of that.",
