@@ -4001,6 +4001,116 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "EPL-AVL-BHA-2026-08-23-1787490000",
+      "mids": {
+        "AVL": 40,
+        "DRAW": 27,
+        "BHA": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-BOU-MCI-2026-08-23-1787490000",
+      "mids": {
+        "BOU": 40,
+        "DRAW": 27,
+        "MCI": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-LIV-NEW-2026-08-23-1787499000",
+      "mids": {
+        "LIV": 40,
+        "DRAW": 27,
+        "NEW": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-HBS-SB-2026-08-25-1787676300",
+      "mids": {
+        "HBS": 40,
+        "DRAW": 27,
+        "SB": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-N-BG-2026-08-25-1787684400",
+      "mids": {
+        "N": 40,
+        "DRAW": 27,
+        "BG": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-C-L-2026-08-25-1787684400",
+      "mids": {
+        "C": 40,
+        "DRAW": 27,
+        "L": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-LS-AA-2026-08-26-1787770800",
+      "mids": {
+        "LS": 40,
+        "DRAW": 27,
+        "AA": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-SB-C-2026-08-26-1787770800",
+      "mids": {
+        "SB": 40,
+        "DRAW": 27,
+        "C": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-F-L-2026-08-26-1787770800",
+      "mids": {
+        "F": 40,
+        "DRAW": 27,
+        "L": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-DZ-V-2026-08-26-1787770800",
+      "mids": {
+        "DZ": 40,
+        "DRAW": 27,
+        "V": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
