@@ -62,6 +62,11 @@
     "MLB",
     "NFL"
   ],
+  "_autoThreeWay_comment": "Soccer 1X2 leagues: every in-window THREE_WAY group game (home/DRAW/away, each outcome its own binary market) is auto-seeded, priced from the Polymarket match EVENT discovered by team name (tag listing). Same far/pre/live phases as binary games; maxExposureUsd applies PER OUTCOME (3x per game).",
+  "autoThreeWayLeagues": [
+    "EPL",
+    "UCL"
+  ],
   "preSeedLeadHours": 168,
   "preSeedNearHours": 48,
   "maxGameHours": 5,

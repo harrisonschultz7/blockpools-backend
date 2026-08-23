@@ -275,6 +275,15 @@ async function polyEventMeta(eventSlug) {
 // canonName(label); each alt is also run through sameTeamStrict.
 const PROP_NAME_ALIASES = {
   "utah mammoth": ["Utah Hockey Club"],
+  // UCL/EPL three-way games: Goalserve names ↔ Polymarket event titles.
+  "din zagreb": ["Dinamo Zagreb", "GNK Dinamo Zagreb"],
+  "nijmegen": ["NEC"],
+  // ø is a standalone letter (not an NFD-decomposable accent), so canonName
+  // yields "bod glimt" from Polymarket's title — alias to their exact form.
+  "bodo glimt": ["FK Bodø/Glimt"],
+  "h beer sheva": ["Hapoel Be'er Sheva", "MH Hapoel Be'er Sheva"],
+  "sabah baku": ["Sabah FK"],
+  "lyon": ["Olympique Lyonnais"],
 };
 
 /**
@@ -463,6 +472,69 @@ async function resolvePolySlug(game) {
   _slugNextProbe.set(gid, Date.now() + 30 * 60_000);
   return null;
 }
+// ── Three-way (soccer 1X2) auto games ─────────────────────────────────────────
+// EPL/UCL matches are THREE_WAY groups: each outcome (home / DRAW / away) is
+// its own binary market. Polymarket models the same match as an EVENT with one
+// Yes/No sub-market per outcome plus a "Draw (…)" sub-market — the exact shape
+// polyPropFair already prices. Discovery can't probe slugs like binary games do
+// (Polymarket uses its OWN team codes: mac/bri/ast…), so we list the league's
+// open events by tag and match by TEAM NAMES instead.
+const TW_TAGS = { EPL: "epl", UCL: "ucl" };
+const _twListing = new Map();   // tag -> { at, events:[{slug,title}] }
+const _twSlugCache = new Map(); // gameId -> event slug (positive, permanent)
+const _twNextProbe = new Map(); // gameId -> ms (negative-result backoff)
+
+/** Open match events for a league tag (plain match slugs ending in a date —
+ *  the -halftime-result / -total-corners variants are filtered out). 10m cache
+ *  ⇒ one gamma call per league per 10 minutes regardless of game count. */
+async function twListingFor(league) {
+  const tag = TW_TAGS[league] || String(league).toLowerCase();
+  const c = _twListing.get(tag);
+  if (c && Date.now() - c.at < 10 * 60_000) return c.events;
+  const arr = await getJson(`${POLY_GAMMA}/events?tag_slug=${encodeURIComponent(tag)}&closed=false&limit=200`);
+  const events = (Array.isArray(arr) ? arr : [])
+    .filter((e) => /-\d{4}-\d{2}-\d{2}$/.test(String(e.slug || "")))
+    .map((e) => ({ slug: String(e.slug), title: String(e.title || "") }));
+  _twListing.set(tag, { at: Date.now(), events });
+  return events;
+}
+
+/**
+ * Find the Polymarket match EVENT for a three-way game: slug date within ±1 of
+ * ours (Polymarket dates by UTC) and BOTH team names strict-matching opposite
+ * sides of the event title ("Manchester City FC vs. AFC Bournemouth"), so we
+ * can never bind to the wrong fixture. PROP_NAME_ALIASES applies. Positive
+ * hits cache permanently; misses back off 30 min.
+ */
+async function resolveThreeWayEvent(game) {
+  const gid = String(game.gameId || "");
+  if (_twSlugCache.has(gid)) return _twSlugCache.get(gid);
+  if (Date.now() < (_twNextProbe.get(gid) || 0)) return null;
+  const base = String(game.date || (gid.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || "");
+  const dates = new Set(base ? [base, addDaysISO(base, 1), addDaysISO(base, -1)] : []);
+  const withAliases = (n) => [n, ...(PROP_NAME_ALIASES[canonName(n)] || [])];
+  const nA = withAliases(game.teamAName || game.teamACode || "");
+  const nB = withAliases(game.teamBName || game.teamBCode || "");
+  try {
+    for (const e of await twListingFor(String(game.league || "").toUpperCase())) {
+      const d = (e.slug.match(/(\d{4}-\d{2}-\d{2})$/) || [])[1];
+      if (!dates.has(d)) continue;
+      const [home, away] = e.title.split(/\s+vs\.?\s+/i);
+      if (!home || !away) continue;
+      const sideOf = (names) =>
+        names.some((n) => sameTeamStrict(home, n)) ? "h" : names.some((n) => sameTeamStrict(away, n)) ? "a" : null;
+      const sA = sideOf(nA), sB = sideOf(nB);
+      if (sA && sB && sA !== sB) {
+        _twSlugCache.set(gid, e.slug);
+        logOnce(`tw:${gid}`, `  ↳ ${gid} → Polymarket event ${e.slug}`);
+        return e.slug;
+      }
+    }
+  } catch { /* transient — fall through to backoff */ }
+  _twNextProbe.set(gid, Date.now() + 30 * 60_000);
+  return null;
+}
+
 /** kickoff epoch: explicit lockTime, else trailing -<epoch> of the gameId. */
 function lockTimeOf(g) {
   if (g.lockTime != null && Number(g.lockTime) > 0) return Number(g.lockTime);
@@ -553,6 +625,52 @@ function resolveTargets(config, games) {
       console.warn(`  ⚠️  ${inWindow.length} auto games in window; seeding all ${live.length} live + ${cap}/${pre.length} pre-game (cap is pre-game only)`);
     }
     for (const g of targets) add(g, null, null);
+  }
+
+  // Auto THREE-WAY soccer games (config.autoThreeWayLeagues, e.g. EPL/UCL) —
+  // group games with 3+ outcomes (home/DRAW/away), each outcome its own binary
+  // market. Windowed and phased like binary games (far→pre→live), priced like
+  // props from the discovered Polymarket match event (resolveThreeWayEvent).
+  const twLeagues = (config.autoThreeWayLeagues || []).map((s) => String(s).toUpperCase());
+  if (twLeagues.length) {
+    for (const g of games) {
+      if (!twLeagues.includes(String(g.league || "").toUpperCase())) continue;
+      // THREE_WAY match games ONLY — binary games belong to autoLeagues, and
+      // LEAGUE_WINNER/champion futures to config.props (which would otherwise
+      // collide here once their lockTime enters the window).
+      if (String(g.marketType || g.marketKind || "").toUpperCase() !== "THREE_WAY") continue;
+      const outs = Array.isArray(g.outcomes) ? g.outcomes : [];
+      if (outs.length < 3) continue;
+      const lt = lockTimeOf(g);
+      if (lt <= 0 || now < lt - leadSec || now > lt + maxGameSec) continue;
+      const params = phaseParams(g, null);
+      const nameFor = (oc) => {
+        if (String(oc.code || "").toUpperCase() === "DRAW") return "Draw";
+        if (oc.code === (g.teamACode || g.teamA)) return g.teamAName || oc.label || oc.code;
+        if (oc.code === (g.teamBCode || g.teamB)) return g.teamBName || oc.label || oc.code;
+        return oc.label || oc.code;
+      };
+      let n = 0;
+      for (const oc of outs) {
+        if (!oc.marketId) continue;
+        const key = String(oc.marketId).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          label: `${g.gameId} · ${oc.code || oc.label}`,
+          game: g, marketId: oc.marketId, slug: null, params, lockTime: lt,
+          threeWay: true,
+          prop: {
+            eventSlug: null, // discovered lazily in reprice (cached per gameId)
+            teamName: nameFor(oc),
+            teamCode: oc.code || null,
+            snapshotGameId: `${g.gameId}::${String(oc.code || oc.label).toUpperCase()}`,
+          },
+        });
+        n++;
+      }
+      if (n) logOnce(`twgame:${g.gameId}`, `  ↳ 3-way ${g.gameId} (${n} outcomes)`);
+    }
   }
 
   // Props (multi-outcome futures) — each configured event expands to ONE target
@@ -759,11 +877,17 @@ async function reprice(tgt, ctx) {
     return { msg: `${label} resolved → flat${redeeming ? " + redeem" : ""}`, ended: true };
   }
 
-  // 2) Resolve the Polymarket slug on first sight (auto GAMES only); cached after.
-  //    Props carry an explicit event slug (tgt.prop.eventSlug) — no discovery.
+  // 2) Resolve the Polymarket slug/event on first sight; cached after.
+  //    Binary auto games probe market slugs; three-way games discover their
+  //    match EVENT by team name; futures props carry an explicit event slug.
   if (!isProp && !slug) {
     slug = await resolvePolySlug(game);
     if (!slug) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} no Polymarket market yet → flat (retry 5m)`, ended: false, retryMs: 300_000 }; }
+  }
+  if (isProp && !tgt.prop.eventSlug) {
+    const es = await resolveThreeWayEvent(game);
+    if (!es) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} no Polymarket event yet → flat (retry 5m)`, ended: false, retryMs: 300_000 }; }
+    tgt.prop.eventSlug = es;
   }
 
   // 3) Live fair from Polymarket. Any failure = dead-man's switch (go flat).
@@ -806,7 +930,9 @@ async function reprice(tgt, ctx) {
   //    (matches the fills + /api/v2/chart), aBps = this outcome's Yes/win price.
   //    started=false so the pre-game (10min) heartbeat applies; since props
   //    reprice hourly, each reprice emits at most one point per outcome.
-  if (isProp) maybeSnapshot(tgt.prop.snapshotGameId, fair.fair0Cents, false, dry, 6 * 60 * 60 * 1000);
+  //  - Three-way games: per-outcome series like props, but with the GAME
+  //    heartbeat (they go live and move like games, not like futures).
+  if (isProp) maybeSnapshot(tgt.prop.snapshotGameId, fair.fair0Cents, tgt.threeWay ? started : false, dry, tgt.threeWay ? undefined : 6 * 60 * 60 * 1000);
   else maybeSnapshot(game.gameId, fair.fair0Cents, started, dry);
 
   // 3) Book + inventory. For games, inventory only accrues post-kickoff, so we
