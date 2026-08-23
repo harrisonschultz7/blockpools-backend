@@ -123,8 +123,8 @@ async function handleTradeAgg(req: any, res: any) {
      *  - 2 = Team B
      *
      * ✅ Legacy side mapping:
-     *  - For EPL/UCL: A->0, C->1, B->2
-     *  - Else:        A->0, B->1, C->2 (legacy tie)
+     *  - For EPL/UCL/WC: A->0, C->1, B->2  (soccer 3-way: DRAW is middle)
+     *  - Else:           A->0, B->1, C->2  (legacy tie)
      */
     const countSql = `
       WITH pos AS (
@@ -134,7 +134,7 @@ async function handleTradeAgg(req: any, res: any) {
           COALESCE(
             e.outcome_index,
             CASE
-              WHEN g.league IN ('EPL','UCL') THEN
+              WHEN g.league IN ('EPL','UCL','WC') THEN
                 CASE
                   WHEN e.side='A' THEN 0
                   WHEN e.side='C' THEN 1  -- DRAW
@@ -157,7 +157,7 @@ async function handleTradeAgg(req: any, res: any) {
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -176,7 +176,7 @@ async function handleTradeAgg(req: any, res: any) {
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -192,11 +192,11 @@ async function handleTradeAgg(req: any, res: any) {
                     END
                 END
               ) = 1 THEN
-                CASE WHEN g.league IN ('EPL','UCL') THEN 'DRAW' ELSE g.team_b_code END
+                CASE WHEN g.league IN ('EPL','UCL','WC') THEN 'DRAW' ELSE g.team_b_code END
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -212,7 +212,7 @@ async function handleTradeAgg(req: any, res: any) {
                     END
                 END
               ) = 2 THEN
-                CASE WHEN g.league IN ('EPL','UCL') THEN g.team_b_code ELSE 'TIE' END
+                CASE WHEN g.league IN ('EPL','UCL','WC') THEN g.team_b_code ELSE 'TIE' END
               ELSE NULL
             END
           ) AS outcome_code,
@@ -240,7 +240,7 @@ async function handleTradeAgg(req: any, res: any) {
           COALESCE(
             e.outcome_index,
             CASE
-              WHEN g.league IN ('EPL','UCL') THEN
+              WHEN g.league IN ('EPL','UCL','WC') THEN
                 CASE
                   WHEN e.side='A' THEN 0
                   WHEN e.side='C' THEN 1
@@ -262,7 +262,7 @@ async function handleTradeAgg(req: any, res: any) {
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -281,7 +281,7 @@ async function handleTradeAgg(req: any, res: any) {
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -297,11 +297,11 @@ async function handleTradeAgg(req: any, res: any) {
                     END
                 END
               ) = 1 THEN
-                CASE WHEN g.league IN ('EPL','UCL') THEN 'DRAW' ELSE g.team_b_code END
+                CASE WHEN g.league IN ('EPL','UCL','WC') THEN 'DRAW' ELSE g.team_b_code END
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -317,7 +317,7 @@ async function handleTradeAgg(req: any, res: any) {
                     END
                 END
               ) = 2 THEN
-                CASE WHEN g.league IN ('EPL','UCL') THEN g.team_b_code ELSE 'TIE' END
+                CASE WHEN g.league IN ('EPL','UCL','WC') THEN g.team_b_code ELSE 'TIE' END
               ELSE NULL
             END
           )
@@ -365,7 +365,7 @@ async function handleTradeAgg(req: any, res: any) {
           COALESCE(
             e.outcome_index,
             CASE
-              WHEN g.league IN ('EPL','UCL') THEN
+              WHEN g.league IN ('EPL','UCL','WC') THEN
                 CASE
                   WHEN e.side='A' THEN 0
                   WHEN e.side='C' THEN 1  -- DRAW
@@ -388,7 +388,7 @@ async function handleTradeAgg(req: any, res: any) {
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -407,7 +407,7 @@ async function handleTradeAgg(req: any, res: any) {
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -423,11 +423,11 @@ async function handleTradeAgg(req: any, res: any) {
                     END
                 END
               ) = 1 THEN
-                CASE WHEN g.league IN ('EPL','UCL') THEN 'DRAW' ELSE g.team_b_code END
+                CASE WHEN g.league IN ('EPL','UCL','WC') THEN 'DRAW' ELSE g.team_b_code END
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -443,7 +443,7 @@ async function handleTradeAgg(req: any, res: any) {
                     END
                 END
               ) = 2 THEN
-                CASE WHEN g.league IN ('EPL','UCL') THEN g.team_b_code ELSE 'TIE' END
+                CASE WHEN g.league IN ('EPL','UCL','WC') THEN g.team_b_code ELSE 'TIE' END
               ELSE NULL
             END
           ) AS outcome_code,
@@ -485,7 +485,7 @@ async function handleTradeAgg(req: any, res: any) {
           COALESCE(
             e.outcome_index,
             CASE
-              WHEN g.league IN ('EPL','UCL') THEN
+              WHEN g.league IN ('EPL','UCL','WC') THEN
                 CASE
                   WHEN e.side='A' THEN 0
                   WHEN e.side='C' THEN 1
@@ -507,7 +507,7 @@ async function handleTradeAgg(req: any, res: any) {
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -526,7 +526,7 @@ async function handleTradeAgg(req: any, res: any) {
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -542,11 +542,11 @@ async function handleTradeAgg(req: any, res: any) {
                     END
                 END
               ) = 1 THEN
-                CASE WHEN g.league IN ('EPL','UCL') THEN 'DRAW' ELSE g.team_b_code END
+                CASE WHEN g.league IN ('EPL','UCL','WC') THEN 'DRAW' ELSE g.team_b_code END
               WHEN COALESCE(
                 e.outcome_index,
                 CASE
-                  WHEN g.league IN ('EPL','UCL') THEN
+                  WHEN g.league IN ('EPL','UCL','WC') THEN
                     CASE
                       WHEN e.side='A' THEN 0
                       WHEN e.side='C' THEN 1
@@ -562,7 +562,7 @@ async function handleTradeAgg(req: any, res: any) {
                     END
                 END
               ) = 2 THEN
-                CASE WHEN g.league IN ('EPL','UCL') THEN g.team_b_code ELSE 'TIE' END
+                CASE WHEN g.league IN ('EPL','UCL','WC') THEN g.team_b_code ELSE 'TIE' END
               ELSE NULL
             END
           )

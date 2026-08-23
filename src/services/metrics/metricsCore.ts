@@ -24,7 +24,7 @@ export function computeWindow(range: RangeKey, anchorTs: number) {
 }
 
 export function leagueList(league: LeagueKey): string[] {
-  if (league === "ALL") return ["MLB", "NFL", "NBA", "NHL", "EPL", "UCL"];
+  if (league === "ALL") return ["MLB", "NFL", "NBA", "NHL", "EPL", "UCL", "WC"];
   return [league];
 }
 

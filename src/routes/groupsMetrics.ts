@@ -19,7 +19,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import * as groupMetricsService from "../services/metrics/groupMetrics";
 
 type RangeKey = "ALL" | "D30" | "D90";
-type LeagueKey = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL";
+type LeagueKey = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL" | "WC";
 
 const r = Router();
 
@@ -34,7 +34,7 @@ function parseRange(x: any): RangeKey {
 
 function parseLeague(x: any): LeagueKey {
   const v = String(x || "ALL").toUpperCase();
-  const allowed = new Set(["ALL", "MLB", "NFL", "NBA", "NHL", "EPL", "UCL"]);
+  const allowed = new Set(["ALL", "MLB", "NFL", "NBA", "NHL", "EPL", "UCL", "WC"]);
   return (allowed.has(v) ? v : "ALL") as LeagueKey;
 }
 

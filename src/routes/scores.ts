@@ -131,16 +131,27 @@ async function pgCacheSet(
 const FINAL_STATUSES = new Set([
   "final", "ft", "f/ot", "f/so", "f/2ot", "f/3ot",
   "finished", "aet", "ap", "full time", "full-time", "ended",
-  "after extra time", "after penalties",
+  // NFL overtime finals (Goalserve returns "After Over Time" for OT games)
+  "after over time", "after overtime", "final/ot", "final ot",
+  "final aot", "final after ot",
+  "after extra time", "after penalties", "after shootout",
 ]);
 
 function isFinalStatus(status: string): boolean {
   // Normalize: lowercase, trim, collapse whitespace, strip surrounding spaces.
   const s = String(status || "").toLowerCase().trim().replace(/\s+/g, " ");
+  if (!s) return false;
   if (FINAL_STATUSES.has(s)) return true;
   // Also accept hyphenated forms by collapsing hyphens to spaces and re-checking.
   const noHyphen = s.replace(/-/g, " ").replace(/\s+/g, " ").trim();
-  return FINAL_STATUSES.has(noHyphen);
+  if (FINAL_STATUSES.has(noHyphen)) return true;
+  // Substring fallbacks — mirror settlement-bot.ts / LiveScoreTicker.tsx so an
+  // NFL OT game ("After Over Time") is recognized here too, and the proxy can
+  // write it to the permanent Postgres final cache instead of re-polling.
+  if (s.includes("after over time") || s.includes("after overtime") || s.includes("after ot")) return true;
+  if (s.includes("after extra time") || s.includes("after penalties") || s.includes("shootout")) return true;
+  if (s.includes("final") && !s.includes("semi") && !s.includes("quarter") && !s.includes("half")) return true;
+  return false;
 }
 
 type MatchShape = "scores" | "soccer-tournament" | "soccer-commentaries" | "games";

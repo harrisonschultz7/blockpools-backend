@@ -28,6 +28,7 @@ import { JsonRpcProvider } from "@ethersproject/providers";
 import { Contract } from "@ethersproject/contracts";
 
 import { pool } from "../db";
+import { evaluatePromoEligibility } from "../services/promotions/evaluatePromoEligibility";
 // Default fallback — the bundled games.json the backend ships with.
 import bundledGamesJson from "../data/games.json";
 
@@ -523,6 +524,50 @@ async function syncFinalizedPools(provider: JsonRpcProvider): Promise<{
                 `[refreshGamesAndScores] finalized ${row.game_id} ` +
                   `outcome=${res.winningOutcomeIndex} side=${res.winnerSide ?? "-"}`
               );
+
+              // ── Re-evaluate pending promo qualifications ──────────────
+              // The cumulative-held-to-settlement qualifier in
+              // evaluatePromoEligibility only counts positions on games
+              // whose is_final is true. The post-insert trade hook runs at
+              // BUY time — before any game has settled — so qualifications
+              // that depend on this game would otherwise never re-fire.
+              // Here, the moment we flip is_final = true, we find every
+              // pending_qualification redemption whose user/referrer
+              // traded on this game and ask the qualifier to re-check
+              // them. Wrapped in try/catch so a promo-side failure can
+              // never block game finalization.
+              try {
+                const watchers = await pool.query(
+                  `
+                  SELECT DISTINCT r.id AS redemption_id
+                    FROM public.promo_redemptions r
+                    JOIN public.user_trade_events e
+                      ON (lower(e.user_address) = lower(r.user_address)
+                          OR lower(e.user_address) = lower(r.referrer_address))
+                   WHERE r.status = 'pending_qualification'
+                     AND e.beneficiary_address IS NULL
+                     AND lower(e.game_id) = lower($1)
+                  `,
+                  [row.game_id]
+                );
+                for (const w of watchers.rows) {
+                  try {
+                    await evaluatePromoEligibility(w.redemption_id);
+                  } catch (err: any) {
+                    console.warn(
+                      `[refreshGamesAndScores] promo eval failed redemption=${w.redemption_id}: ${
+                        err?.message ?? err
+                      }`
+                    );
+                  }
+                }
+              } catch (err: any) {
+                console.warn(
+                  `[refreshGamesAndScores] promo re-eval lookup failed for ${row.game_id}: ${
+                    err?.message ?? err
+                  }`
+                );
+              }
             }
           } catch (err: any) {
             failed++;

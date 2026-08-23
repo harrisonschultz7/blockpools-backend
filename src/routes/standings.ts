@@ -52,6 +52,9 @@ const CRON_STARTUP_DELAY = 30_000;            // wait 30 s after boot before fir
 // ── League config ─────────────────────────────────────────────────────────────
 
 // Soccer leagues — use /standings/{id}?season=...
+// WC: deliberately omitted until the FIFA World Cup 2026 group-stage Goalserve
+// league id is confirmed. Frontend's STANDINGS_LEAGUES does not include WC, so
+// /api/standings/WC isn't requested today; safe to leave out for now.
 const SOCCER_LEAGUE_IDS: Record<string, string> = {
   UCL:        "1005",
   EPL:        "1204",

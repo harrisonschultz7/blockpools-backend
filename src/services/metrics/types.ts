@@ -1,6 +1,6 @@
 // src/services/metrics/types.ts
 export type RangeKey = "ALL" | "D30" | "D90";
-export type LeagueKey = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL";
+export type LeagueKey = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL" | "WC";
 
 export type GroupLeaderboardRowApi = {
   id: string;

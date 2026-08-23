@@ -8,7 +8,7 @@ import { refreshLeaderboard } from "../services/cacheRefresh";
 export function startCacheWorker() {
   if (!ENV.CACHE_WORKER_ENABLED) return;
 
-  const DEFAULT_LEAGUES = ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL"];
+  const DEFAULT_LEAGUES = ["NFL", "NBA", "NHL", "MLB", "EPL", "UCL", "WC"];
 
   const tick = async () => {
     const params = {

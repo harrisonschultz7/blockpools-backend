@@ -15,7 +15,7 @@ import { pool } from "../db";
 
 /* ===================== Types ===================== */
 
-export type League = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL";
+export type League = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL" | "WC";
 export type Range = "ALL" | "D90" | "D30";
 export type TradeType = "BUY" | "SELL" | "CLAIM";
 
@@ -69,7 +69,7 @@ type PositionState = {
 
 function clampLeague(v: any): League {
   const s = String(v ?? "ALL").toUpperCase();
-  return (["ALL", "MLB", "NFL", "NBA", "NHL", "EPL", "UCL"] as const).includes(s as any)
+  return (["ALL", "MLB", "NFL", "NBA", "NHL", "EPL", "UCL", "WC"] as const).includes(s as any)
     ? (s as League)
     : "ALL";
 }

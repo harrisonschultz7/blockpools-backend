@@ -2,7 +2,7 @@
 //
 // GET /api/chart/:contractAddress
 //
-// Returns BUY trade events for a contract from user_trade_events,
+// Returns BUY + SELL trade events for a contract from user_trade_events,
 // ordered by timestamp asc — used by LeagueWinnerChart to build
 // the price-over-time series without touching the subgraph.
 //
@@ -34,10 +34,14 @@ router.get("/:contractAddress", async (req: Request, res: Response) => {
   }
 
   const gameId = contractAddress.toLowerCase();
+  const bypassCache =
+    req.query.refresh === "1" ||
+    req.query.nocache === "1" ||
+    typeof req.query.t === "string";
 
-  // Serve from cache if fresh
+  // Serve from cache if fresh (skip right after a trade when frontend passes ?refresh=1)
   const cached = _cache.get(gameId);
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+  if (!bypassCache && cached && Date.now() - cached.ts < CACHE_TTL_MS) {
     return res.json(cached.data);
   }
 
@@ -46,7 +50,7 @@ router.get("/:contractAddress", async (req: Request, res: Response) => {
       .from("user_trade_events")
       .select("outcome_index, spot_price_bps, timestamp")
       .eq("game_id", gameId)
-      .eq("type", "BUY")
+      .in("type", ["BUY", "SELL"])
       .not("outcome_index", "is", null)
       .not("spot_price_bps", "is", null)
       .order("timestamp", { ascending: true })
@@ -54,7 +58,8 @@ router.get("/:contractAddress", async (req: Request, res: Response) => {
 
     if (error) {
       console.error("[chart] Supabase error:", error.message);
-      return res.status(500).json({ error: "Database error" });
+      // Degrade gracefully: chart still renders from initial/live pcts without trade history.
+      return res.json([]);
     }
 
     const result = (data ?? []).map((r: any) => ({
@@ -67,7 +72,7 @@ router.get("/:contractAddress", async (req: Request, res: Response) => {
     return res.json(result);
   } catch (e: any) {
     console.error("[chart] Unexpected error:", e?.message);
-    return res.status(500).json({ error: "Internal error" });
+    return res.json([]);
   }
 });
 
