@@ -300,7 +300,15 @@ async function polyPropFair(eventSlug, teamName, teamCode, maxSpreadCents) {
   // wrong team (e.g. "CHI" ⊂ "Chiefs"). Aliases cover Polymarket names that
   // differ from our label (e.g. Utah Mammoth ↔ Utah Hockey Club).
   const names = [teamName, ...(PROP_NAME_ALIASES[canonName(teamName)] || [])];
-  const hits = meta.teams.filter((t) => names.some((n) => sameTeamStrict(t.title, n)));
+  // Three-way match events title their draw market "Draw (Home vs. Away)" —
+  // it contains BOTH team names, so without this partition every team lookup
+  // found 2 hits (team + draw) and threw "ambiguous", flattening all team
+  // outcomes while only the Draw seeded. Team lookups exclude Draw-titled
+  // sub-markets; the Draw lookup considers only them. Futures events have no
+  // Draw-titled sub-markets, so their behavior is unchanged.
+  const wantDraw = canonName(teamName) === "draw";
+  const pool = meta.teams.filter((t) => canonName(t.title).startsWith("draw") === wantDraw);
+  const hits = pool.filter((t) => names.some((n) => sameTeamStrict(t.title, n)));
   if (hits.length !== 1) {
     throw new Error(
       `${hits.length === 0 ? "no" : hits.length + " ambiguous"} Polymarket sub-market(s) for "${teamName}" in ${eventSlug}`
