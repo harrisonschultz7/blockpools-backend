@@ -169,20 +169,49 @@ async function polyMeta(slug) {
   return meta;
 }
 
-/** CLOB midpoint (0..1) for one token; falls back to Gamma best bid/ask mid. */
-async function polyMidpoint(tokenId, slug, polyIdx) {
+/**
+ * Top-of-book for one CLOB token: { mid (0..1), spreadCents }. A midpoint alone
+ * is NOT a price — Polymarket pre-opens far-out game markets with a placeholder
+ * 13¢-bid/87¢-ask book whose midpoint is exactly 0.50, which the bot used to
+ * mistake for a real 50/50 line and seed a whole future slate at it. Reading the
+ * book instead lets the caller judge informativeness by the spread.
+ * Falls back to Gamma bestBid/bestAsk (outcome-0 oriented). Throws if neither
+ * source has a two-sided book.
+ */
+async function polyTop(tokenId, slug, polyIdx) {
   try {
-    const j = await getJson(`${POLY_CLOB}/midpoint?token_id=${tokenId}`);
-    const mid = Number(j.mid);
-    if (Number.isFinite(mid) && mid > 0 && mid < 1) return mid;
+    const b = await getJson(`${POLY_CLOB}/book?token_id=${tokenId}`);
+    const bids = Array.isArray(b?.bids) ? b.bids.map((e) => Number(e.price)).filter(Number.isFinite) : [];
+    const asks = Array.isArray(b?.asks) ? b.asks.map((e) => Number(e.price)).filter(Number.isFinite) : [];
+    if (bids.length && asks.length) {
+      const bb = Math.max(...bids), ba = Math.min(...asks);
+      const mid = (bb + ba) / 2;
+      if (mid > 0 && mid < 1) return { mid, spreadCents: (ba - bb) * 100 };
+    }
+    // ONE-SIDED books still carry information at the extremes. Longshot futures
+    // outcomes (e.g. EPL FUL/IPS/HUL) often have ONLY asks — best ask 0.1¢,
+    // zero bids — which pins the price at ~0 as surely as a tight two-sided
+    // book would. Same, mirrored, for a near-certainty quoted only by ≥95¢
+    // bids. Without this, those outcomes threw "no CLOB book" and never seeded
+    // (empty book on our side while their peers show 1-3¢). A one-sided book
+    // in the MIDDLE of the range stays uninformative and falls through.
+    if (asks.length && !bids.length) {
+      const ba = Math.min(...asks);
+      if (ba > 0 && ba <= 0.05) return { mid: ba, spreadCents: 0 };
+    }
+    if (bids.length && !asks.length) {
+      const bb = Math.max(...bids);
+      if (bb >= 0.95 && bb < 1) return { mid: bb, spreadCents: 0 };
+    }
   } catch { /* fall through */ }
   // Fallback: Gamma bestBid/bestAsk on the market (outcome-0 oriented).
+  if (slug == null) throw new Error(`no CLOB book for token ${tokenId}`);
   const arr = await getJson(`${POLY_GAMMA}/markets?slug=${encodeURIComponent(slug)}`);
   const m = Array.isArray(arr) ? arr[0] : arr;
   const bb = Number(m?.bestBid), ba = Number(m?.bestAsk);
   if (Number.isFinite(bb) && Number.isFinite(ba)) {
     const mid0 = (bb + ba) / 2; // this is outcome-0 (first token) oriented
-    return polyIdx === 0 ? mid0 : 1 - mid0;
+    return { mid: polyIdx === 0 ? mid0 : 1 - mid0, spreadCents: (ba - bb) * 100 };
   }
   throw new Error(`no Polymarket price for ${slug}`);
 }
@@ -190,9 +219,12 @@ async function polyMidpoint(tokenId, slug, polyIdx) {
 /**
  * Fair price (cents) for BlockPools outcome 0 (teamA), read live from Polymarket.
  * Aligns which Polymarket token is teamA by team name, so home/away can't flip.
- * Returns { fair0Cents, closed } or throws (→ dead-man's switch upstream).
+ * `uninformative` is set when the Polymarket book's spread exceeds
+ * maxSpreadCents (a placeholder / not-yet-open book) — the caller must NOT seed
+ * off that midpoint. Returns { fair0Cents, closed, uninformative, spreadCents }
+ * or throws (→ dead-man's switch upstream).
  */
-async function polyFair(slug, teamAName, teamBName) {
+async function polyFair(slug, teamAName, teamBName, maxSpreadCents) {
   const meta = await polyMeta(slug);
   let idxA = meta.outcomes.findIndex((o) => sameTeam(o, teamAName));
   if (idxA < 0) {
@@ -200,8 +232,9 @@ async function polyFair(slug, teamAName, teamBName) {
     if (idxB >= 0) idxA = idxB === 0 ? 1 : 0; // infer A as the other token
   }
   if (idxA < 0) throw new Error(`cannot align Polymarket outcomes [${meta.outcomes}] to ${teamAName}/${teamBName}`);
-  const midA = await polyMidpoint(meta.tokenIds[idxA], slug, idxA);
-  return { fair0Cents: clampCents(midA * 100), closed: meta.closed };
+  const { mid, spreadCents } = await polyTop(meta.tokenIds[idxA], slug, idxA);
+  const cap = Number(maxSpreadCents) > 0 ? Number(maxSpreadCents) : 15;
+  return { fair0Cents: clampCents(mid * 100), closed: meta.closed, uninformative: spreadCents > cap, spreadCents };
 }
 
 // ── Polymarket EVENT fair (multi-outcome futures / props) ───────────────────────
@@ -233,13 +266,7 @@ async function polyEventMeta(eventSlug) {
   return meta;
 }
 
-/** CLOB midpoint (0..1) for one token; throws on failure (no market-slug fallback). */
-async function clobMid(tokenId) {
-  const j = await getJson(`${POLY_CLOB}/midpoint?token_id=${tokenId}`);
-  const mid = Number(j.mid);
-  if (Number.isFinite(mid) && mid > 0 && mid < 1) return mid;
-  throw new Error(`no CLOB midpoint for token ${tokenId}`);
-}
+// (props read the CLOB book via polyTop — same informativeness guard as games)
 
 // Outcome-label → alternate name(s) for cases where Polymarket's sub-market
 // groupItemTitle differs from our display label. Polymarket still lists the Utah
@@ -248,6 +275,15 @@ async function clobMid(tokenId) {
 // canonName(label); each alt is also run through sameTeamStrict.
 const PROP_NAME_ALIASES = {
   "utah mammoth": ["Utah Hockey Club"],
+  // UCL/EPL three-way games: Goalserve names ↔ Polymarket event titles.
+  "din zagreb": ["Dinamo Zagreb", "GNK Dinamo Zagreb"],
+  "nijmegen": ["NEC"],
+  // ø is a standalone letter (not an NFD-decomposable accent), so canonName
+  // yields "bod glimt" from Polymarket's title — alias to their exact form.
+  "bodo glimt": ["FK Bodø/Glimt"],
+  "h beer sheva": ["Hapoel Be'er Sheva", "MH Hapoel Be'er Sheva"],
+  "sabah baku": ["Sabah FK"],
+  "lyon": ["Olympique Lyonnais"],
 };
 
 /**
@@ -255,7 +291,7 @@ const PROP_NAME_ALIASES = {
  * midpoint in the Polymarket event. Returns { fair0Cents, closed } or throws
  * (→ dead-man's switch flattens just that one outcome).
  */
-async function polyPropFair(eventSlug, teamName, teamCode) {
+async function polyPropFair(eventSlug, teamName, teamCode, maxSpreadCents) {
   const meta = await polyEventMeta(eventSlug);
   if (meta.closed) return { fair0Cents: 50, closed: true };
   // STRICT, name-only, and require EXACTLY one hit. 0 or >1 → throw (dead-man's
@@ -270,8 +306,9 @@ async function polyPropFair(eventSlug, teamName, teamCode) {
       `${hits.length === 0 ? "no" : hits.length + " ambiguous"} Polymarket sub-market(s) for "${teamName}" in ${eventSlug}`
     );
   }
-  const mid = await clobMid(hits[0].yesToken);
-  return { fair0Cents: clampCents(mid * 100), closed: !!hits[0].closed };
+  const { mid, spreadCents } = await polyTop(hits[0].yesToken, null, 0);
+  const cap = Number(maxSpreadCents) > 0 ? Number(maxSpreadCents) : 15;
+  return { fair0Cents: clampCents(mid * 100), closed: !!hits[0].closed, uninformative: spreadCents > cap, spreadCents };
 }
 
 // ── Matcher book ──────────────────────────────────────────────────────────────
@@ -381,6 +418,16 @@ function addDaysISO(iso, days) {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
+// resolveTargets runs EVERY tick (2s), so its per-target discovery/config
+// messages must print once per unique key, not once per tick — unthrottled they
+// flooded journald with ~19 lines/tick (~800k lines/day).
+const _loggedOnce = new Set();
+function logOnce(key, msg) {
+  if (_loggedOnce.has(key)) return;
+  _loggedOnce.add(key);
+  console.log(msg);
+}
+
 // gameId -> resolved slug (positive, permanent); and a negative-result backoff.
 const _slugCache = new Map();
 const _slugNextProbe = new Map();
@@ -425,6 +472,69 @@ async function resolvePolySlug(game) {
   _slugNextProbe.set(gid, Date.now() + 30 * 60_000);
   return null;
 }
+// ── Three-way (soccer 1X2) auto games ─────────────────────────────────────────
+// EPL/UCL matches are THREE_WAY groups: each outcome (home / DRAW / away) is
+// its own binary market. Polymarket models the same match as an EVENT with one
+// Yes/No sub-market per outcome plus a "Draw (…)" sub-market — the exact shape
+// polyPropFair already prices. Discovery can't probe slugs like binary games do
+// (Polymarket uses its OWN team codes: mac/bri/ast…), so we list the league's
+// open events by tag and match by TEAM NAMES instead.
+const TW_TAGS = { EPL: "epl", UCL: "ucl" };
+const _twListing = new Map();   // tag -> { at, events:[{slug,title}] }
+const _twSlugCache = new Map(); // gameId -> event slug (positive, permanent)
+const _twNextProbe = new Map(); // gameId -> ms (negative-result backoff)
+
+/** Open match events for a league tag (plain match slugs ending in a date —
+ *  the -halftime-result / -total-corners variants are filtered out). 10m cache
+ *  ⇒ one gamma call per league per 10 minutes regardless of game count. */
+async function twListingFor(league) {
+  const tag = TW_TAGS[league] || String(league).toLowerCase();
+  const c = _twListing.get(tag);
+  if (c && Date.now() - c.at < 10 * 60_000) return c.events;
+  const arr = await getJson(`${POLY_GAMMA}/events?tag_slug=${encodeURIComponent(tag)}&closed=false&limit=200`);
+  const events = (Array.isArray(arr) ? arr : [])
+    .filter((e) => /-\d{4}-\d{2}-\d{2}$/.test(String(e.slug || "")))
+    .map((e) => ({ slug: String(e.slug), title: String(e.title || "") }));
+  _twListing.set(tag, { at: Date.now(), events });
+  return events;
+}
+
+/**
+ * Find the Polymarket match EVENT for a three-way game: slug date within ±1 of
+ * ours (Polymarket dates by UTC) and BOTH team names strict-matching opposite
+ * sides of the event title ("Manchester City FC vs. AFC Bournemouth"), so we
+ * can never bind to the wrong fixture. PROP_NAME_ALIASES applies. Positive
+ * hits cache permanently; misses back off 30 min.
+ */
+async function resolveThreeWayEvent(game) {
+  const gid = String(game.gameId || "");
+  if (_twSlugCache.has(gid)) return _twSlugCache.get(gid);
+  if (Date.now() < (_twNextProbe.get(gid) || 0)) return null;
+  const base = String(game.date || (gid.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || "");
+  const dates = new Set(base ? [base, addDaysISO(base, 1), addDaysISO(base, -1)] : []);
+  const withAliases = (n) => [n, ...(PROP_NAME_ALIASES[canonName(n)] || [])];
+  const nA = withAliases(game.teamAName || game.teamACode || "");
+  const nB = withAliases(game.teamBName || game.teamBCode || "");
+  try {
+    for (const e of await twListingFor(String(game.league || "").toUpperCase())) {
+      const d = (e.slug.match(/(\d{4}-\d{2}-\d{2})$/) || [])[1];
+      if (!dates.has(d)) continue;
+      const [home, away] = e.title.split(/\s+vs\.?\s+/i);
+      if (!home || !away) continue;
+      const sideOf = (names) =>
+        names.some((n) => sameTeamStrict(home, n)) ? "h" : names.some((n) => sameTeamStrict(away, n)) ? "a" : null;
+      const sA = sideOf(nA), sB = sideOf(nB);
+      if (sA && sB && sA !== sB) {
+        _twSlugCache.set(gid, e.slug);
+        logOnce(`tw:${gid}`, `  ↳ ${gid} → Polymarket event ${e.slug}`);
+        return e.slug;
+      }
+    }
+  } catch { /* transient — fall through to backoff */ }
+  _twNextProbe.set(gid, Date.now() + 30 * 60_000);
+  return null;
+}
+
 /** kickoff epoch: explicit lockTime, else trailing -<epoch> of the gameId. */
 function lockTimeOf(g) {
   if (g.lockTime != null && Number(g.lockTime) > 0) return Number(g.lockTime);
@@ -483,8 +593,8 @@ function resolveTargets(config, games) {
   for (const m of config.markets || []) {
     const g = games.find((x) =>
       (m.gameId && x.gameId === m.gameId) || (m.slug && x.slug === m.slug) || (m.marketId && x.marketId === m.marketId));
-    if (!g) { console.warn(`  ⚠️  no v2 game found for ${m.gameId || m.slug || m.marketId} — skipping`); continue; }
-    if (!g.marketId) { console.warn(`  ⚠️  ${g.gameId} has no marketId — skipping`); continue; }
+    if (!g) { logOnce(`nogame:${m.gameId || m.slug || m.marketId}`, `  ⚠️  no v2 game found for ${m.gameId || m.slug || m.marketId} — skipping`); continue; }
+    if (!g.marketId) { logOnce(`nomkt:${g.gameId}`, `  ⚠️  ${g.gameId} has no marketId — skipping`); continue; }
     add(g, m.polymarketSlug || null, m.params);
   }
 
@@ -517,6 +627,52 @@ function resolveTargets(config, games) {
     for (const g of targets) add(g, null, null);
   }
 
+  // Auto THREE-WAY soccer games (config.autoThreeWayLeagues, e.g. EPL/UCL) —
+  // group games with 3+ outcomes (home/DRAW/away), each outcome its own binary
+  // market. Windowed and phased like binary games (far→pre→live), priced like
+  // props from the discovered Polymarket match event (resolveThreeWayEvent).
+  const twLeagues = (config.autoThreeWayLeagues || []).map((s) => String(s).toUpperCase());
+  if (twLeagues.length) {
+    for (const g of games) {
+      if (!twLeagues.includes(String(g.league || "").toUpperCase())) continue;
+      // THREE_WAY match games ONLY — binary games belong to autoLeagues, and
+      // LEAGUE_WINNER/champion futures to config.props (which would otherwise
+      // collide here once their lockTime enters the window).
+      if (String(g.marketType || g.marketKind || "").toUpperCase() !== "THREE_WAY") continue;
+      const outs = Array.isArray(g.outcomes) ? g.outcomes : [];
+      if (outs.length < 3) continue;
+      const lt = lockTimeOf(g);
+      if (lt <= 0 || now < lt - leadSec || now > lt + maxGameSec) continue;
+      const params = phaseParams(g, null);
+      const nameFor = (oc) => {
+        if (String(oc.code || "").toUpperCase() === "DRAW") return "Draw";
+        if (oc.code === (g.teamACode || g.teamA)) return g.teamAName || oc.label || oc.code;
+        if (oc.code === (g.teamBCode || g.teamB)) return g.teamBName || oc.label || oc.code;
+        return oc.label || oc.code;
+      };
+      let n = 0;
+      for (const oc of outs) {
+        if (!oc.marketId) continue;
+        const key = String(oc.marketId).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({
+          label: `${g.gameId} · ${oc.code || oc.label}`,
+          game: g, marketId: oc.marketId, slug: null, params, lockTime: lt,
+          threeWay: true,
+          prop: {
+            eventSlug: null, // discovered lazily in reprice (cached per gameId)
+            teamName: nameFor(oc),
+            teamCode: oc.code || null,
+            snapshotGameId: `${g.gameId}::${String(oc.code || oc.label).toUpperCase()}`,
+          },
+        });
+        n++;
+      }
+      if (n) logOnce(`twgame:${g.gameId}`, `  ↳ 3-way ${g.gameId} (${n} outcomes)`);
+    }
+  }
+
   // Props (multi-outcome futures) — each configured event expands to ONE target
   // per outcome, since each outcome is its own binary Yes/No market with its own
   // marketId (there is no top-level marketId, so these are skipped by the
@@ -526,10 +682,10 @@ function resolveTargets(config, games) {
   for (const p of config.props || []) {
     const g = games.find((x) =>
       (p.gameId && x.gameId === p.gameId) || (p.slug && x.slug === p.slug) || (p.marketId && x.marketId === p.marketId));
-    if (!g) { console.warn(`  ⚠️  no v2 prop game for ${p.gameId || p.slug} — skipping`); continue; }
-    if (!p.polymarketSlug) { console.warn(`  ⚠️  prop ${g.gameId} has no polymarketSlug — skipping`); continue; }
+    if (!g) { logOnce(`noprop:${p.gameId || p.slug}`, `  ⚠️  no v2 prop game for ${p.gameId || p.slug} — skipping`); continue; }
+    if (!p.polymarketSlug) { logOnce(`noslug:${g.gameId}`, `  ⚠️  prop ${g.gameId} has no polymarketSlug — skipping`); continue; }
     const outs = Array.isArray(g.outcomes) ? g.outcomes : [];
-    if (!outs.length) { console.warn(`  ⚠️  prop ${g.gameId} has no outcomes[] — skipping`); continue; }
+    if (!outs.length) { logOnce(`noouts:${g.gameId}`, `  ⚠️  prop ${g.gameId} has no outcomes[] — skipping`); continue; }
     const params = { ...propPhase, ...(p.params || {}) };
     let n = 0;
     for (const oc of outs) {
@@ -552,7 +708,7 @@ function resolveTargets(config, games) {
       });
       n++;
     }
-    console.log(`  ↳ prop ${g.gameId} → ${p.polymarketSlug} (${n} outcomes)`);
+    logOnce(`prop:${g.gameId}`, `  ↳ prop ${g.gameId} → ${p.polymarketSlug} (${n} outcomes)`);
   }
 
   return out;
@@ -721,23 +877,50 @@ async function reprice(tgt, ctx) {
     return { msg: `${label} resolved → flat${redeeming ? " + redeem" : ""}`, ended: true };
   }
 
-  // 2) Resolve the Polymarket slug on first sight (auto GAMES only); cached after.
-  //    Props carry an explicit event slug (tgt.prop.eventSlug) — no discovery.
+  // 2) Resolve the Polymarket slug/event on first sight; cached after.
+  //    Binary auto games probe market slugs; three-way games discover their
+  //    match EVENT by team name; futures props carry an explicit event slug.
   if (!isProp && !slug) {
     slug = await resolvePolySlug(game);
     if (!slug) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} no Polymarket market yet → flat (retry 5m)`, ended: false, retryMs: 300_000 }; }
   }
+  if (isProp && !tgt.prop.eventSlug) {
+    const es = await resolveThreeWayEvent(game);
+    if (!es) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} no Polymarket event yet → flat (retry 5m)`, ended: false, retryMs: 300_000 }; }
+    tgt.prop.eventSlug = es;
+  }
 
   // 3) Live fair from Polymarket. Any failure = dead-man's switch (go flat).
   //    Games: one binary market (teamA vs teamB). Props: this outcome's team's
-  //    "Yes" (win) midpoint within the event.
+  //    "Yes" (win) midpoint within the event. Feed errors retry at
+  //    min(cadence, 15m) so a slow-cadence far game doesn't stall a whole
+  //    period on one transient error.
+  const feedRetryMs = Math.min(Number(params.cadenceSec || 2), 900) * 1000;
   let fair;
   try {
     fair = isProp
-      ? await polyPropFair(tgt.prop.eventSlug, tgt.prop.teamName, tgt.prop.teamCode)
-      : await polyFair(slug, game.teamAName || game.teamACode, game.teamBName || game.teamBCode);
-  } catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} feed error (${e.message}) → flat`, ended: false }; }
+      ? await polyPropFair(tgt.prop.eventSlug, tgt.prop.teamName, tgt.prop.teamCode, params.maxFairSpreadCents)
+      : await polyFair(slug, game.teamAName || game.teamACode, game.teamBName || game.teamBCode, params.maxFairSpreadCents);
+  } catch (e) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} feed error (${e.message}) → flat`, ended: false, retryMs: feedRetryMs }; }
   if (fair.closed) { await flatten(marketId, ctx); _lastTop.delete(marketId); return { msg: `${label} Polymarket closed → flat`, ended: true }; }
+
+  // 3.1) Placeholder book (spread wider than maxFairSpreadCents — Polymarket
+  // pre-opens far-out games at 13¢/87¢, midpoint exactly 50). That midpoint is
+  // NOT a price: seeding it would rest mispriced 50/50 liquidity for early
+  // bettors to pick off. Go flat (also pulls any stale mm-ladder 50/50 rungs)
+  // and probe again on uninformativeRetrySec until a real book appears — from
+  // then on the normal phase cadence takes over. No price snapshot is posted,
+  // so the chart doesn't record a bogus 50/50 line either.
+  if (fair.uninformative) {
+    await flatten(marketId, ctx); _lastTop.delete(marketId);
+    const retrySec = Number(params.uninformativeRetrySec) > 0
+      ? Number(params.uninformativeRetrySec)
+      : Math.max(300, Number(params.cadenceSec || 2));
+    return {
+      msg: `${label} Polymarket book not open yet (spread ${fair.spreadCents.toFixed(0)}¢) → flat (retry ${Math.round(retrySec / 60)}m)`,
+      ended: false, retryMs: retrySec * 1000,
+    };
+  }
 
   // Game phase — drives the snapshot heartbeat and whether we read inventory.
   const started = tgt.lockTime > 0 && Math.floor(Date.now() / 1000) >= tgt.lockTime;
@@ -747,7 +930,9 @@ async function reprice(tgt, ctx) {
   //    (matches the fills + /api/v2/chart), aBps = this outcome's Yes/win price.
   //    started=false so the pre-game (10min) heartbeat applies; since props
   //    reprice hourly, each reprice emits at most one point per outcome.
-  if (isProp) maybeSnapshot(tgt.prop.snapshotGameId, fair.fair0Cents, false, dry, 6 * 60 * 60 * 1000);
+  //  - Three-way games: per-outcome series like props, but with the GAME
+  //    heartbeat (they go live and move like games, not like futures).
+  if (isProp) maybeSnapshot(tgt.prop.snapshotGameId, fair.fair0Cents, tgt.threeWay ? started : false, dry, tgt.threeWay ? undefined : 6 * 60 * 60 * 1000);
   else maybeSnapshot(game.gameId, fair.fair0Cents, started, dry);
 
   // 3) Book + inventory. For games, inventory only accrues post-kickoff, so we

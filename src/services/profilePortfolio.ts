@@ -16,7 +16,7 @@ import { pool } from "../db";
 /* ===================== Types ===================== */
 
 export type League = "ALL" | "MLB" | "NFL" | "NBA" | "NHL" | "EPL" | "UCL" | "WC";
-export type Range = "ALL" | "D90" | "D30";
+export type Range = "ALL" | "D90" | "D60" | "D30" | "D7";
 export type TradeType = "BUY" | "SELL" | "CLAIM";
 
 export type TradeEvent = {
@@ -76,11 +76,15 @@ function clampLeague(v: any): League {
 
 function clampRange(v: any): Range {
   const s = String(v ?? "ALL").toUpperCase();
-  return (["ALL", "D90", "D30"] as const).includes(s as any) ? (s as Range) : "ALL";
+  return (["ALL", "D90", "D60", "D30", "D7"] as const).includes(s as any)
+    ? (s as Range)
+    : "ALL";
 }
 
 function rangeWindowSeconds(range: Range): number | null {
+  if (range === "D7") return 7 * 24 * 60 * 60;
   if (range === "D30") return 30 * 24 * 60 * 60;
+  if (range === "D60") return 60 * 24 * 60 * 60;
   if (range === "D90") return 90 * 24 * 60 * 60;
   return null;
 }
@@ -757,8 +761,42 @@ export async function buildProfilePortfolio(req: Request) {
 
   const pnlNet = realizedSellPnl + wonFinal;
 
-  const denom = tradedGross > 1e-9 ? tradedGross : 0;
-  const roiNet = denom > 0 ? pnlNet / denom - 1 : null;
+  // Canonical REALIZED ROI from public.user_realized_events — the same ledger
+  // the leaderboard, league-chat expert gate and social tags read. Two fixes vs
+  // the old in-process math: (1) the old `pnlNet / tradedGross - 1` subtracted 1
+  // from a NET pnl ratio (double-penalty: a break-even user showed ~-100%);
+  // (2) the old stats were reduced over ONE PAGE of the ledger, so roiNet
+  // changed as you paginated. This query covers the full window regardless of
+  // pagination.
+  let roiNet: number | null = null;
+  // Realized-ledger sums exposed alongside roiNet so callers can render a $
+  // P&L that agrees with the % by construction:
+  //   realizedPnl = realizedReturn − realizedTraded;  roiNet = ratio − 1.
+  let realizedTraded = 0;
+  let realizedReturn = 0;
+  try {
+    const endTs = anchorTs ?? Math.floor(Date.now() / 1000);
+    const winSec = rangeWindowSeconds(range);
+    const startTs = winSec == null ? 0 : endTs - winSec;
+    const roiSql = `
+      SELECT
+        COALESCE(SUM(realized_cost),   0)::numeric AS total_traded,
+        COALESCE(SUM(realized_return), 0)::numeric AS total_return
+      FROM public.user_realized_events
+      WHERE user_address = $1
+        AND realized_at >= $2
+        AND realized_at <= $3
+        ${league === "ALL" ? "" : "AND league = $4"}
+    `;
+    const roiParams: any[] = [userLower, startTs, endTs];
+    if (league !== "ALL") roiParams.push(league);
+    const { rows: roiRows } = await pool.query(roiSql, roiParams);
+    realizedTraded = Number(roiRows?.[0]?.total_traded) || 0;
+    realizedReturn = Number(roiRows?.[0]?.total_return) || 0;
+    roiNet = realizedTraded > 0 ? realizedReturn / realizedTraded - 1 : null;
+  } catch (e) {
+    console.error("[profilePortfolio] realized ROI query failed:", e);
+  }
 
   // simple most-bet league heuristic (by BUY gross)
   const buyByLeague: Record<string, number> = {};
@@ -784,6 +822,9 @@ export async function buildProfilePortfolio(req: Request) {
       wonFinal,
       pnlNet,
       roiNet,
+      realizedTraded,
+      realizedReturn,
+      realizedPnl: realizedReturn - realizedTraded,
       mostBetLeague,
     },
 

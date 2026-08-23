@@ -44,14 +44,16 @@ async function getVerifiedUser(
 
 // ── Canonical live ROI (single user) ────────────────────────────────────────
 //
-// Matches masterMetrics.ts / profile page exactly:
-//   total_traded = SUM(gross_in_dec) WHERE type='BUY' AND is_final=true AND resolution_type IN ('NORMAL','RESOLVED')
-//                + SUM(cost_basis_closed_dec) WHERE type='SELL' AND is_final=false
-//   total_return = SUM(net_out_dec) WHERE type IN ('SELL','CLAIM')
-//   ROI (%)      = (total_return / total_traded - 1) * 100
-//   trades_30d   = COUNT of BUY rows where is_final=true (settled trades)
+// Reads the canonical REALIZED ledger view public.user_realized_events
+// (matches masterMetrics.ts / profile page / social tags):
+//   total_traded  = SUM(realized_cost)   — stake matched to events realized in window
+//   total_return  = SUM(realized_return)
+//   ROI (%)       = (total_return / total_traded - 1) * 100
+//   trades_30d    = COUNT of realized events (SELL / CLAIM / LOSS)
 //
-// Open positions (is_final=false BUYs) are excluded from total_traded — matches profile page.
+// The window applies to realized_at (when the position CLOSED), so a payout can
+// never appear without the stake that produced it. Open positions and unclaimed
+// winnings are excluded; promo free-bet activity is excluded by the view.
 
 async function computeLiveRoi(
   address: string,
@@ -60,28 +62,14 @@ async function computeLiveRoi(
   const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
 
   const sql = `
-    WITH filtered AS (
-      SELECT
-        e.type,
-        g.is_final,
-        g.resolution_type,
-        COALESCE(e.gross_in_dec::numeric,         0) AS gross_in,
-        COALESCE(e.net_out_dec::numeric,           0) AS net_out,
-        COALESCE(e.cost_basis_closed_dec::numeric, 0) AS cost_basis_closed
-      FROM public.user_trade_events e
-      JOIN public.games g ON g.game_id = e.game_id
-      WHERE LOWER(e.user_address) = $1
-        AND e.timestamp >= $2
-        AND g.league = $3
-    )
     SELECT
-      (
-        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
-        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
-      )::numeric AS total_traded,
-      COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
-      COUNT(*)   FILTER (WHERE type = 'BUY' AND is_final = true)::int            AS trades_settled
-    FROM filtered
+      COALESCE(SUM(realized_cost),   0)::numeric AS total_traded,
+      COALESCE(SUM(realized_return), 0)::numeric AS total_return,
+      COUNT(*)::int                              AS trades_settled
+    FROM public.user_realized_events
+    WHERE user_address = $1
+      AND realized_at >= $2
+      AND league = $3
   `;
 
   const { rows } = await pool.query(sql, [
@@ -120,30 +108,15 @@ async function computeLiveRoiBulk(
   const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
 
   const sql = `
-    WITH filtered AS (
-      SELECT
-        LOWER(e.user_address) AS user_address,
-        e.type,
-        g.is_final,
-        g.resolution_type,
-        COALESCE(e.gross_in_dec::numeric,         0) AS gross_in,
-        COALESCE(e.net_out_dec::numeric,           0) AS net_out,
-        COALESCE(e.cost_basis_closed_dec::numeric, 0) AS cost_basis_closed
-      FROM public.user_trade_events e
-      JOIN public.games g ON g.game_id = e.game_id
-      WHERE LOWER(e.user_address) = ANY($1::text[])
-        AND e.timestamp >= $2
-        AND g.league = $3
-    )
     SELECT
       user_address,
-      (
-        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
-        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
-      )::numeric AS total_traded,
-      COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
-      COUNT(*)   FILTER (WHERE type = 'BUY' AND is_final = true)::int            AS trades_settled
-    FROM filtered
+      COALESCE(SUM(realized_cost),   0)::numeric AS total_traded,
+      COALESCE(SUM(realized_return), 0)::numeric AS total_return,
+      COUNT(*)::int                              AS trades_settled
+    FROM public.user_realized_events
+    WHERE user_address = ANY($1::text[])
+      AND realized_at >= $2
+      AND league = $3
     GROUP BY user_address
   `;
 
@@ -189,30 +162,15 @@ async function computeLiveRoiBulkAllLeagues(
   const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
 
   const sql = `
-    WITH filtered AS (
-      SELECT
-        LOWER(e.user_address) AS user_address,
-        e.type,
-        g.is_final,
-        g.resolution_type,
-        COALESCE(e.gross_in_dec::numeric,         0) AS gross_in,
-        COALESCE(e.net_out_dec::numeric,           0) AS net_out,
-        COALESCE(e.cost_basis_closed_dec::numeric, 0) AS cost_basis_closed
-      FROM public.user_trade_events e
-      JOIN public.games g ON g.game_id = e.game_id
-      WHERE LOWER(e.user_address) = ANY($1::text[])
-        AND e.timestamp >= $2
-        AND g.league = ANY($3::text[])
-    )
     SELECT
       user_address,
-      (
-        COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
-        + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
-      )::numeric AS total_traded,
-      COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
-      COUNT(*)   FILTER (WHERE type = 'BUY' AND is_final = true)::int            AS trades_settled
-    FROM filtered
+      COALESCE(SUM(realized_cost),   0)::numeric AS total_traded,
+      COALESCE(SUM(realized_return), 0)::numeric AS total_return,
+      COUNT(*)::int                              AS trades_settled
+    FROM public.user_realized_events
+    WHERE user_address = ANY($1::text[])
+      AND realized_at >= $2
+      AND league = ANY($3::text[])
     GROUP BY user_address
   `;
 
@@ -427,28 +385,14 @@ router.get("/roi/:address", async (req: Request, res: Response) => {
   if (league === "ALL") {
     const windowSec = Math.floor(Date.now() / 1000) - 30 * 86400;
     const sql = `
-      WITH filtered AS (
-        SELECT
-          e.type,
-          g.is_final,
-          g.resolution_type,
-          COALESCE(e.gross_in_dec::numeric,         0) AS gross_in,
-          COALESCE(e.net_out_dec::numeric,           0) AS net_out,
-          COALESCE(e.cost_basis_closed_dec::numeric, 0) AS cost_basis_closed
-        FROM public.user_trade_events e
-        JOIN public.games g ON g.game_id = e.game_id
-        WHERE LOWER(e.user_address) = $1
-          AND e.timestamp >= $2
-          AND g.league = ANY($3::text[])
-      )
       SELECT
-        (
-          COALESCE(SUM(gross_in)            FILTER (WHERE type = 'BUY'  AND is_final = true  AND resolution_type IN ('NORMAL', 'RESOLVED')), 0)
-          + COALESCE(SUM(cost_basis_closed) FILTER (WHERE type = 'SELL' AND is_final = false), 0)
-        )::numeric AS total_traded,
-        COALESCE(SUM(net_out) FILTER (WHERE type IN ('SELL','CLAIM')), 0)::numeric AS total_return,
-        COUNT(*)   FILTER (WHERE type = 'BUY' AND is_final = true)::int            AS trades_settled
-      FROM filtered
+        COALESCE(SUM(realized_cost),   0)::numeric AS total_traded,
+        COALESCE(SUM(realized_return), 0)::numeric AS total_return,
+        COUNT(*)::int                              AS trades_settled
+      FROM public.user_realized_events
+      WHERE user_address = $1
+        AND realized_at >= $2
+        AND league = ANY($3::text[])
     `;
 
     const { rows } = await pool.query(sql, [address, windowSec, Array.from(VALID_LEAGUES)]);
