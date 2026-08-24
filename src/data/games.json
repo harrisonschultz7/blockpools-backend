@@ -1,658 +1,143 @@
 {
-  "MLB": [],
+  "MLB": [
+    {"contractAddress":"0xAA2E002369F4A84dee62946f0CcaA6e4cBeDEcD0","date":"2026-10-27","time":"10:00PM","teamA":"ARI","teamB":"WSH","teamAName":"Arizona Diamondbacks","teamBName":"Washington Nationals","initialPriceBps":[100,556,288,500,343,100,139,102,100,362,222,121,100,2597,100,204,100,519,742,100,371,100,259,100,742,100,100,177,556,100],"marketId":"0x4d4c425f776f726c645f7365726965735f763200000000000000000000000000","marketQuestion":"Who will win the 2026 World Series?","marketQuestion_es":"¿Quién ganará la Serie Mundial 2026?","marketType":"LEAGUE_WINNER","outcomeCodes":["ARI","ATL","BAL","BOS","CHC","CHW","CIN","CLE","COL","DET","HOU","KC","LAA","LAD","MIA","MIL","MIN","NYM","NYY","OAK","PHI","PIT","SD","SF","SEA","STL","TB","TEX","TOR","WSH"],"outcomeNames":["Arizona Diamondbacks","Atlanta Braves","Baltimore Orioles","Boston Red Sox","Chicago Cubs","Chicago White Sox","Cincinnati Reds","Cleveland Guardians","Colorado Rockies","Detroit Tigers","Houston Astros","Kansas City Royals","Los Angeles Angels","Los Angeles Dodgers","Miami Marlins","Milwaukee Brewers","Minnesota Twins","New York Mets","New York Yankees","Oakland Athletics","Philadelphia Phillies","Pittsburgh Pirates","San Diego Padres","San Francisco Giants","Seattle Mariners","St. Louis Cardinals","Tampa Bay Rays","Texas Rangers","Toronto Blue Jays","Washington Nationals"],"outcomesCount":30},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-10-27","time":"8:00 PM","league":"MLB","gameId":"MLB-CHAMPION-2026-1793145600","slug":"mlb-champion-2026-1793145600","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Who will win the 2026 World Series?","marketQuestion_es":"¿Quién ganará la Serie Mundial 2026?","teamACode":"LAD","teamAName":"Los Angeles Dodgers","teamBCode":"NYY","teamBName":"New York Yankees","outcomesCount":30,"outcomes":[{"outcomeIndex":0,"code":"LAD","label":"Los Angeles Dodgers","marketId":"0xf51a12de8c864453f2e21ef44bdc77c57900de0bdb28d8cf28180816cd5eb7a1"},{"outcomeIndex":1,"code":"NYY","label":"New York Yankees","marketId":"0x8949688cb0d2e040f3fe65112a8dc00b35478a835170e3785cd12ed12fce9885"},{"outcomeIndex":2,"code":"ARI","label":"Arizona Diamondbacks","marketId":"0xc18e5fe971a53bb020881816d3e90bdb9fef84ec8b38ceab21a08f8d319edecc"},{"outcomeIndex":3,"code":"ATL","label":"Atlanta Braves","marketId":"0xc39ef8698d4b348e4f64e22db4d10d19bb03f46e3979889fa68b3a767a91722b"},{"outcomeIndex":4,"code":"BAL","label":"Baltimore Orioles","marketId":"0x8d3a2f764f2b4887d9db89bfaaa04314f3a670021fd09e0297803af411730e4e"},{"outcomeIndex":5,"code":"BOS","label":"Boston Red Sox","marketId":"0x48e7ddf938e360de8a92f78a8f998ac8405d4c7f4ec638122dd94e26ccc5fcd5"},{"outcomeIndex":6,"code":"CHC","label":"Chicago Cubs","marketId":"0x394e477f692e683ef3ed9272e8ad79b68389b962c883a268a122873b738e8904"},{"outcomeIndex":7,"code":"CHW","label":"Chicago White Sox","marketId":"0x1a40154481aac0fed4264884e258480f242102d0488c0b142ee75ad52cec0dcc"},{"outcomeIndex":8,"code":"CIN","label":"Cincinnati Reds","marketId":"0xb1c26bd47dd7d25457b7f47f54e88aeb90d723ca4c5a06b4cbcc390d607cc6cc"},{"outcomeIndex":9,"code":"CLE","label":"Cleveland Guardians","marketId":"0xde63d7369adc4fe975e422a21261f01aa613ba9ffd7259dba6bb3f6709f5dd37"},{"outcomeIndex":10,"code":"COL","label":"Colorado Rockies","marketId":"0xf8f6d3ba5688b743972cc425f3038ef96cd004d555a9ff78fd6f4bbaaaf079bc"},{"outcomeIndex":11,"code":"DET","label":"Detroit Tigers","marketId":"0xcf991234d6ffe60400f0ab7dd71e686a5848b496fdfaeb46f0d539ab82d452d2"},{"outcomeIndex":12,"code":"HOU","label":"Houston Astros","marketId":"0xb8039925ab7f54c68c2383723f76c4452518bac8a1483abfc25889d7b7bc921a"},{"outcomeIndex":13,"code":"KC","label":"Kansas City Royals","marketId":"0xc2ef68779dd70d5b96572202fd50f1969e9bb8ffc4762331c59ffbb96745f809"},{"outcomeIndex":14,"code":"LAA","label":"Los Angeles Angels","marketId":"0x3d496faeb13574ce36dc573f57c74c4ec00bea497478f6452558100470536dd5"},{"outcomeIndex":15,"code":"MIA","label":"Miami Marlins","marketId":"0x4d0cc39e48e34834f5a1554c3bb22f993f8e4200d13a4dd5edf9251048c292b3"},{"outcomeIndex":16,"code":"MIL","label":"Milwaukee Brewers","marketId":"0x9a4c9a0211a134bedc59dd739ca9194f884fbaef49741bb72788305a6c1cfc03"},{"outcomeIndex":17,"code":"MIN","label":"Minnesota Twins","marketId":"0xce3b9c82df842b725375feb1cbecca62e1e41ca88a3c838d0532d5237f29eaf5"},{"outcomeIndex":18,"code":"NYM","label":"New York Mets","marketId":"0x241427a42ffdbcd5a9b151bad51da027137b18a7d1d9c08b36e99a242193d8b5"},{"outcomeIndex":19,"code":"OAK","label":"Athletics","marketId":"0x56a848d356c81fcf966583db5deea3ef21d889728f27b1728415fc8e00294471"},{"outcomeIndex":20,"code":"PHI","label":"Philadelphia Phillies","marketId":"0xa67a10d98bd9435eb4d3f5adfb2820ff50df5feaf0be855192806487281930a1"},{"outcomeIndex":21,"code":"PIT","label":"Pittsburgh Pirates","marketId":"0x32b2deaa9f1b11420f78ee1261afc44914e1db53b7a0763f5445782a7e0708e0"},{"outcomeIndex":22,"code":"SD","label":"San Diego Padres","marketId":"0x92b0b8966bf029198441ab2d62790537957904651515794d09940001044220fe"},{"outcomeIndex":23,"code":"SEA","label":"Seattle Mariners","marketId":"0xdfcee9a7ac49a2997a4f5b87c42934fcda1ce1aae7d761d85ef2c2b8ef7b4d6c"},{"outcomeIndex":24,"code":"SF","label":"San Francisco Giants","marketId":"0x29116062d03116a25d21ed0e72945784ac35ec0699ae1d60eb68f2a2e880020a"},{"outcomeIndex":25,"code":"STL","label":"St. Louis Cardinals","marketId":"0xb60328bc9d1a263c955ffbcbc7144bad13c45fcb893c1dc6e137766cced6d903"},{"outcomeIndex":26,"code":"TB","label":"Tampa Bay Rays","marketId":"0x5dadc51ff37196eefab8834d8844006c4922b525bcfa1ff94aadc00107c7fc2c"},{"outcomeIndex":27,"code":"TEX","label":"Texas Rangers","marketId":"0x6cdd5648ef09dfe6f8b5c7825e214417d8cb486bca6a3c0dd51ff73da5108623"},{"outcomeIndex":28,"code":"TOR","label":"Toronto Blue Jays","marketId":"0x616f00f6c5a3cf8691f7d8ba7cb6bb3bb699b378764912c8555e27b6c03c691c"},{"outcomeIndex":29,"code":"WSH","label":"Washington Nationals","marketId":"0x5119e3816e3ec7c12e15623cee145aafacc6b3edb77f4379b31fbc75575244cb"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-10-11","time":"8:00 PM","league":"MLB","gameId":"MLB-AL-CHAMPION-SPECIAL-2026-1791763200","slug":"mlb-al-champion-special-2026-1791763200","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2026 American League Champion","marketQuestion_es":"Campeón de la Liga Americana 2026","teamACode":"NYY","teamAName":"New York Yankees","teamBCode":"TB","teamBName":"Tampa Bay Rays","outcomesCount":15,"outcomes":[{"outcomeIndex":0,"code":"NYY","label":"New York Yankees","marketId":"0x5b8dd2a5998ac24693f0883db45154b07280d544e9259ac6b89d7894564f0cf8"},{"outcomeIndex":1,"code":"TB","label":"Tampa Bay Rays","marketId":"0xb3ec14702c10a1617c3408d1ed1d243c32aa06009346518bdd154a1acc96357a"},{"outcomeIndex":2,"code":"BOS","label":"Boston Red Sox","marketId":"0x7008de62f7b4434b7617fe773d9060855eff74e81e1215b1eab43791122a1d73"},{"outcomeIndex":3,"code":"HOU","label":"Houston Astros","marketId":"0xbc3780677d6a8878ff329121da2b50c984c14dfc4f56105330dddbe2fca9df59"},{"outcomeIndex":4,"code":"CHW","label":"Chicago White Sox","marketId":"0x762056a8d40057d8a78fbe43bfbf2a52955b7eeda96199921431bf224a02108d"},{"outcomeIndex":5,"code":"DET","label":"Detroit Tigers","marketId":"0x92a74ff8b0cf9b6ee0e4abcbdf8326bcdfabac6983486e4e69ba7cfbd2593a66"},{"outcomeIndex":6,"code":"SEA","label":"Seattle Mariners","marketId":"0x796cbc9553d87b913b102941e7b52dd96e07d1585e26e9f5b84f77e4d09ebb74"},{"outcomeIndex":7,"code":"CLE","label":"Cleveland Guardians","marketId":"0x4c7b550bd5bf878b93a5492312eebd091235a34fa9c1f7bd1b82e114b386460d"},{"outcomeIndex":8,"code":"TEX","label":"Texas Rangers","marketId":"0xec0134f98e12d9d7e9d995bdbaf4248e9613ef0a2e9e256298817cae9f0d451d"},{"outcomeIndex":9,"code":"TOR","label":"Toronto Blue Jays","marketId":"0x4b74e654f32411be36bbfa8e336e6baf85c460644720ac0924892e39ff758e04"},{"outcomeIndex":10,"code":"BAL","label":"Baltimore Orioles","marketId":"0x61755ee5d7f702bcc64b968ae130378b134c0958ed257dde01a50cac37bcb31a"},{"outcomeIndex":11,"code":"MIN","label":"Minnesota Twins","marketId":"0xc584a87c0240bed8d1099b7bda02eb277f44289a9c5859eebc4efb561ea001c8"},{"outcomeIndex":12,"code":"OAK","label":"Athletics","marketId":"0xfbbc55830e2bd5c1ecf80fe7d8541dc4ecdf0c5609bc98b58915d2e89b344ee4"},{"outcomeIndex":13,"code":"LAA","label":"Los Angeles Angels","marketId":"0x646d390e7201481cdaaac00577feb377c9264b3e992cbbdc8eff4c20f97b186a"},{"outcomeIndex":14,"code":"KC","label":"Kansas City Royals","marketId":"0x5ed2d3720334dbd0853cd7fef9881d194994b7c339b35abac0bda83b89b45591"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-10-11","time":"8:00 PM","league":"MLB","gameId":"MLB-NL-CHAMPION-SPECIAL-2026-1791763200","slug":"mlb-nl-champion-special-2026-1791763200","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2026 National League Champion","marketQuestion_es":"Campeón de la Liga Nacional 2026","teamACode":"LAD","teamAName":"Los Angeles Dodgers","teamBCode":"MIL","teamBName":"Milwaukee Brewers","outcomesCount":15,"outcomes":[{"outcomeIndex":0,"code":"LAD","label":"Los Angeles Dodgers","marketId":"0xacc979a030489f92efae4f064556eec8926ea512e79b9e61229d7c8e81deac9f"},{"outcomeIndex":1,"code":"MIL","label":"Milwaukee Brewers","marketId":"0x3cf81456126ec56234534d507c14e1af3c19baddb5beeac7a21cf5b59c40c4ed"},{"outcomeIndex":2,"code":"ATL","label":"Atlanta Braves","marketId":"0x21d417cd96c336ba4b922dc7a9cd5ffab885afc0a5aecff3907da76337889f46"},{"outcomeIndex":3,"code":"CHC","label":"Chicago Cubs","marketId":"0x053b639dc3ad68dccb01eb2097a664404951e2195256550a77b88fb8de3816f7"},{"outcomeIndex":4,"code":"PHI","label":"Philadelphia Phillies","marketId":"0xca239533dd7b00d9a572ee85b59546bef63ef5df83a187e0871fb757ed579b51"},{"outcomeIndex":5,"code":"SD","label":"San Diego Padres","marketId":"0xa593bdddde451a93fbdafb4a392473f2bc355b26c61ec93c480db7ed3df4b259"},{"outcomeIndex":6,"code":"ARI","label":"Arizona Diamondbacks","marketId":"0xf38b704516b9cc610ef4fcc7adc0e8213360f9516dabcebb38a6397601f87825"},{"outcomeIndex":7,"code":"MIA","label":"Miami Marlins","marketId":"0x9e567fb49197e275b5cda4298ec573ef73848ce5134a3dfcc7ef0fd72e8b26b5"},{"outcomeIndex":8,"code":"PIT","label":"Pittsburgh Pirates","marketId":"0x8e4b8fc12b847d84cd4036ffb29fd87fb867e5ff048c1274ce4ef7ff68a37437"},{"outcomeIndex":9,"code":"STL","label":"St. Louis Cardinals","marketId":"0x8ed8741d3f54a1f10566c07aba342f89eabe7fa47c458f6b4e649843899f8f89"},{"outcomeIndex":10,"code":"WSH","label":"Washington Nationals","marketId":"0xd70587f59511c4abf731dd51f779dcd232bc0a03c8002d169cc23802dbf95536"},{"outcomeIndex":11,"code":"NYM","label":"New York Mets","marketId":"0x4a93129f522eaaee48efa9b01a1d9b8e87a813021c1cfd25e4e1e5ac85250e5e"},{"outcomeIndex":12,"code":"SF","label":"San Francisco Giants","marketId":"0xed6d25f2eaeae4bb86f249fb1e3f15893fb0d7d180f50f7aada6521a74210f79"},{"outcomeIndex":13,"code":"CIN","label":"Cincinnati Reds","marketId":"0x8b84857d24614d08c38b01b1695d6a43d7e10eece43d6f99fb5b302e14bf17e3"},{"outcomeIndex":14,"code":"COL","label":"Colorado Rockies","marketId":"0xdecab56f1d27672873faf45a911447d0e06a82ace0b58da6cfb7a644c6832a3d"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-09-27","time":"8:00 PM","league":"MLB","gameId":"MLB-AL-MVP-SPECIAL-2026-1790553600","slug":"mlb-al-mvp-special-2026-1790553600","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2026 AL MVP","marketQuestion_es":"MVP de la Liga Americana 2026","teamACode":"YA","teamAName":"Yordan Alvarez","teamBCode":"JC","teamBName":"Junior Caminero","outcomesCount":12,"outcomes":[{"outcomeIndex":0,"code":"YA","label":"Yordan Alvarez","marketId":"0x8c7a3befcfb70510556d167dec806d4f23b4297e324e16290f86d06300dcb257"},{"outcomeIndex":1,"code":"JC","label":"Junior Caminero","marketId":"0x05b4d318430ae9c2c0a633b0b4238ff2acb61c2978b18d5073eb95f9359fefb1"},{"outcomeIndex":2,"code":"BWI","label":"Bobby Witt Jr.","marketId":"0x0456812bfd4f8e6be35374c2248adce4980134fb4a8f8c52df52b517bfab00fa"},{"outcomeIndex":3,"code":"DD","label":"Dillon Dingler","marketId":"0x1c4522e6466a9a2411003a2ff2e5b256938bad8d418e5f802a521d98f8aee4e4"},{"outcomeIndex":4,"code":"BR","label":"Ben Rice","marketId":"0x162c4bc53e84a81e00d6b5eb76b4da149316e562d57b093f5d698f5213e60c50"},{"outcomeIndex":5,"code":"CRL","label":"Cal Raleigh","marketId":"0x71b8321db2826175acc66b00cf8ab8506de4494852497b50aa9fac5f34261cab"},{"outcomeIndex":6,"code":"GH","label":"Gunnar Henderson","marketId":"0x8b54e4a72662aa95096c8ccd818449ef1e1ead309f717f3bed97881b698b95f7"},{"outcomeIndex":7,"code":"JRA","label":"Jose Ramirez","marketId":"0x6c23e52a1bb815bf358b573c63dc491d202c453aa7fa02486be13e3f34dd3f4c"},{"outcomeIndex":8,"code":"JRO","label":"Julio Rodriguez","marketId":"0xd946a0a5ec953a8438a28816fb9ea665c520f32ce9cbfb588997e37ae1c38ae4"},{"outcomeIndex":9,"code":"NK","label":"Nick Kurtz","marketId":"0x23f858317bb1563d23fdfdb35ac889dde1b71919bf73d91b2094a5fde2fe7907"},{"outcomeIndex":10,"code":"AJ","label":"Aaron Judge","marketId":"0xd05f0ddb0be309bb50f4548ffa2c5dbca9ca34f13d0d776060c9c85094ecc1d8"},{"outcomeIndex":11,"code":"CSE","label":"Corey Seager","marketId":"0xe80326cf094cdbbac0f0feb0dd8f894c7f1d2f0813922fbb4ce57bdf973b8607"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-09-27","time":"8:00 PM","league":"MLB","gameId":"MLB-NL-MVP-SPECIAL-2026-1790553600","slug":"mlb-nl-mvp-special-2026-1790553600","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2026 NL MVP","marketQuestion_es":"MVP de la Liga Nacional 2026","teamACode":"PC","teamAName":"Pete Crow-Armstrong","teamBCode":"SO","teamBName":"Shohei Ohtani","outcomesCount":12,"outcomes":[{"outcomeIndex":0,"code":"PC","label":"Pete Crow-Armstrong","marketId":"0xa7de2fadfab9984d034ecf9095d273fa27553c6377743bcb0b89888e25e28d95"},{"outcomeIndex":1,"code":"SO","label":"Shohei Ohtani","marketId":"0x1fa78cd89c32ea163b12ea1c1c6ea13148d7374f4c984575dcdbc9414592f27b"},{"outcomeIndex":2,"code":"MO","label":"Matt Olson","marketId":"0x226f1f4c4bf9da518cb7f2bd62a8dee18c738c5c7e67633fef2c72a04f017ea3"},{"outcomeIndex":3,"code":"JS","label":"Juan Soto","marketId":"0x3e73b3e9b19c3f781b865ed42507b99da35f3aeec2f028ce6e1fb42531914b07"},{"outcomeIndex":4,"code":"FT","label":"Fernando Tatis Jr.","marketId":"0x95f1a0a8acedb3aceec0f9c506ddc3b387e5017affe65fe70a04ca82729cc578"},{"outcomeIndex":5,"code":"MB","label":"Mookie Betts","marketId":"0xfc96b6ca69a6f0581917f5d2f5eb2e201b07af59fc2cc942f1c338bbdcb5d201"},{"outcomeIndex":6,"code":"BH","label":"Bryce Harper","marketId":"0x2285f8fc7a5439b28c9fcf226bb83ed60d9faf166351b93d538872cdda0ea0f1"},{"outcomeIndex":7,"code":"KT","label":"Kyle Tucker","marketId":"0x949ca46a6897ff8d495d3a0e566ae5f5c5240cdc67819f52beae8678d05162e4"},{"outcomeIndex":8,"code":"ED","label":"Elly De La Cruz","marketId":"0x4bfd0b72553e0bb54820637b5de25e3a1bcdc553295640ad73f4f95eb7cf3d75"},{"outcomeIndex":9,"code":"FL","label":"Francisco Lindor","marketId":"0x22cf7587a5b15112a269f430980bfc0ddc71b00095648739ac02a296493bdb71"},{"outcomeIndex":10,"code":"RA","label":"Ronald Acuña Jr.","marketId":"0x9238abe1c79fc145b16a15e49e4d579ad8ec1534e7f0090e2ede6197cfd3f466"},{"outcomeIndex":11,"code":"AP","label":"Andy Pages","marketId":"0x702788adbd4919b4051a4f7ee40578d95a847695da2aa88367c5c84652b7ae70"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-09-27","time":"8:00 PM","league":"MLB","gameId":"MLB-AL-CYYOUNG-SPECIAL-2026-1790553600","slug":"mlb-al-cyyoung-special-2026-1790553600","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2026 AL Cy Young Winner","marketQuestion_es":"Ganador del Cy Young de la Liga Americana 2026","teamACode":"CSC","teamAName":"Cam Schlittler","teamBCode":"DC","teamBName":"Dylan Cease","outcomesCount":12,"outcomes":[{"outcomeIndex":0,"code":"CSC","label":"Cam Schlittler","marketId":"0x5f12f8b856855bca428df799b3834926d8c155c2566a674144cc345cf0c007d8"},{"outcomeIndex":1,"code":"DC","label":"Dylan Cease","marketId":"0x79b4cbbb4d9657cd446f6374d0a6229a0186502286b2e4e28e48a7693a0e57e5"},{"outcomeIndex":2,"code":"SG","label":"Sonny Gray","marketId":"0x5875523339cd07c144593706754abcce1a620e84d5baf6927278a5dd2e2d1938"},{"outcomeIndex":3,"code":"LG","label":"Logan Gilbert","marketId":"0xe3f844077466c14e658cafd4efb152df8063ee82f5c449449d275f2eb39af624"},{"outcomeIndex":4,"code":"JD","label":"Jacob deGrom","marketId":"0x54fe6b11c8eaf1b6893bfe51e703d9037fb5f5753036d6b19c102e462fbdf126"},{"outcomeIndex":5,"code":"JRY","label":"Joe Ryan","marketId":"0x2494e243f057830a0c10f2958c5cc3090ca5294ced1ade488797dda1678ffabc"},{"outcomeIndex":6,"code":"GW","label":"Gavin Williams","marketId":"0x23b792ec33d81c420ce493769cdee588cee7f0d05838127bbcfdadb67370dcc2"},{"outcomeIndex":7,"code":"DR","label":"Drew Rasmussen","marketId":"0x6e2049661fffb9a28b24ee9970c50194219546ae169e3f1e635076bfd5696e1f"},{"outcomeIndex":8,"code":"SB","label":"Sean Burke","marketId":"0x09af5892a12595f6430711597776607a6a1fbdb02f0218e90460ae83434eb5c1"},{"outcomeIndex":9,"code":"TS","label":"Tarik Skubal","marketId":"0x17132429f37ef6d09ad451c0683c6ab186025aecb1715b207fbaa2fcfe44e8c7"},{"outcomeIndex":10,"code":"GC","label":"Garrett Crochet","marketId":"0xdffa2a4549f65f79fcfdb3313fee98accdc61e8300d1f277216582b260a265ce"},{"outcomeIndex":11,"code":"CRG","label":"Cole Ragans","marketId":"0x328c0ae0c055c00c6ec6cc853a70f0faa7503f478cbefbca56183fde096f2cd9"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-09-27","time":"8:00 PM","league":"MLB","gameId":"MLB-NL-CYYOUNG-SPECIAL-2026-1790553600","slug":"mlb-nl-cyyoung-special-2026-1790553600","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2026 NL Cy Young Winner","marketQuestion_es":"Ganador del Cy Young de la Liga Nacional 2026","teamACode":"JM","teamAName":"Jacob Misiorowski","teamBCode":"CSL","teamBName":"Chris Sale","outcomesCount":12,"outcomes":[{"outcomeIndex":0,"code":"JM","label":"Jacob Misiorowski","marketId":"0xa0c711e2876bda5f5f35971917f3ab6316c474b360f20e28e9edc3975ab312df"},{"outcomeIndex":1,"code":"CSL","label":"Chris Sale","marketId":"0xc26d9eb9ee6c3fe366dec6f04f2f5fe7c416604875c4edc332b6704ebbe5e8de"},{"outcomeIndex":2,"code":"CSN","label":"Cristopher Sanchez","marketId":"0x2aaf5b79d3cf1f55d7b2e7fc76185cdb5225682bc097aa9140c7e9c9687f5546"},{"outcomeIndex":3,"code":"YY","label":"Yoshinobu Yamamoto","marketId":"0x125b187dfed655bd059fc49ea3d184d538dfdd7e1cf68fb3df9124e355e30033"},{"outcomeIndex":4,"code":"SO","label":"Shohei Ohtani","marketId":"0xac9a610a0d178515a600dce274d6a0d6bb03eda2b519d002de0cf42924bac388"},{"outcomeIndex":5,"code":"ZW","label":"Zack Wheeler","marketId":"0xd0d74542c8b9daf9669d6418419b8a1528be9c0be0cb792c9060035dcda26885"},{"outcomeIndex":6,"code":"NM","label":"Nolan McLean","marketId":"0xdaa6aaf68f2f0ed37722fa9dde5774ce2c31e88b72c620c2597bb1ab0ba85eb3"},{"outcomeIndex":7,"code":"PS","label":"Paul Skenes","marketId":"0x066e810830bfe143fd448ed5e7872bbbf737a20eaa01f246356006550a60132f"},{"outcomeIndex":8,"code":"BWO","label":"Brandon Woodruff","marketId":"0x1c3fd8759f062b192e79129c9d6c544bf221f007ec791d325716a1919a953096"},{"outcomeIndex":9,"code":"FP","label":"Freddy Peralta","marketId":"0x13692224d1ba67f9f412ef0de14f48bc1db311d42aa8efba2065feae0bf4a1fd"},{"outcomeIndex":10,"code":"EP","label":"Eury Perez","marketId":"0x5fc47852435e8a1c71b78764d1d3be8ddf4938c5d923bf66bac64ba244538f05"},{"outcomeIndex":11,"code":"HG","label":"Hunter Greene","marketId":"0x144d53f6ffd4444bc199271e433b7aac4ff8b3f11029827ed5861e52bda33384"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"6:40 PM","league":"MLB","gameId":"MLB-BOS-MIA-2026-08-24-1787611200","slug":"mlb-bos-mia-2026-08-24-1787611200","v2":true,"teamA":"BOS","teamB":"MIA","teamAName":"Boston Red Sox","teamBName":"Miami Marlins","marketType":"BINARY","marketId":"0x468b9005d073e9d0787875f32cb2407e0dffdf3520b61d6384444dedf9085f87"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"6:40 PM","league":"MLB","gameId":"MLB-TB-DET-2026-08-24-1787611200","slug":"mlb-tb-det-2026-08-24-1787611200","v2":true,"teamA":"TB","teamB":"DET","teamAName":"Tampa Bay Rays","teamBName":"Detroit Tigers","marketType":"BINARY","marketId":"0xaab6963660b6705577555e93abb2c64f3ad16894232fc3c2dc29748a41f02427"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"6:45 PM","league":"MLB","gameId":"MLB-COL-WSH-2026-08-24-1787611500","slug":"mlb-col-wsh-2026-08-24-1787611500","v2":true,"teamA":"COL","teamB":"WSH","teamAName":"Colorado Rockies","teamBName":"Washington Nationals","marketType":"BINARY","marketId":"0xc2f67fa9f323a974d516e7a9a800fe728ae79a74bca254d56bebdfddf77fa668"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"7:40 PM","league":"MLB","gameId":"MLB-TEX-CHW-2026-08-24-1787614800","slug":"mlb-tex-chw-2026-08-24-1787614800","v2":true,"teamA":"TEX","teamB":"CHW","teamAName":"Texas Rangers","teamBName":"Chicago White Sox","marketType":"BINARY","marketId":"0x300c7e86eaead0b76443112790711d7b686f5f7b01561d33f6bd076323eacd03"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"9:38 PM","league":"MLB","gameId":"MLB-CLE-LAA-2026-08-24-1787621880","slug":"mlb-cle-laa-2026-08-24-1787621880","v2":true,"teamA":"CLE","teamB":"LAA","teamAName":"Cleveland Guardians","teamBName":"Los Angeles Angels","marketType":"BINARY","marketId":"0xc20d709a32c9f03a511ce994309e46dbb39605808dbe534520691e254c6b568a"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"9:40 PM","league":"MLB","gameId":"MLB-CHC-ARI-2026-08-24-1787622000","slug":"mlb-chc-ari-2026-08-24-1787622000","v2":true,"teamA":"CHC","teamB":"ARI","teamAName":"Chicago Cubs","teamBName":"Arizona Diamondbacks","marketType":"BINARY","marketId":"0x84370d56f826575b1b4a5c772f2061ee584c500bdc6d0972979374ec95139f6f"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"9:40 PM","league":"MLB","gameId":"MLB-MIN-OAK-2026-08-24-1787622000","slug":"mlb-min-oak-2026-08-24-1787622000","v2":true,"teamA":"MIN","teamB":"OAK","teamAName":"Minnesota Twins","teamBName":"Athletics","marketType":"BINARY","marketId":"0xe6a7064901d6b004d14081e02b610f0f1e7bd2fd3354d42f74a0c7011d65f051"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"9:40 PM","league":"MLB","gameId":"MLB-PHI-SEA-2026-08-24-1787622000","slug":"mlb-phi-sea-2026-08-24-1787622000","v2":true,"teamA":"PHI","teamB":"SEA","teamAName":"Philadelphia Phillies","teamBName":"Seattle Mariners","marketType":"BINARY","marketId":"0x7d4e77c8d8f23e3becf67f0ec0f08fdce85f455ca6dd99da39eac55611014063"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"9:40 PM","league":"MLB","gameId":"MLB-PIT-SD-2026-08-24-1787622000","slug":"mlb-pit-sd-2026-08-24-1787622000","v2":true,"teamA":"PIT","teamB":"SD","teamAName":"Pittsburgh Pirates","teamBName":"San Diego Padres","marketType":"BINARY","marketId":"0xe6b05439e71351f54f7251123f46ce4554c725f0439780663b67dce1feb458ed"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-24","time":"9:45 PM","league":"MLB","gameId":"MLB-CIN-SF-2026-08-24-1787622300","slug":"mlb-cin-sf-2026-08-24-1787622300","v2":true,"teamA":"CIN","teamB":"SF","teamAName":"Cincinnati Reds","teamBName":"San Francisco Giants","marketType":"BINARY","marketId":"0xfb02ff0e327d2fa039ff32b25adb6116373925833bed7c580931f8d333c6ea43"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"6:40 PM","league":"MLB","gameId":"MLB-BOS-MIA-2026-08-25-1787697600","slug":"mlb-bos-mia-2026-08-25-1787697600","v2":true,"teamA":"BOS","teamB":"MIA","teamAName":"Boston Red Sox","teamBName":"Miami Marlins","marketType":"BINARY","marketId":"0xaf610e30a67770a4f366f42257ac3345b399adc7ff593ebbed08be7a96021fa1"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"6:40 PM","league":"MLB","gameId":"MLB-TB-DET-2026-08-25-1787697600","slug":"mlb-tb-det-2026-08-25-1787697600","v2":true,"teamA":"TB","teamB":"DET","teamAName":"Tampa Bay Rays","teamBName":"Detroit Tigers","marketType":"BINARY","marketId":"0x75e0006b193165cc8631f8ff5316660d7e69a4e3fb6889e79174156de0f2f0b4"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"6:45 PM","league":"MLB","gameId":"MLB-COL-WSH-2026-08-25-1787697900","slug":"mlb-col-wsh-2026-08-25-1787697900","v2":true,"teamA":"COL","teamB":"WSH","teamAName":"Colorado Rockies","teamBName":"Washington Nationals","marketType":"BINARY","marketId":"0x9668c78104cc96eba8046e3f367f82f2620a613b8e9425281114b8e576723081"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"7:05 PM","league":"MLB","gameId":"MLB-HOU-NYY-2026-08-25-1787699100","slug":"mlb-hou-nyy-2026-08-25-1787699100","v2":true,"teamA":"HOU","teamB":"NYY","teamAName":"Houston Astros","teamBName":"New York Yankees","marketType":"BINARY","marketId":"0x02eb5ced7e9fcae1eba398ae5c87c8b75be035ed8a8f15389da7ae6f572a5daa"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"7:07 PM","league":"MLB","gameId":"MLB-KC-TOR-2026-08-25-1787699220","slug":"mlb-kc-tor-2026-08-25-1787699220","v2":true,"teamA":"KC","teamB":"TOR","teamAName":"Kansas City Royals","teamBName":"Toronto Blue Jays","marketType":"BINARY","marketId":"0x202d80d22948f2be2521b52ef43faa352d77d207655a8f34c7fe24d1edb531fa"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"7:10 PM","league":"MLB","gameId":"MLB-MIL-NYM-2026-08-25-1787699400","slug":"mlb-mil-nym-2026-08-25-1787699400","v2":true,"teamA":"MIL","teamB":"NYM","teamAName":"Milwaukee Brewers","teamBName":"New York Mets","marketType":"BINARY","marketId":"0x86b9ea27950d5fb2dfd098d9fb257413e43bbf3e1d7ccf5cfa294e2298c1f4e6"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"7:15 PM","league":"MLB","gameId":"MLB-LAD-ATL-2026-08-25-1787699700","slug":"mlb-lad-atl-2026-08-25-1787699700","v2":true,"teamA":"LAD","teamB":"ATL","teamAName":"Los Angeles Dodgers","teamBName":"Atlanta Braves","marketType":"BINARY","marketId":"0x39ce7160588724ec8045b55fae0ed6890845078d4748ba755a9820f32897a0f3"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"7:40 PM","league":"MLB","gameId":"MLB-TEX-CHW-2026-08-25-1787701200","slug":"mlb-tex-chw-2026-08-25-1787701200","v2":true,"teamA":"TEX","teamB":"CHW","teamAName":"Texas Rangers","teamBName":"Chicago White Sox","marketType":"BINARY","marketId":"0xa7e717ddbc2673d047d04130b30e86a37309cd2d315c3855c26e35ccda615cbf"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"7:45 PM","league":"MLB","gameId":"MLB-BAL-STL-2026-08-25-1787701500","slug":"mlb-bal-stl-2026-08-25-1787701500","v2":true,"teamA":"BAL","teamB":"STL","teamAName":"Baltimore Orioles","teamBName":"St. Louis Cardinals","marketType":"BINARY","marketId":"0x1a7c2b476d79e8902a083060d2d142f06299c5eff7cee95a60b0c55406844112"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"9:38 PM","league":"MLB","gameId":"MLB-CLE-LAA-2026-08-25-1787708280","slug":"mlb-cle-laa-2026-08-25-1787708280","v2":true,"teamA":"CLE","teamB":"LAA","teamAName":"Cleveland Guardians","teamBName":"Los Angeles Angels","marketType":"BINARY","marketId":"0x73e7e51e0814b90e976d292f5de7050a32b38817a76dce7eee6378f0558c7801"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"9:40 PM","league":"MLB","gameId":"MLB-CHC-ARI-2026-08-25-1787708400","slug":"mlb-chc-ari-2026-08-25-1787708400","v2":true,"teamA":"CHC","teamB":"ARI","teamAName":"Chicago Cubs","teamBName":"Arizona Diamondbacks","marketType":"BINARY","marketId":"0xf4977eb04a029d8dca7293dc69666b6601950885e0a883fd355f7b6788114586"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"9:40 PM","league":"MLB","gameId":"MLB-MIN-OAK-2026-08-25-1787708400","slug":"mlb-min-oak-2026-08-25-1787708400","v2":true,"teamA":"MIN","teamB":"OAK","teamAName":"Minnesota Twins","teamBName":"Athletics","marketType":"BINARY","marketId":"0xe6e3106580349c376d64b404a9f4dcd962d9dbb2f500ec7ccdc0adff82227d70"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"9:40 PM","league":"MLB","gameId":"MLB-PHI-SEA-2026-08-25-1787708400","slug":"mlb-phi-sea-2026-08-25-1787708400","v2":true,"teamA":"PHI","teamB":"SEA","teamAName":"Philadelphia Phillies","teamBName":"Seattle Mariners","marketType":"BINARY","marketId":"0xc674cd38f13e7498f7e44735ccc98c25367487ab6a2d42865748bd4988f10dd7"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"9:40 PM","league":"MLB","gameId":"MLB-PIT-SD-2026-08-25-1787708400","slug":"mlb-pit-sd-2026-08-25-1787708400","v2":true,"teamA":"PIT","teamB":"SD","teamAName":"Pittsburgh Pirates","teamBName":"San Diego Padres","marketType":"BINARY","marketId":"0xb640e6e0d7c1a999c76df2dcd9a05e4301b4323d5c424792a9055ee1f5e8a01f"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"9:45 PM","league":"MLB","gameId":"MLB-CIN-SF-2026-08-25-1787708700","slug":"mlb-cin-sf-2026-08-25-1787708700","v2":true,"teamA":"CIN","teamB":"SF","teamAName":"Cincinnati Reds","teamBName":"San Francisco Giants","marketType":"BINARY","marketId":"0x9765f7488d00f821f1f0cea3d6937a5d0bea9b1c932c2952d21331dc18eaf428"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"1:10 PM","league":"MLB","gameId":"MLB-TB-DET-2026-08-26-1787764200","slug":"mlb-tb-det-2026-08-26-1787764200","v2":true,"teamA":"TB","teamB":"DET","teamAName":"Tampa Bay Rays","teamBName":"Detroit Tigers","marketType":"BINARY","marketId":"0x6d4c11ed633444a9996632e3c60cd8382105310974342bceefbb021883e661b4"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"3:40 PM","league":"MLB","gameId":"MLB-CHC-ARI-2026-08-26-1787773200","slug":"mlb-chc-ari-2026-08-26-1787773200","v2":true,"teamA":"CHC","teamB":"ARI","teamAName":"Chicago Cubs","teamBName":"Arizona Diamondbacks","marketType":"BINARY","marketId":"0x1b4f89e21cbd1d83f276d70f087dcf97a75a30d93cb6934d83f60b190c71bafe"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"3:45 PM","league":"MLB","gameId":"MLB-CIN-SF-2026-08-26-1787773500","slug":"mlb-cin-sf-2026-08-26-1787773500","v2":true,"teamA":"CIN","teamB":"SF","teamAName":"Cincinnati Reds","teamBName":"San Francisco Giants","marketType":"BINARY","marketId":"0x6189193ee4d3838f689896690d34e11d26a955ed52323e296ef1efc442e9e476"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"4:07 PM","league":"MLB","gameId":"MLB-CLE-LAA-2026-08-26-1787774820","slug":"mlb-cle-laa-2026-08-26-1787774820","v2":true,"teamA":"CLE","teamB":"LAA","teamAName":"Cleveland Guardians","teamBName":"Los Angeles Angels","marketType":"BINARY","marketId":"0xbfecfc8b4f94e0a57b20c8f0ee926fbeb04c6b321df115c04b870f13d2b6f725"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"4:10 PM","league":"MLB","gameId":"MLB-PHI-SEA-2026-08-26-1787775000","slug":"mlb-phi-sea-2026-08-26-1787775000","v2":true,"teamA":"PHI","teamB":"SEA","teamAName":"Philadelphia Phillies","teamBName":"Seattle Mariners","marketType":"BINARY","marketId":"0x8210a7655587aecc35949288253ac57561a5ccad57da8c33cd694efd8c96f52d"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"4:10 PM","league":"MLB","gameId":"MLB-PIT-SD-2026-08-26-1787775000","slug":"mlb-pit-sd-2026-08-26-1787775000","v2":true,"teamA":"PIT","teamB":"SD","teamAName":"Pittsburgh Pirates","teamBName":"San Diego Padres","marketType":"BINARY","marketId":"0x78620fd48705c86be5b5ef229310dbfc01d6f836660630d34bc7300415c1b384"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"6:40 PM","league":"MLB","gameId":"MLB-BOS-MIA-2026-08-26-1787784000","slug":"mlb-bos-mia-2026-08-26-1787784000","v2":true,"teamA":"BOS","teamB":"MIA","teamAName":"Boston Red Sox","teamBName":"Miami Marlins","marketType":"BINARY","marketId":"0xce1e9f49ed598a7aa480823f2ba066157ba23ac01fa760d5c981cb748543cff5"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"6:45 PM","league":"MLB","gameId":"MLB-COL-WSH-2026-08-26-1787784300","slug":"mlb-col-wsh-2026-08-26-1787784300","v2":true,"teamA":"COL","teamB":"WSH","teamAName":"Colorado Rockies","teamBName":"Washington Nationals","marketType":"BINARY","marketId":"0x25401636093909f3c9b4c8047baa0bdce2f143affa9dd2c3e5c8513905ed5adb"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"7:05 PM","league":"MLB","gameId":"MLB-HOU-NYY-2026-08-26-1787785500","slug":"mlb-hou-nyy-2026-08-26-1787785500","v2":true,"teamA":"HOU","teamB":"NYY","teamAName":"Houston Astros","teamBName":"New York Yankees","marketType":"BINARY","marketId":"0x3bf2b7dfc3bab4e20dade9f0d8e829614b300b410403e983a50521ed8435cff5"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"7:07 PM","league":"MLB","gameId":"MLB-KC-TOR-2026-08-26-1787785620","slug":"mlb-kc-tor-2026-08-26-1787785620","v2":true,"teamA":"KC","teamB":"TOR","teamAName":"Kansas City Royals","teamBName":"Toronto Blue Jays","marketType":"BINARY","marketId":"0xf766d1280da275f2ac101530dba9a8d92ba53f488a93c4924ccbe7001139fa90"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"7:10 PM","league":"MLB","gameId":"MLB-MIL-NYM-2026-08-26-1787785800","slug":"mlb-mil-nym-2026-08-26-1787785800","v2":true,"teamA":"MIL","teamB":"NYM","teamAName":"Milwaukee Brewers","teamBName":"New York Mets","marketType":"BINARY","marketId":"0x03deeacf08d5c41b9b1c4d08eeed4781ad2877acb0e778d615bdff68182b2bcb"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"7:15 PM","league":"MLB","gameId":"MLB-LAD-ATL-2026-08-26-1787786100","slug":"mlb-lad-atl-2026-08-26-1787786100","v2":true,"teamA":"LAD","teamB":"ATL","teamAName":"Los Angeles Dodgers","teamBName":"Atlanta Braves","marketType":"BINARY","marketId":"0x6c9ac059e4b98af67f0b556a0d28a9bd3ae65f9a82b34113c4b94e982d7003d1"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"7:40 PM","league":"MLB","gameId":"MLB-TEX-CHW-2026-08-26-1787787600","slug":"mlb-tex-chw-2026-08-26-1787787600","v2":true,"teamA":"TEX","teamB":"CHW","teamAName":"Texas Rangers","teamBName":"Chicago White Sox","marketType":"BINARY","marketId":"0xbb814933faeb95f44dbef7280a54f161e5c1e5c3443c409181fbce854815c327"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"7:45 PM","league":"MLB","gameId":"MLB-BAL-STL-2026-08-26-1787787900","slug":"mlb-bal-stl-2026-08-26-1787787900","v2":true,"teamA":"BAL","teamB":"STL","teamAName":"Baltimore Orioles","teamBName":"St. Louis Cardinals","marketType":"BINARY","marketId":"0x6fb48d0bf74d5bd7aaa91bced2f4e272b999b5a7c6dca3526342e1fb8ab5a776"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"9:05 PM","league":"MLB","gameId":"MLB-MIN-OAK-2026-08-26-1787792700","slug":"mlb-min-oak-2026-08-26-1787792700","v2":true,"teamA":"MIN","teamB":"OAK","teamAName":"Minnesota Twins","teamBName":"Athletics","marketType":"BINARY","marketId":"0x078b64d58c63b46d514e2591b09accf2f1ab52d6af12c5563db44bf1d9d83521"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"1:05 PM","league":"MLB","gameId":"MLB-COL-WSH-2026-08-27-1787850300","slug":"mlb-col-wsh-2026-08-27-1787850300","v2":true,"teamA":"COL","teamB":"WSH","teamAName":"Colorado Rockies","teamBName":"Washington Nationals","marketType":"BINARY","marketId":"0xe047640396d78b24facf1dbde3c2b2d02e1d2d62f0320fab07b779fdab27bbae"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"2:15 PM","league":"MLB","gameId":"MLB-BAL-STL-2026-08-27-1787854500","slug":"mlb-bal-stl-2026-08-27-1787854500","v2":true,"teamA":"BAL","teamB":"STL","teamAName":"Baltimore Orioles","teamBName":"St. Louis Cardinals","marketType":"BINARY","marketId":"0x27317a70116d92fb27611e6c75ecf2d0024bb947898c614df4027790fcc36b3c"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"7:05 PM","league":"MLB","gameId":"MLB-HOU-NYY-2026-08-27-1787871900","slug":"mlb-hou-nyy-2026-08-27-1787871900","v2":true,"teamA":"HOU","teamB":"NYY","teamAName":"Houston Astros","teamBName":"New York Yankees","marketType":"BINARY","marketId":"0xceedd4620c10d08a612d5cbab5572f3c1f764d02ae8db0ba0d0872666eef8634"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"7:07 PM","league":"MLB","gameId":"MLB-KC-TOR-2026-08-27-1787872020","slug":"mlb-kc-tor-2026-08-27-1787872020","v2":true,"teamA":"KC","teamB":"TOR","teamAName":"Kansas City Royals","teamBName":"Toronto Blue Jays","marketType":"BINARY","marketId":"0x52fc98050b8f4a955573549b170202b2ad82867a3705bc5b6e41a18f9d4ed5c9"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"7:10 PM","league":"MLB","gameId":"MLB-MIL-NYM-2026-08-27-1787872200","slug":"mlb-mil-nym-2026-08-27-1787872200","v2":true,"teamA":"MIL","teamB":"NYM","teamAName":"Milwaukee Brewers","teamBName":"New York Mets","marketType":"BINARY","marketId":"0xe4d8e2dac1a8d0995064472b982ec8115845391a7523bb4da238c40355d450cd"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"7:15 PM","league":"MLB","gameId":"MLB-LAD-ATL-2026-08-27-1787872500","slug":"mlb-lad-atl-2026-08-27-1787872500","v2":true,"teamA":"LAD","teamB":"ATL","teamAName":"Los Angeles Dodgers","teamBName":"Atlanta Braves","marketType":"BINARY","marketId":"0x420e361e0a0e1ed7fb40b54567d74ef7b3d2148b8eed295918cc2580d835b382"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"9:45 PM","league":"MLB","gameId":"MLB-ARI-SF-2026-08-27-1787881500","slug":"mlb-ari-sf-2026-08-27-1787881500","v2":true,"teamA":"ARI","teamB":"SF","teamAName":"Arizona Diamondbacks","teamBName":"San Francisco Giants","marketType":"BINARY","marketId":"0xd95f504f2ee7104a8dc47054d96c5613c2f405614522802e180f74fc48edea5f"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"2:20 PM","league":"MLB","gameId":"MLB-CIN-CHC-2026-08-28-1787941200","slug":"mlb-cin-chc-2026-08-28-1787941200","v2":true,"teamA":"CIN","teamB":"CHC","teamAName":"Cincinnati Reds","teamBName":"Chicago Cubs","marketType":"BINARY","marketId":"0x88575aae5f093756c071ddc46f1acb641a770fb18879b15f2a0f4ac9cd8efedb"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"6:40 PM","league":"MLB","gameId":"MLB-LAD-DET-2026-08-28-1787956800","slug":"mlb-lad-det-2026-08-28-1787956800","v2":true,"teamA":"LAD","teamB":"DET","teamAName":"Los Angeles Dodgers","teamBName":"Detroit Tigers","marketType":"BINARY","marketId":"0xde8664d301485466a30f39beec4b8147fe535b95eb6944d05ec7e29a9485d9ae"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"6:45 PM","league":"MLB","gameId":"MLB-MIA-WSH-2026-08-28-1787957100","slug":"mlb-mia-wsh-2026-08-28-1787957100","v2":true,"teamA":"MIA","teamB":"WSH","teamAName":"Miami Marlins","teamBName":"Washington Nationals","marketType":"BINARY","marketId":"0xc0b4e5e22707bddea7d4a2f4bba608def698fe55a61aaa532307a740191d3704"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:10 PM","league":"MLB","gameId":"MLB-HOU-NYM-2026-08-28-1787958600","slug":"mlb-hou-nym-2026-08-28-1787958600","v2":true,"teamA":"HOU","teamB":"NYM","teamAName":"Houston Astros","teamBName":"New York Mets","marketType":"BINARY","marketId":"0x0ee81f9d67ec264fa0319049d634d432fe500afaf14c6d3471951cb86b74b1b7"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:10 PM","league":"MLB","gameId":"MLB-KC-CLE-2026-08-28-1787958600","slug":"mlb-kc-cle-2026-08-28-1787958600","v2":true,"teamA":"KC","teamB":"CLE","teamAName":"Kansas City Royals","teamBName":"Cleveland Guardians","marketType":"BINARY","marketId":"0x9e977425659e5b590976b87ff0870bd380fd9cd5d2c25bb6e7ab83bf4b18d125"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:10 PM","league":"MLB","gameId":"MLB-SD-TB-2026-08-28-1787958600","slug":"mlb-sd-tb-2026-08-28-1787958600","v2":true,"teamA":"SD","teamB":"TB","teamAName":"San Diego Padres","teamBName":"Tampa Bay Rays","marketType":"BINARY","marketId":"0xd5971d9237ef30fd9166eb69f3671588dd1bd4c060e65544dd55bf74be076f40"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:15 PM","league":"MLB","gameId":"MLB-BOS-NYY-2026-08-28-1787958900","slug":"mlb-bos-nyy-2026-08-28-1787958900","v2":true,"teamA":"BOS","teamB":"NYY","teamAName":"Boston Red Sox","teamBName":"New York Yankees","marketType":"BINARY","marketId":"0x76c1e9d2651980724da6a22327114a89402097cbc3b8ef88a54dce3a4beb0b97"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:15 PM","league":"MLB","gameId":"MLB-COL-ATL-2026-08-28-1787958900","slug":"mlb-col-atl-2026-08-28-1787958900","v2":true,"teamA":"COL","teamB":"ATL","teamAName":"Colorado Rockies","teamBName":"Atlanta Braves","marketType":"BINARY","marketId":"0xa281de73082db9235deb0b01dcf7c1343735768b0d05b701334e0c9cb41e4030"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:15 PM","league":"MLB","gameId":"MLB-SEA-TOR-2026-08-28-1787958900","slug":"mlb-sea-tor-2026-08-28-1787958900","v2":true,"teamA":"SEA","teamB":"TOR","teamAName":"Seattle Mariners","teamBName":"Toronto Blue Jays","marketType":"BINARY","marketId":"0x3708e2864e47ec4c7d06a1543666659576c47b119ae8e166eeb1ecb45b4c72b9"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:40 PM","league":"MLB","gameId":"MLB-TEX-MIL-2026-08-28-1787960400","slug":"mlb-tex-mil-2026-08-28-1787960400","v2":true,"teamA":"TEX","teamB":"MIL","teamAName":"Texas Rangers","teamBName":"Milwaukee Brewers","marketType":"BINARY","marketId":"0x118899ea7fc52ce7bf4138bcba042618172c2ef9b0302a873ce60125554acd21"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"8:10 PM","league":"MLB","gameId":"MLB-CHW-MIN-2026-08-28-1787962200","slug":"mlb-chw-min-2026-08-28-1787962200","v2":true,"teamA":"CHW","teamB":"MIN","teamAName":"Chicago White Sox","teamBName":"Minnesota Twins","marketType":"BINARY","marketId":"0xd381e4074cb37a6f3afd3eff82cd155786394dffe7603b222cbbd380c1d178c6"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"8:15 PM","league":"MLB","gameId":"MLB-PIT-STL-2026-08-28-1787962500","slug":"mlb-pit-stl-2026-08-28-1787962500","v2":true,"teamA":"PIT","teamB":"STL","teamAName":"Pittsburgh Pirates","teamBName":"St. Louis Cardinals","marketType":"BINARY","marketId":"0xfb44172e75e9323d49e67636cde2f4c0ad16bdc70da71b880d0ed28e2646e790"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"9:38 PM","league":"MLB","gameId":"MLB-PHI-LAA-2026-08-28-1787967480","slug":"mlb-phi-laa-2026-08-28-1787967480","v2":true,"teamA":"PHI","teamB":"LAA","teamAName":"Philadelphia Phillies","teamBName":"Los Angeles Angels","marketType":"BINARY","marketId":"0x9bf9bdbc41625c9aefea8e3ff294a81a68860c52231db58c4e22c65816e46f48"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"9:40 PM","league":"MLB","gameId":"MLB-BAL-OAK-2026-08-28-1787967600","slug":"mlb-bal-oak-2026-08-28-1787967600","v2":true,"teamA":"BAL","teamB":"OAK","teamAName":"Baltimore Orioles","teamBName":"Athletics","marketType":"BINARY","marketId":"0x19ed6b250b91f6843895402a30b4447d87810eb576ea651acb94b895db4bccc5"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"10:15 PM","league":"MLB","gameId":"MLB-ARI-SF-2026-08-28-1787969700","slug":"mlb-ari-sf-2026-08-28-1787969700","v2":true,"teamA":"ARI","teamB":"SF","teamAName":"Arizona Diamondbacks","teamBName":"San Francisco Giants","marketType":"BINARY","marketId":"0x8b21e02fa7d39316ad67bc754df28b05f64ecd67536321462ffd5d810d732bad"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"1:05 PM","league":"MLB","gameId":"MLB-BOS-NYY-2026-08-29-1788023100","slug":"mlb-bos-nyy-2026-08-29-1788023100","v2":true,"teamA":"BOS","teamB":"NYY","teamAName":"Boston Red Sox","teamBName":"New York Yankees","marketType":"BINARY","marketId":"0x6871e806d28dc90375f061d5a2257b3ac00cad07c1cdf6a8b30f503cb944cf2c"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"1:10 PM","league":"MLB","gameId":"MLB-LAD-DET-2026-08-29-1788023400","slug":"mlb-lad-det-2026-08-29-1788023400","v2":true,"teamA":"LAD","teamB":"DET","teamAName":"Los Angeles Dodgers","teamBName":"Detroit Tigers","marketType":"BINARY","marketId":"0x901a3a5bd75bd8c6622fdb76f957c9e2bf1a9b1b7d046dcbe738b74a65af27cb"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"2:10 PM","league":"MLB","gameId":"MLB-CHW-MIN-2026-08-29-1788027000","slug":"mlb-chw-min-2026-08-29-1788027000","v2":true,"teamA":"CHW","teamB":"MIN","teamAName":"Chicago White Sox","teamBName":"Minnesota Twins","marketType":"BINARY","marketId":"0xbcaa62b04ca759222aeb7a28ac911fa6b3edb8c32f3e9674bad2fae8e0b48124"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"2:15 PM","league":"MLB","gameId":"MLB-PIT-STL-2026-08-29-1788027300","slug":"mlb-pit-stl-2026-08-29-1788027300","v2":true,"teamA":"PIT","teamB":"STL","teamAName":"Pittsburgh Pirates","teamBName":"St. Louis Cardinals","marketType":"BINARY","marketId":"0xae02462651ec619f03589a686bfe4d3e99e06a223b723ab8724d00729e323b53"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"2:20 PM","league":"MLB","gameId":"MLB-CIN-CHC-2026-08-29-1788027600","slug":"mlb-cin-chc-2026-08-29-1788027600","v2":true,"teamA":"CIN","teamB":"CHC","teamAName":"Cincinnati Reds","teamBName":"Chicago Cubs","marketType":"BINARY","marketId":"0xc804026ff2f596e7075037239e844602232ee2e6bd61738128bf6bca01cfe987"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"3:07 PM","league":"MLB","gameId":"MLB-SEA-TOR-2026-08-29-1788030420","slug":"mlb-sea-tor-2026-08-29-1788030420","v2":true,"teamA":"SEA","teamB":"TOR","teamAName":"Seattle Mariners","teamBName":"Toronto Blue Jays","marketType":"BINARY","marketId":"0xa842d44c552ae8e194a01b99848076a5a7664e0b37a98cdf4c07286c3bcd2ecc"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"4:05 PM","league":"MLB","gameId":"MLB-MIA-WSH-2026-08-29-1788033900","slug":"mlb-mia-wsh-2026-08-29-1788033900","v2":true,"teamA":"MIA","teamB":"WSH","teamAName":"Miami Marlins","teamBName":"Washington Nationals","marketType":"BINARY","marketId":"0x280a340db0d510ddb92bc078f43ee12b40a76b5621d346efa4082e8ecc5be12c"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"4:05 PM","league":"MLB","gameId":"MLB-ARI-SF-2026-08-29-1788033900","slug":"mlb-ari-sf-2026-08-29-1788033900","v2":true,"teamA":"ARI","teamB":"SF","teamAName":"Arizona Diamondbacks","teamBName":"San Francisco Giants","marketType":"BINARY","marketId":"0x8009dfd24947fe8ba2eae4f206052012ac5c9153c1a7801cc56a3f539df2bfcd"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"4:10 PM","league":"MLB","gameId":"MLB-COL-ATL-2026-08-29-1788034200","slug":"mlb-col-atl-2026-08-29-1788034200","v2":true,"teamA":"COL","teamB":"ATL","teamAName":"Colorado Rockies","teamBName":"Atlanta Braves","marketType":"BINARY","marketId":"0x5b5d23bc0fa23c74fdb4767ec86100a13729aa9f8d1882502ec55768a5a70a5f"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"4:10 PM","league":"MLB","gameId":"MLB-HOU-NYM-2026-08-29-1788034200","slug":"mlb-hou-nym-2026-08-29-1788034200","v2":true,"teamA":"HOU","teamB":"NYM","teamAName":"Houston Astros","teamBName":"New York Mets","marketType":"BINARY","marketId":"0x69f9b7633d4245303d8aeb4721e225d8f7acb0321d5477056d48d879f38f563f"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"4:10 PM","league":"MLB","gameId":"MLB-KC-CLE-2026-08-29-1788034200","slug":"mlb-kc-cle-2026-08-29-1788034200","v2":true,"teamA":"KC","teamB":"CLE","teamAName":"Kansas City Royals","teamBName":"Cleveland Guardians","marketType":"BINARY","marketId":"0x34ce427fc2eecf3da4c2c98988dc445e44479f8068e513e367d558f16a77466f"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"4:10 PM","league":"MLB","gameId":"MLB-SD-TB-2026-08-29-1788034200","slug":"mlb-sd-tb-2026-08-29-1788034200","v2":true,"teamA":"SD","teamB":"TB","teamAName":"San Diego Padres","teamBName":"Tampa Bay Rays","marketType":"BINARY","marketId":"0x9b1cf2781b4e88344046293a64c9d53c9aa8f49c54d7bcac0e99052105b3c4ff"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"7:15 PM","league":"MLB","gameId":"MLB-BOS-NYY-2026-08-29-1788045300","slug":"mlb-bos-nyy-2026-08-29-1788045300","v2":true,"teamA":"BOS","teamB":"NYY","teamAName":"Boston Red Sox","teamBName":"New York Yankees","marketType":"BINARY","marketId":"0xace7d948b28a4da81a103d8009f7be49c227d748514d31e31e4c9f249bdba7f7"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"7:15 PM","league":"MLB","gameId":"MLB-TEX-MIL-2026-08-29-1788045300","slug":"mlb-tex-mil-2026-08-29-1788045300","v2":true,"teamA":"TEX","teamB":"MIL","teamAName":"Texas Rangers","teamBName":"Milwaukee Brewers","marketType":"BINARY","marketId":"0x774b8cf17d2c68ed921a18e3ba42e296fdb0400885014c1bd955bbd2172e0757"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"10:05 PM","league":"MLB","gameId":"MLB-ARI-SF-2026-08-29-1788055500","slug":"mlb-ari-sf-2026-08-29-1788055500","v2":true,"teamA":"ARI","teamB":"SF","teamAName":"Arizona Diamondbacks","teamBName":"San Francisco Giants","marketType":"BINARY","marketId":"0xd6dc6680e51ec1bd3f6c42fab8a4f8b2a20486844b489940968830a716a00751"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"10:05 PM","league":"MLB","gameId":"MLB-BAL-OAK-2026-08-29-1788055500","slug":"mlb-bal-oak-2026-08-29-1788055500","v2":true,"teamA":"BAL","teamB":"OAK","teamAName":"Baltimore Orioles","teamBName":"Athletics","marketType":"BINARY","marketId":"0x3843d4815f2ff8261261bdd0a51013c73741fcee733d945837c236264340c7db"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"10:07 PM","league":"MLB","gameId":"MLB-PHI-LAA-2026-08-29-1788055620","slug":"mlb-phi-laa-2026-08-29-1788055620","v2":true,"teamA":"PHI","teamB":"LAA","teamAName":"Philadelphia Phillies","teamBName":"Los Angeles Angels","marketType":"BINARY","marketId":"0x6fe516ba6ceac8bd80bd99e827559b3b4056bb55e667f08b75f4812a2a1760ee"}
+  ],
   "NFL": [
-    {
-      "contractAddress": "0x2395E8e404954aA261aF1F8FBc64Cf25B10cF503",
-      "date": "2026-02-08",
-      "time": "6:30 PM",
-      "teamA": "SEA",
-      "teamB": "NE",
-      "teamAName": "Seattle Seahawks",
-      "teamBName": "New England Patriots",
-      "Location": "Santa Clara, CA"
-    },
-    {
-      "contractAddress": "0x9d7dAf735B140BD333Ec96Ba60dA5B1CF0a8a35d",
-      "league": "NFL",
-      "date": "2026-02-08",
-      "time": "6:30 PM",
-      "marketType": "PROP",
-      "topic": "NFL Super Bowl LX",
-      "marketQuestion": "TITI OR NOT: First Song Performed By Bad Bunny During Haltime Show - Titi Me Pregunto?",
-      "marketShort": "Titi Me Pregunto First Song?",
-      "teamACode": "YES",
-      "teamBCode": "NO",
-      "teamAName": "Yes",
-      "teamBName": "No",
-      "location": "Santa Clara, CA",
-      "lockTime": 1770606000,
-      "virtualLiquidityTotal": "600",
-      "initialPriceBpsTeamA": 6300,
-      "maxBetPerTx": "30"
-    },
-    {
-      "contractAddress": "0xb7F167f803A5631ca1cebCA72878e740BAf5f427",
-      "league": "NFL",
-      "date": "2026-02-08",
-      "time": "6:30 PM",
-      "marketType": "PROP",
-      "topic": "NFL Super Bowl LX",
-      "marketQuestion": "CHAOS: Will There be a Turnover in the 4th Quarter?",
-      "marketShort": "Turnover in 4th Quarter?",
-      "teamACode": "YES",
-      "teamBCode": "NO",
-      "teamAName": "Yes",
-      "teamBName": "No",
-      "location": "Santa Clara, CA",
-      "lockTime": 1770606000,
-      "virtualLiquidityTotal": "600",
-      "initialPriceBpsTeamA": 2000,
-      "maxBetPerTx": "30"
-    },
-    {
-      "contractAddress": "0x87f5df877A54af7ae8295a9Fff4A30634c8dDa75",
-      "league": "NFL",
-      "date": "2026-02-08",
-      "time": "6:30 PM",
-      "marketType": "PROP",
-      "topic": "NFL Super Bowl LX",
-      "marketQuestion": "TRICK PLAY: Over 2.5 Players to Complete a Pass?",
-      "marketShort": "Over 2.5 Players to Complete Pass?",
-      "teamACode": "YES",
-      "teamBCode": "NO",
-      "teamAName": "Yes",
-      "teamBName": "No",
-      "location": "Santa Clara, CA",
-      "lockTime": 1770606000,
-      "virtualLiquidityTotal": "600",
-      "initialPriceBpsTeamA": 3300,
-      "maxBetPerTx": "30"
-    }
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-04","time":"8:20 PM","league":"NFL","gameId":"NFL-NFCEAST-DIVWINNER-2026-1799112000","slug":"nfl-nfceast-divwinner-2026-1799112000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Division Winner: NFC East","marketQuestion_es":"Ganador de División: NFC Este","teamACode":"DAL","teamAName":"Dallas Cowboys","teamBCode":"PHI","teamBName":"Philadelphia Eagles","outcomesCount":4,"outcomes":[{"outcomeIndex":0,"code":"DAL","label":"Dallas Cowboys","marketId":"0x0a1f2c01f11a81168a021886ccff06c6d72cd5cca4ee8ecde08be2128a7b3157"},{"outcomeIndex":1,"code":"NYG","label":"New York Giants","marketId":"0xe01abd54d90ec663494104fa222c591f7869acd86da56cb1a4c5556bca2903e7"},{"outcomeIndex":2,"code":"PHI","label":"Philadelphia Eagles","marketId":"0xfa83fe670d5131a752ba91eb5207fcad77f4e7a43c025fde394a0d4c7906975d"},{"outcomeIndex":3,"code":"WAS","label":"Washington Commanders","marketId":"0xc6b5b0f69e429b7844d61322e8cb41aa77e8c5f9f9ac84f68d61ebd19ec5d769"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-04","time":"8:20 PM","league":"NFL","gameId":"NFL-AFCNORTH-DIVWINNER-2026-1799112000","slug":"nfl-afcnorth-divwinner-2026-1799112000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Division Winner: AFC North","marketQuestion_es":"Ganador de División: AFC Norte","teamACode":"BAL","teamAName":"Baltimore Ravens","teamBCode":"CIN","teamBName":"Cincinnati Bengals","outcomesCount":4,"outcomes":[{"outcomeIndex":0,"code":"BAL","label":"Baltimore Ravens","marketId":"0x98b0029a40cd2030f3a96a5876cb0acc0ee7c6356eee4824a1b410a8bdef2853"},{"outcomeIndex":1,"code":"CIN","label":"Cincinnati Bengals","marketId":"0xacc55c078e55fa9789224d24a15c271e6940941b4e5d67008920bb7f19c810e7"},{"outcomeIndex":2,"code":"PIT","label":"Pittsburgh Steelers","marketId":"0x67835b381436483f7c3af99688d5c6f4df5a4cfdd3dd3b4c511a3ca17600bb9c"},{"outcomeIndex":3,"code":"CLE","label":"Cleveland Browns","marketId":"0x1e77b5fdc89589dd5497c042b4c7d3ff96bbdc3d939691af27c04be7ee803388"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-04","time":"8:20 PM","league":"NFL","gameId":"NFL-AFCEAST-DIVWINNER-2026-1799112000","slug":"nfl-afceast-divwinner-2026-1799112000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Division Winner: AFC East","marketQuestion_es":"Ganador de División: AFC Este","teamACode":"BUF","teamAName":"Buffalo Bills","teamBCode":"NE","teamBName":"New England Patriots","outcomesCount":4,"outcomes":[{"outcomeIndex":0,"code":"BUF","label":"Buffalo Bills","marketId":"0x0ab67dd6e1671a47b4e4514d81098f955737a9fb6fa5da1a5dff32b1898074f3"},{"outcomeIndex":1,"code":"NE","label":"New England Patriots","marketId":"0x4798dc771e36a744476ea08bf70e94ad3ac403449218b46757168ab184d8d5d5"},{"outcomeIndex":2,"code":"NYJ","label":"New York Jets","marketId":"0x521fc8ef0132bab091399bbb4abaafe12a39228d567e504aa5d2907bdb9962dd"},{"outcomeIndex":3,"code":"MIA","label":"Miami Dolphins","marketId":"0xd77d1e1a0adcc58a38321f970393b6b74269ab992df45f53dd2fd776ea3ba6c7"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-04","time":"8:20 PM","league":"NFL","gameId":"NFL-AFCWEST-DIVWINNER-2026-1799112000","slug":"nfl-afcwest-divwinner-2026-1799112000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Division Winner: AFC West","marketQuestion_es":"Ganador de División: AFC Oeste","teamACode":"KC","teamAName":"Kansas City Chiefs","teamBCode":"LAC","teamBName":"Los Angeles Chargers","outcomesCount":4,"outcomes":[{"outcomeIndex":0,"code":"KC","label":"Kansas City Chiefs","marketId":"0x6c4d6f3346098a2dcf0e8889d061ca67763c485be1627ea63e1307120f49b033"},{"outcomeIndex":1,"code":"LAC","label":"Los Angeles Chargers","marketId":"0x848dfe3082588e475792e3e8f160f57d6ca2bf053f3787701381b1acac2386f5"},{"outcomeIndex":2,"code":"DEN","label":"Denver Broncos","marketId":"0x5d8e9e9f2e5059cfa65c8bbe4f7f76aacfdd194e6783ee5d51b0d1b009f6b871"},{"outcomeIndex":3,"code":"LV","label":"Las Vegas Raiders","marketId":"0xf9e8e7408b1b1f7b7c6b9a9b03042583ff1dbdd465d0f37dbe71f453f0a2019e"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-04","time":"8:20 PM","league":"NFL","gameId":"NFL-AFCSOUTH-DIVWINNER-2026-1799112000","slug":"nfl-afcsouth-divwinner-2026-1799112000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Division Winner: AFC South","marketQuestion_es":"Ganador de División: AFC Sur","teamACode":"HOU","teamAName":"Houston Texans","teamBCode":"JAX","teamBName":"Jacksonville Jaguars","outcomesCount":4,"outcomes":[{"outcomeIndex":0,"code":"HOU","label":"Houston Texans","marketId":"0x5d9f04cfba8a83bb1a0c10d6b80e574eb477158655c79cff069ca45b6ca8ec52"},{"outcomeIndex":1,"code":"JAX","label":"Jacksonville Jaguars","marketId":"0x1f382528c58ba1777557886d44515eb41b0866d9a0e5c8ef3b2026f1123e5704"},{"outcomeIndex":2,"code":"IND","label":"Indianapolis Colts","marketId":"0x5727feb0588ee3a0e4a290ada6c08f8fc3d76e63c4a4396ca9f8f575d7e495a6"},{"outcomeIndex":3,"code":"TEN","label":"Tennessee Titans","marketId":"0x28f5e2fb8b9743f940956abd39528f0f46e9a106f623509fb621022d37991ec0"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-04","time":"8:20 PM","league":"NFL","gameId":"NFL-NFCNORTH-DIVWINNER-2026-1799112000","slug":"nfl-nfcnorth-divwinner-2026-1799112000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Division Winner: NFC North","marketQuestion_es":"Ganador de División: NFC Norte","teamACode":"DET","teamAName":"Detroit Lions","teamBCode":"GB","teamBName":"Green Bay Packers","outcomesCount":4,"outcomes":[{"outcomeIndex":0,"code":"DET","label":"Detroit Lions","marketId":"0xf163030e73d71da57ece4085ddedb93950e7bd53be6f36bb9a173396c68090c9"},{"outcomeIndex":1,"code":"GB","label":"Green Bay Packers","marketId":"0xeadc9d02bbaf7e80d0a48278c19c740d7df4788f97f8b818fe54f0e27545c19d"},{"outcomeIndex":2,"code":"CHI","label":"Chicago Bears","marketId":"0xe7e8ff3687558f7c244910f48ea64a1dd747b8692db90aabda6ba912d2644a1e"},{"outcomeIndex":3,"code":"MIN","label":"Minnesota Vikings","marketId":"0x142c78521eec21a3e6bdea2c57d5376571e345dc9d839ef80a3a004d28a5e0ba"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-04","time":"8:20 PM","league":"NFL","gameId":"NFL-NFCSOUTH-DIVWINNER-2026-1799112000","slug":"nfl-nfcsouth-divwinner-2026-1799112000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Division Winner: NFC South","marketQuestion_es":"Ganador de División: NFC Sur","teamACode":"TB","teamAName":"Tampa Bay Buccaneers","teamBCode":"NO","teamBName":"New Orleans Saints","outcomesCount":4,"outcomes":[{"outcomeIndex":0,"code":"TB","label":"Tampa Bay Buccaneers","marketId":"0x4e155a43b64910152287ad77a6e691e230c96ebabdd45274311cf7a29ee7c96d"},{"outcomeIndex":1,"code":"NO","label":"New Orleans Saints","marketId":"0x37806364c885c8fdb6aa05798f5ac9651cb540cbac0741bee7ff2c456de00859"},{"outcomeIndex":2,"code":"CAR","label":"Carolina Panthers","marketId":"0x4b6e6d782795eec890a44e8ba355bfa443bcfd579c563242f561b6962878fa09"},{"outcomeIndex":3,"code":"ATL","label":"Atlanta Falcons","marketId":"0x2ad2e973746bd5b84c430c088f665a8029a5d7dc7fddd6256a46450f14ce6104"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-04","time":"8:20 PM","league":"NFL","gameId":"NFL-NFCWEST-DIVWINNER-2026-1799112000","slug":"nfl-nfcwest-divwinner-2026-1799112000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"Division Winner: NFC West","marketQuestion_es":"Ganador de División: NFC Oeste","teamACode":"LAR","teamAName":"Los Angeles Rams","teamBCode":"SEA","teamBName":"Seattle Seahawks","outcomesCount":4,"outcomes":[{"outcomeIndex":0,"code":"LAR","label":"Los Angeles Rams","marketId":"0xc57d8a2db227553467a1b75dde34ffb2192cbadd78b697611438ba1adbb3ed22"},{"outcomeIndex":1,"code":"SEA","label":"Seattle Seahawks","marketId":"0x15cb355b7aff0ba76ce742510e2dc3c8944fec173d58b8e805ee03819ee997db"},{"outcomeIndex":2,"code":"SF","label":"San Francisco 49ers","marketId":"0xe6ef0da3fd7758573d95d42efdd8d7a4f0594d93b5de495afd4b8cc490138e17"},{"outcomeIndex":3,"code":"ARI","label":"Arizona Cardinals","marketId":"0x83938670e3d9740b8cefd620113b0730c6b570f3dd9fc6f5d88adcb09a84833e"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-02-14","time":"6:30 PM","league":"NFL","gameId":"NFL-CHAMPION-2027-1802647800","slug":"nfl-champion-2027-1802647800","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2027 NFL Champion","marketQuestion_es":"Campeón de la NFL 2027","teamACode":"LAR","teamAName":"Los Angeles Rams","teamBCode":"BUF","teamBName":"Buffalo Bills","outcomesCount":32,"outcomes":[{"outcomeIndex":0,"code":"LAR","label":"Los Angeles Rams","marketId":"0x634bad2329e8265cddc1f5df76e9b9696e48318ad22033c50ab845314a389988"},{"outcomeIndex":1,"code":"BUF","label":"Buffalo Bills","marketId":"0x10bffc69df8fed8a5a96e295db2992fc9759bee6374fd2610eced9ce510dad74"},{"outcomeIndex":2,"code":"BAL","label":"Baltimore Ravens","marketId":"0x9c169d44501f3baff635dec389f9fa39d248c6597906565dcb0e3020ddd2dd53"},{"outcomeIndex":3,"code":"KC","label":"Kansas City Chiefs","marketId":"0x2585d3cf5a441bb0d7416b1f2a7ea05b2dd3ec53a50a56652b381a0b2ae5bd3c"},{"outcomeIndex":4,"code":"SEA","label":"Seattle Seahawks","marketId":"0x8fd1eda954323598119c7cc86b39dc2b857bb30a8fb7998b55191e693feb2ff7"},{"outcomeIndex":5,"code":"PHI","label":"Philadelphia Eagles","marketId":"0x129ddd7be5d4336ba0b4d657b0107f8e64f41de7ad4854ff1c70f2dbac0229bb"},{"outcomeIndex":6,"code":"DEN","label":"Denver Broncos","marketId":"0x834b0967b9a55deed8a5958032804dcf2858d93b1a4f8dd0285d531b2636d4b8"},{"outcomeIndex":7,"code":"SF","label":"San Francisco 49ers","marketId":"0x049ec7a395d3f35c312d9e35ce6f64403efb97ba9bf7ca91301d7be9accc1157"},{"outcomeIndex":8,"code":"LAC","label":"Los Angeles Chargers","marketId":"0x9c48dbab081199a76b6788eb545a7ba1768d4e133c21fe5312810599f8f7c004"},{"outcomeIndex":9,"code":"DET","label":"Detroit Lions","marketId":"0x36641561d3f830cf1fbdc75315cb9d180d434df35505133eee2bc32eda9ae0e9"},{"outcomeIndex":10,"code":"CIN","label":"Cincinnati Bengals","marketId":"0xa0e739ff82f3b1f0a08d5a556463f32ef44c750e5c916084639bf0efc3b92e66"},{"outcomeIndex":11,"code":"HOU","label":"Houston Texans","marketId":"0x58d554ae4b925ce0cfb07c502668c97b785317adc7cde27375b5a69e2599df52"},{"outcomeIndex":12,"code":"NE","label":"New England Patriots","marketId":"0xdcf1a222c55b8a3930488553c6514d14bab62b9d8af97edea57594bd91a0b36c"},{"outcomeIndex":13,"code":"DAL","label":"Dallas Cowboys","marketId":"0x35ec753dc61c081a369bd65ef95382bcdd2ac67873c66317ce94ada845aa24ee"},{"outcomeIndex":14,"code":"GB","label":"Green Bay Packers","marketId":"0x2ef935f9b9ab31168291dfc4d623450c622c1c6903b4969c0a5076329f72547a"},{"outcomeIndex":15,"code":"CHI","label":"Chicago Bears","marketId":"0xe415587dd5486c5244c3596dc70f62e5a296509cd97afa8d1a1b402243aa545f"},{"outcomeIndex":16,"code":"JAX","label":"Jacksonville Jaguars","marketId":"0x6596834c6c044296470534a531ae00975884ad8dc6efe30ecab64b11078b1e85"},{"outcomeIndex":17,"code":"MIN","label":"Minnesota Vikings","marketId":"0x9951cd9ef447e384b7d463d1abf92b8c33a9fed8319ba67422f33e115494113f"},{"outcomeIndex":18,"code":"PIT","label":"Pittsburgh Steelers","marketId":"0xeb5e63742ef93fad049725f22ce022e02b9f0ef85dfa7c81c397252b7df07db2"},{"outcomeIndex":19,"code":"WAS","label":"Washington Commanders","marketId":"0x25b551e4bf5071e4591c0d414d5a641c20cd7635c78f51163aa3f854e891eb69"},{"outcomeIndex":20,"code":"TB","label":"Tampa Bay Buccaneers","marketId":"0xfcccaaa06de7edf497417619098dc207300951acfb292d0d6c6a1e493eedc7f7"},{"outcomeIndex":21,"code":"NYG","label":"New York Giants","marketId":"0x2b4eee4e4751edf66f83b8bc28135d17ff9646695768b9f03ff4e0b8b28ad48a"},{"outcomeIndex":22,"code":"IND","label":"Indianapolis Colts","marketId":"0xc783171cbd6f28b7da342f4ef45ce46dc93bc0dbe4cdd49d2e90fb5df17973a6"},{"outcomeIndex":23,"code":"NO","label":"New Orleans Saints","marketId":"0xe9ceaa5ba2baa06f534ecd4c16efc3814e18a207b9ea892c39b40bb5112dc34d"},{"outcomeIndex":24,"code":"MIA","label":"Miami Dolphins","marketId":"0x5f64d55cf61e3002a5455f79dd169a8f578f7e453e9a68c341805512b2f78893"},{"outcomeIndex":25,"code":"ATL","label":"Atlanta Falcons","marketId":"0xac01e77dbbcce0d39d275ec2e93da39c0b7b5b683f9ef8defc16f5ae6d487127"},{"outcomeIndex":26,"code":"CLE","label":"Cleveland Browns","marketId":"0x7d8646e988df3b0b98b242c19dde5cec66df85d7c9423fe3f78b92b0d60b16cb"},{"outcomeIndex":27,"code":"CAR","label":"Carolina Panthers","marketId":"0xb209c381491c0d7bdb4fe15796467bc0c5d06cb9a26a1263db72bae1eb5ae5a0"},{"outcomeIndex":28,"code":"LV","label":"Las Vegas Raiders","marketId":"0x65bb5ff726ce032a4ef63be40827f2b336efcfd2f012e17caab20dd8bb93db47"},{"outcomeIndex":29,"code":"NYJ","label":"New York Jets","marketId":"0xdc234bcf9282d97b5b2052cd5b8fcc38af01776d72f8aba96beebfc31a4a4805"},{"outcomeIndex":30,"code":"ARI","label":"Arizona Cardinals","marketId":"0x5118f8c8e7093f866a08f076ba02308170b7213b007624fb8a29bc707126a63e"},{"outcomeIndex":31,"code":"TEN","label":"Tennessee Titans","marketId":"0xc673ee54940e4715cf902c0c5480b22d35a994a56c8d1b288306b1d75597c02f"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-24","time":"3:00 PM","league":"NFL","gameId":"NFL-NFC-CHAMPION-SPECIAL-2027-1800820800","slug":"nfl-nfc-champion-special-2027-1800820800","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2027 NFC Conference Champion","marketQuestion_es":"Campeón de la Conferencia NFC 2027","teamACode":"LAR","teamAName":"Los Angeles Rams","teamBCode":"SEA","teamBName":"Seattle Seahawks","outcomesCount":16,"outcomes":[{"outcomeIndex":0,"code":"LAR","label":"Los Angeles Rams","marketId":"0xd180dcbd09fff7bd66ee93d94d76b02d73171bad9c7d53706ad1700ae1354eb8"},{"outcomeIndex":1,"code":"SEA","label":"Seattle Seahawks","marketId":"0x390c96500e90b964659acd3ace41e300709c69022d97e5b0684a577bf7b90ec7"},{"outcomeIndex":2,"code":"DET","label":"Detroit Lions","marketId":"0x9c44e8a494b0aab31291194d203af4e9d46d28d92c4c9caeaa1c9ea72a4e0bc0"},{"outcomeIndex":3,"code":"PHI","label":"Philadelphia Eagles","marketId":"0xf1984679e0c5d2f0c2b1ee75b85538361854beaaeb78b7f30cc31eeb596239fa"},{"outcomeIndex":4,"code":"SF","label":"San Francisco 49ers","marketId":"0x5f97f5a8c6b9e51c72ff637b44f9ac957eb138c3789af12dd9ace27df83057d6"},{"outcomeIndex":5,"code":"GB","label":"Green Bay Packers","marketId":"0xddd9113e3617581da5180a76f3c8f25c275dfcffb5af8913cddbaf25ed5f1b6f"},{"outcomeIndex":6,"code":"DAL","label":"Dallas Cowboys","marketId":"0xf15191883c5229aa52e4cd06457c191240b82afb3cae86a881bf01f5b5da9432"},{"outcomeIndex":7,"code":"CHI","label":"Chicago Bears","marketId":"0xd01281a2e359bfe55a1357b65b79407b88fb9860d8a12c7e36fd42258e263a30"},{"outcomeIndex":8,"code":"TB","label":"Tampa Bay Buccaneers","marketId":"0x72ff68b35dd97776f50126200b39e07210eaebe8fd1b639292bbfe2677a2741c"},{"outcomeIndex":9,"code":"WAS","label":"Washington Commanders","marketId":"0x9b858fa714c3b922e7a9040007bb575f1c50efed2d79f5492bb43762cf35f7ca"},{"outcomeIndex":10,"code":"MIN","label":"Minnesota Vikings","marketId":"0xd6ac19408601b1a7ba179ac6ea8d1a5de64de0f69421f61fbe737b494bd31d78"},{"outcomeIndex":11,"code":"NYG","label":"New York Giants","marketId":"0x5cc38f151f958ceac7393062cf35335f816481fbd4400bd5f22356393ece02f8"},{"outcomeIndex":12,"code":"CAR","label":"Carolina Panthers","marketId":"0xa3bb7d48cc8582a93899be81bbd79bac006d40f92a7ceb18a26764fa7c70ce88"},{"outcomeIndex":13,"code":"ATL","label":"Atlanta Falcons","marketId":"0x4f923f716327dac010c5129c3f13d0be0f38b19ee832030dd526f9661f032eb5"},{"outcomeIndex":14,"code":"NO","label":"New Orleans Saints","marketId":"0xc39e5757e1e94b52913274ffd528b0b79174ecacf76f57cadfe0db7ffcfa7647"},{"outcomeIndex":15,"code":"ARI","label":"Arizona Cardinals","marketId":"0xf662bc885de0e9c64d0bb3692c2a2183f32dee06586cc2072a0a4f454fc9f54b"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-01-24","time":"6:30 PM","league":"NFL","gameId":"NFL-AFC-CHAMPION-SPECIAL-2027-1800833400","slug":"nfl-afc-champion-special-2027-1800833400","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2027 AFC Conference Champion","marketQuestion_es":"Campeón de la Conferencia AFC 2027","teamACode":"BAL","teamAName":"Baltimore Ravens","teamBCode":"BUF","teamBName":"Buffalo Bills","outcomesCount":16,"outcomes":[{"outcomeIndex":0,"code":"BAL","label":"Baltimore Ravens","marketId":"0xaaee5cb5fce8fa4587ca8c078536470fb7f68692bac276c4da8f7e1a9b98bd37"},{"outcomeIndex":1,"code":"BUF","label":"Buffalo Bills","marketId":"0x393305306bc49eb24908be79ff5c412449754172946152c3858d3c22378b8b50"},{"outcomeIndex":2,"code":"LAC","label":"Los Angeles Chargers","marketId":"0xfef3f6e6f09814c36c37237db43ef344e8b3b13ed818793238e5dabf87a906fb"},{"outcomeIndex":3,"code":"KC","label":"Kansas City Chiefs","marketId":"0x57536e648b49f4a6831dc1871fd6388a33b2d990788731fb16d4910906532c50"},{"outcomeIndex":4,"code":"HOU","label":"Houston Texans","marketId":"0x624b4a84e397296ad792f79522569a43881cfcbbf5b70ba5f6cd41441f642191"},{"outcomeIndex":5,"code":"NE","label":"New England Patriots","marketId":"0xee15c648c22b53b86c2ff15670f66a20e72c63894dd16a450bdaac9d34a3764b"},{"outcomeIndex":6,"code":"DEN","label":"Denver Broncos","marketId":"0x87026e76329cf744d01883ec7b9965cd8453a546781c5316bb1992628df1333d"},{"outcomeIndex":7,"code":"CIN","label":"Cincinnati Bengals","marketId":"0x48a738bcb53202580a412abcc971fb79146753ca18a6699e1dff4dead47b3383"},{"outcomeIndex":8,"code":"JAX","label":"Jacksonville Jaguars","marketId":"0x22126c8beec8f670773478a0e39490dff1717aa101ab1ba7b9d7b23d6e3dd8b9"},{"outcomeIndex":9,"code":"IND","label":"Indianapolis Colts","marketId":"0xe73eedda35adfa91131307614e39b60cb5b30f3210e9cf391f2649e43a07f0da"},{"outcomeIndex":10,"code":"CLE","label":"Cleveland Browns","marketId":"0x142f6c13144c034052c1c0f1ec805bd556c78cc83e2858b664abdcf604c93923"},{"outcomeIndex":11,"code":"PIT","label":"Pittsburgh Steelers","marketId":"0x26dd30f8c160d28090f48b72f6cd563543404c96bb069dfeddf7f510cc00609f"},{"outcomeIndex":12,"code":"LV","label":"Las Vegas Raiders","marketId":"0xa69351f3745cfcde6d993d9766f2d78039fdf160bf231721c777eb434d46634c"},{"outcomeIndex":13,"code":"MIA","label":"Miami Dolphins","marketId":"0x0b60ea435059cb772e30c613103dd474a6585850438a02ccd1716eb60bb131b9"},{"outcomeIndex":14,"code":"NYJ","label":"New York Jets","marketId":"0x30c58f72da087f0910c146f022de4ff41bb9260e169ddf0ad71132b8cf012b29"},{"outcomeIndex":15,"code":"TEN","label":"Tennessee Titans","marketId":"0xac161078400306d8ffc8c419113cdeb515fd8577e417b9d88710b2251c844e27"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-02-11","time":"8:00 PM","league":"NFL","gameId":"NFL-MVP-SPECIAL-2026-1802394000","slug":"nfl-mvp-special-2026-1802394000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2026 NFL MVP","marketQuestion_es":"MVP de la NFL 2026","teamACode":"JA","teamAName":"Josh Allen","teamBCode":"JHE","teamBName":"Justin Herbert","outcomesCount":28,"outcomes":[{"outcomeIndex":0,"code":"JA","label":"Josh Allen","marketId":"0x36fe72ba0633ea598c7f3ee1c3274682a130bf32b84f3ca4f36a605be4a451d7"},{"outcomeIndex":1,"code":"JHE","label":"Justin Herbert","marketId":"0x35530032058d07ae15480c9809fc4a37550c0b9fcc6b0363abcb7465cd4b57be"},{"outcomeIndex":2,"code":"LJ","label":"Lamar Jackson","marketId":"0xd5619ba3645cdf80f3a6b0e631bc724e334ad4f2b955edc9422e0be0bda81b4e"},{"outcomeIndex":3,"code":"JB","label":"Joe Burrow","marketId":"0xcc5d851b524d94a441b80a3b7c3d00ef7a843437d95695d6a7faeac14844f953"},{"outcomeIndex":4,"code":"DM","label":"Drake Maye","marketId":"0xb17b13b9c0220bac4796f5be3a3bb4bd2af07aaf669c75e49a3ab20dbb3f9b67"},{"outcomeIndex":5,"code":"CW","label":"Caleb Williams","marketId":"0x6d0076f3e9463af3fc940255d6a42ce9c2d1faa41b53a54e33ebdbb929b71e00"},{"outcomeIndex":6,"code":"DP","label":"Dak Prescott","marketId":"0xf3883a24fb7ce3c0685fb3ca87bbd90905f9f9bd0eb2c2a1559abeceb935d280"},{"outcomeIndex":7,"code":"MS","label":"Matthew Stafford","marketId":"0x64e8136c3aa0092bac6ced0a70960ed1748a69f820981a9ebd8215846417fb88"},{"outcomeIndex":8,"code":"PM","label":"Patrick Mahomes","marketId":"0x7790cc329891d24b446c245cf901c9661a7ad7a980ce93fd274ac5bee70eceaf"},{"outcomeIndex":9,"code":"BP","label":"Brock Purdy","marketId":"0xbeda04bcd6b264411cca0e493a4297782e6f18898ded9a04ef4b506afbb62d64"},{"outcomeIndex":10,"code":"JL","label":"Jordan Love","marketId":"0xebe43c3695231227d79e84b438139a401642e5131f04170c3b897ba55dd9c930"},{"outcomeIndex":11,"code":"JHU","label":"Jalen Hurts","marketId":"0x0ffb7735ebdd246eb31aaf6c1090bdf725cf64af31d699334ce29d2a80133a64"},{"outcomeIndex":12,"code":"JGI","label":"Jahmyr Gibbs","marketId":"0x0e088f64c4bec3e1410cf68dd0086fe5cc4c54ca31a4a957a26d69d1fe535ba5"},{"outcomeIndex":13,"code":"BN","label":"Bo Nix","marketId":"0x635d19fd69e6e12d7778c229593c1395be924479303e5db8dd59f6ba1c986cf4"},{"outcomeIndex":14,"code":"TL","label":"Trevor Lawrence","marketId":"0xffe708d13e33a1285c95d0802a66a611213794b3698481f6ba0f80eaa569e2f8"},{"outcomeIndex":15,"code":"JD","label":"Jaxson Dart","marketId":"0x32e6385c944043e0c86aa66196cb504eca8722bc8d33cd57ec4a0f7ff9ba40fe"},{"outcomeIndex":16,"code":"BM","label":"Baker Mayfield","marketId":"0xf63894c1025bb3d95b687557f96040afa7a625a69e75a019d1906845b701cd0b"},{"outcomeIndex":17,"code":"JGO","label":"Jared Goff","marketId":"0x3acfbe85f0c1b0a945dccdb89b6632e42ed23b6ab49d83447210e0706a357ffb"},{"outcomeIndex":18,"code":"SD","label":"Sam Darnold","marketId":"0xb7f627f67c8a63384bd7e5b821ffea5ac3702e40e9b43a95c5cf3830ee727e42"},{"outcomeIndex":19,"code":"SB","label":"Saquon Barkley","marketId":"0x0e8111ca847807fddfa354ef532717e15ad1e5253b82cb733b2d6e370f5fa864"},{"outcomeIndex":20,"code":"CM","label":"Christian McCaffrey","marketId":"0xd6549dfed0937397fbf89bd475edfcebb6c152cc16e90b58d5cfeb92c4543f8c"},{"outcomeIndex":21,"code":"PN","label":"Puka Nacua","marketId":"0x929f994a10808af28e6511de3f93384f5aef212f5777f7c92cc9fc5b907e4d89"},{"outcomeIndex":22,"code":"BR","label":"Bijan Robinson","marketId":"0xf00edd59f75a6514d41b6b4fa9aaafc2f3b3660b819557d13404ed90a857b5bd"},{"outcomeIndex":23,"code":"JS","label":"Jaxson Smith-Njigba","marketId":"0x5d3cd6f538a3e5aafe332c410b394ddc1a1ddd9cc5129cb4a3d4eae4e74b3a38"},{"outcomeIndex":24,"code":"JJ","label":"Justin Jefferson","marketId":"0xe070403fe8fd3a3121cb3e0df15e1d518f35e23b8ddf6c741d5c35c8c575c02b"},{"outcomeIndex":25,"code":"DH","label":"Derrick Henry","marketId":"0x29f936e99753b6de11a6b6e816cc7c3f9cee0ee57f362665add1045489693029"},{"outcomeIndex":26,"code":"MG","label":"Myles Garrett","marketId":"0x366755e44afefcfd5979be4459cf730ed67c28efd5795e9991abf858a6b1e213"},{"outcomeIndex":27,"code":"DA","label":"De'Von Achane","marketId":"0x6c92a6d645e80317d35510c36a39b131dfc191848098c2ac820425d0320304f0"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"7:00 PM","league":"NFL","gameId":"NFL-PIT-BUF-2026-08-27-1787871600","slug":"nfl-pit-buf-2026-08-27-1787871600","v2":true,"teamA":"PIT","teamB":"BUF","teamAName":"Pittsburgh Steelers","teamBName":"Buffalo Bills","marketType":"BINARY","marketId":"0xb096df16fcf61364c3ad89ca9f1d51cc170b2816a473cdb9312e96b56574cb07"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"8:00 PM","league":"NFL","gameId":"NFL-NE-CLE-2026-08-27-1787875200","slug":"nfl-ne-cle-2026-08-27-1787875200","v2":true,"teamA":"NE","teamB":"CLE","teamAName":"New England Patriots","teamBName":"Cleveland Browns","marketType":"BINARY","marketId":"0xbcbf6aada7b2dd1a490708814bb0e60d97c855becbd9369b150a2f25d26f441a"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"8:00 PM","league":"NFL","gameId":"NFL-SF-LV-2026-08-27-1787875200","slug":"nfl-sf-lv-2026-08-27-1787875200","v2":true,"teamA":"SF","teamB":"LV","teamAName":"San Francisco 49ers","teamBName":"Las Vegas Raiders","marketType":"BINARY","marketId":"0xe64a263dfc874870a61a1b0d263892dd4ef003eb36cf46b0e786daccc6964bc9"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-27","time":"10:00 PM","league":"NFL","gameId":"NFL-LAR-LAC-2026-08-27-1787882400","slug":"nfl-lar-lac-2026-08-27-1787882400","v2":true,"teamA":"LAR","teamB":"LAC","teamAName":"Los Angeles Rams","teamBName":"Los Angeles Chargers","marketType":"BINARY","marketId":"0xf53d5a53f687de6e0aed3f143183be9d1158d62bccc741e5a0408f6ba7630750"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"6:00 PM","league":"NFL","gameId":"NFL-WAS-BAL-2026-08-28-1787954400","slug":"nfl-was-bal-2026-08-28-1787954400","v2":true,"teamA":"WAS","teamB":"BAL","teamAName":"Washington Commanders","teamBName":"Baltimore Ravens","marketType":"BINARY","marketId":"0x04ff218582e88507b95d79da316f1702ba10268e4500ce2af9321e7da9afc12e"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:00 PM","league":"NFL","gameId":"NFL-ATL-MIA-2026-08-28-1787958000","slug":"nfl-atl-mia-2026-08-28-1787958000","v2":true,"teamA":"ATL","teamB":"MIA","teamAName":"Atlanta Falcons","teamBName":"Miami Dolphins","marketType":"BINARY","marketId":"0xd84b3146c2a1392428c430f372b412dbac551a47f6511ac227e9c7a88201e96b"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:00 PM","league":"NFL","gameId":"NFL-HOU-CAR-2026-08-28-1787958000","slug":"nfl-hou-car-2026-08-28-1787958000","v2":true,"teamA":"HOU","teamB":"CAR","teamAName":"Houston Texans","teamBName":"Carolina Panthers","marketType":"BINARY","marketId":"0x0534552ac992aa12003533bae288d82dc2a098ca3b021c174f1b922718583064"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:30 PM","league":"NFL","gameId":"NFL-NYG-NYJ-2026-08-28-1787959800","slug":"nfl-nyg-nyj-2026-08-28-1787959800","v2":true,"teamA":"NYG","teamB":"NYJ","teamAName":"New York Giants","teamBName":"New York Jets","marketType":"BINARY","marketId":"0x0f50bae3b29bd6d73480adfa420bef8888619a047f399e3c5c619b2056ec0f78"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"7:30 PM","league":"NFL","gameId":"NFL-TB-JAX-2026-08-28-1787959800","slug":"nfl-tb-jax-2026-08-28-1787959800","v2":true,"teamA":"TB","teamB":"JAX","teamAName":"Tampa Bay Buccaneers","teamBName":"Jacksonville Jaguars","marketType":"BINARY","marketId":"0x52ff0b2bed60cf1debe45b2561933d5453d4307976d24f59193d3e716abc80b5"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"8:00 PM","league":"NFL","gameId":"NFL-NO-DAL-2026-08-28-1787961600","slug":"nfl-no-dal-2026-08-28-1787961600","v2":true,"teamA":"NO","teamB":"DAL","teamAName":"New Orleans Saints","teamBName":"Dallas Cowboys","marketType":"BINARY","marketId":"0x852c26023fe280d44112645b55b59b52d74930b6c3859eecea090a7a9e2c8c10"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"8:00 PM","league":"NFL","gameId":"NFL-ARI-GB-2026-08-28-1787961600","slug":"nfl-ari-gb-2026-08-28-1787961600","v2":true,"teamA":"ARI","teamB":"GB","teamAName":"Arizona Cardinals","teamBName":"Green Bay Packers","marketType":"BINARY","marketId":"0x8c5c9c4ed0d2075e91bb496df3bf3188bda53bcbf30741638a4a69b3d3a2f3fb"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"8:00 PM","league":"NFL","gameId":"NFL-SEA-KC-2026-08-28-1787961600","slug":"nfl-sea-kc-2026-08-28-1787961600","v2":true,"teamA":"SEA","teamB":"KC","teamAName":"Seattle Seahawks","teamBName":"Kansas City Chiefs","marketType":"BINARY","marketId":"0x19b0af3fcf5fc53363ef815b0d12c8e3a5b381d2ef4641b9e95fa214805ad0b0"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"8:00 PM","league":"NFL","gameId":"NFL-CIN-PHI-2026-08-28-1787961600","slug":"nfl-cin-phi-2026-08-28-1787961600","v2":true,"teamA":"CIN","teamB":"PHI","teamAName":"Cincinnati Bengals","teamBName":"Philadelphia Eagles","marketType":"BINARY","marketId":"0x046e7b29032ae011a2c48b4d67ce65c4f0593a69a3bab3f47270c41002bb9776"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-28","time":"9:00 PM","league":"NFL","gameId":"NFL-MIN-DEN-2026-08-28-1787965200","slug":"nfl-min-den-2026-08-28-1787965200","v2":true,"teamA":"MIN","teamB":"DEN","teamAName":"Minnesota Vikings","teamBName":"Denver Broncos","marketType":"BINARY","marketId":"0x54e9b0e685dc7bbd3769f34211406dde7d7189a77e5d8735cde6880635b659ec"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"1:00 PM","league":"NFL","gameId":"NFL-DET-IND-2026-08-29-1788022800","slug":"nfl-det-ind-2026-08-29-1788022800","v2":true,"teamA":"DET","teamB":"IND","teamAName":"Detroit Lions","teamBName":"Indianapolis Colts","marketType":"BINARY","marketId":"0x144c3ba2a9d2ea17c512437b1bc0d6f39bdefeec51e9cded2152e6d44fb10bad"},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-29","time":"6:00 PM","league":"NFL","gameId":"NFL-CHI-TEN-2026-08-29-1788040800","slug":"nfl-chi-ten-2026-08-29-1788040800","v2":true,"teamA":"CHI","teamB":"TEN","teamAName":"Chicago Bears","teamBName":"Tennessee Titans","marketType":"BINARY","marketId":"0x5d3c854b601aeecfe0dbb591b3138d49e9dd653fa79c23a079a0e48a947a2524"}
   ],
   "NBA": [
-    {
-      "contractAddress": "0xEfcedC103cAceec28F370FcE6ebE782Db65909dc",
-      "date": "2026-01-31",
-      "time": "8:00 PM",
-      "teamA": "MIN",
-      "teamB": "MEM",
-      "teamAName": "Minnesota Timberwolves",
-      "teamBName": "Memphis Grizzlies"
-    },
-    {
-      "contractAddress": "0xef3C4D2439a457642b2933023Aa8D6096395C82c",
-      "date": "2026-01-31",
-      "time": "8:30 PM",
-      "teamA": "DAL",
-      "teamB": "HOU",
-      "teamAName": "Dallas Mavericks",
-      "teamBName": "Houston Rockets"
-    },
-    {
-      "contractAddress": "0xdF30f54166A9c4769f735406bf90B8908955F233",
-      "date": "2026-02-01",
-      "time": "3:30 PM",
-      "teamA": "MIL",
-      "teamB": "BOS",
-      "teamAName": "Milwaukee Bucks",
-      "teamBName": "Boston Celtics"
-    },
-    {
-      "contractAddress": "0x94700c7C94b56C4EC7a23e543f811c949457aCbb",
-      "date": "2026-02-01",
-      "time": "6:00 PM",
-      "teamA": "BKN",
-      "teamB": "DET",
-      "teamAName": "Brooklyn Nets",
-      "teamBName": "Detroit Pistons"
-    },
-    {
-      "contractAddress": "0x60e7b2268b6e25eDC473a8BBe6D0370c20571025",
-      "date": "2026-02-01",
-      "time": "6:00 PM",
-      "teamA": "CHI",
-      "teamB": "MIA",
-      "teamAName": "Chicago Bulls",
-      "teamBName": "Miami Heat"
-    },
-    {
-      "contractAddress": "0x75895688A67e34eDF1B970CB9fDcAd86352660F3",
-      "date": "2026-02-01",
-      "time": "6:00 PM",
-      "teamA": "UTA",
-      "teamB": "TOR",
-      "teamAName": "Utah Jazz",
-      "teamBName": "Toronto Raptors"
-    },
-    {
-      "contractAddress": "0x4F7307ed4c372b5443036B2A57A6b836E0de3C76",
-      "date": "2026-02-01",
-      "time": "6:00 PM",
-      "teamA": "SAC",
-      "teamB": "WAS",
-      "teamAName": "Sacramento Kings",
-      "teamBName": "Washington Wizards"
-    },
-    {
-      "contractAddress": "0x9EeEa8d6F157CDAb8b4EF869Cd4e3325b8DDAdb4",
-      "date": "2026-02-01",
-      "time": "7:00 PM",
-      "teamA": "ORL",
-      "teamB": "SAS",
-      "teamAName": "Orlando Magic",
-      "teamBName": "San Antonio Spurs"
-    },
-    {
-      "contractAddress": "0x4195c4a060a2341585059202b3b9180aF386c2Ba",
-      "date": "2026-02-01",
-      "time": "7:00 PM",
-      "teamA": "LAL",
-      "teamB": "NYK",
-      "teamAName": "Los Angeles Lakers",
-      "teamBName": "New York Knicks"
-    },
-    {
-      "contractAddress": "0x56808C0bd5cc6F27FC398Dee422FE59eb0ba5843",
-      "date": "2026-02-01",
-      "time": "8:00 PM",
-      "teamA": "LAC",
-      "teamB": "PHX",
-      "teamAName": "Los Angeles Clippers",
-      "teamBName": "Phoenix Suns"
-    },
-    {
-      "contractAddress": "0xA33A28F352E14F92802A9E916877316818aeBAc4",
-      "date": "2026-02-01",
-      "time": "9:00 PM",
-      "teamA": "CLE",
-      "teamB": "POR",
-      "teamAName": "Cleveland Cavaliers",
-      "teamBName": "Portland Trail Blazers"
-    },
-    {
-      "contractAddress": "0xeece7295855269C578f1887832cc41e62bc7f3E6",
-      "date": "2026-02-01",
-      "time": "9:30 PM",
-      "teamA": "OKC",
-      "teamB": "DEN",
-      "teamAName": "Oklahoma City Thunder",
-      "teamBName": "Denver Nuggets"
-    },
-    {
-      "contractAddress": "0x5F6A50D37123B88e938ba7a731b7B8247334f260",
-      "date": "2026-02-02",
-      "time": "7:00 PM",
-      "teamA": "NOP",
-      "teamB": "CHA",
-      "teamAName": "New Orleans Pelicans",
-      "teamBName": "Charlotte Hornets"
-    },
-    {
-      "contractAddress": "0x595da59B6399f2BDAD47154c47F9467780797106",
-      "date": "2026-02-02",
-      "time": "7:00 PM",
-      "teamA": "HOU",
-      "teamB": "IND",
-      "teamAName": "Houston Rockets",
-      "teamBName": "Indiana Pacers"
-    },
-    {
-      "contractAddress": "0x0cA5782e82477e4C8EE3E96C2462b68E62eeEd92",
-      "date": "2026-02-02",
-      "time": "7:30 PM",
-      "teamA": "MIN",
-      "teamB": "MEM",
-      "teamAName": "Minnesota Timberwolves",
-      "teamBName": "Memphis Grizzlies"
-    },
-    {
-      "contractAddress": "0xD84487732982A2a64b0ef4D14b3E5Ed90e2459a1",
-      "date": "2026-02-02",
-      "time": "10:00 PM",
-      "teamA": "PHI",
-      "teamB": "LAC",
-      "teamAName": "Philadelphia 76ers",
-      "teamBName": "Los Angeles Clippers"
-    }
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-06-17","time":"8:00 PM","league":"NBA","gameId":"NBA-CHAMPION-2027-1813276800","slug":"nba-champion-2027-1813276800","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2027 NBA Champion","marketQuestion_es":"Campeón de la NBA 2027","teamACode":"OKC","teamAName":"Oklahoma City Thunder","teamBCode":"SAS","teamBName":"San Antonio Spurs","outcomesCount":30,"outcomes":[{"outcomeIndex":0,"code":"OKC","label":"Oklahoma City Thunder","marketId":"0x30ef34067816f35d9db3823afc31cedaa1342734a081cf286cb0b46529cb5aa7"},{"outcomeIndex":1,"code":"SAS","label":"San Antonio Spurs","marketId":"0xac08dbfb25ed1a4a8c44f55bc35e2eb6972c9a6c2d164b870e9e6b99b90d85b3"},{"outcomeIndex":2,"code":"PHI","label":"Philadelphia 76ers","marketId":"0xe417c0d9034bed51415217b26768859ec0b3b1d46500d54117dff8b9164db75f"},{"outcomeIndex":3,"code":"NYK","label":"New York Knicks","marketId":"0x071203278d6d6837df119d322db06b4ebe0be17fde456103c4076a93ace2dc9b"},{"outcomeIndex":4,"code":"BOS","label":"Boston Celtics","marketId":"0x286bf23bf426ea3e8e4ed19749903e2d26566b0a98f796b8df10dfaf74512778"},{"outcomeIndex":5,"code":"TOR","label":"Toronto Raptors","marketId":"0x51377ea4d13e45e46f9153227b2e1e0964798fe3210678713f7a6b9d9a3ec2dc"},{"outcomeIndex":6,"code":"CLE","label":"Cleveland Cavaliers","marketId":"0x34122a45697da49e6a593e473227fddf2e7df2946b4756fdd17a2c853feef6fe"},{"outcomeIndex":7,"code":"MIA","label":"Miami Heat","marketId":"0x0eff17658069fc7760b7d4f46a8b6210a499693b3710255b974e19472571a038"},{"outcomeIndex":8,"code":"DEN","label":"Denver Nuggets","marketId":"0x4e2f86e1d1f31fa4adb327c5189010e24f967f3ccd0761843a908f6cace9f852"},{"outcomeIndex":9,"code":"MIN","label":"Minnesota Timberwolves","marketId":"0xbf95f9f6a4024a02b0f646b5b0859bd55871530aec67b02fe9cf10a29851e050"},{"outcomeIndex":10,"code":"DET","label":"Detroit Pistons","marketId":"0x6565d0ad016e78ec518fe33ead07c1fab82b44577046238151d3ee6753866ea8"},{"outcomeIndex":11,"code":"LAL","label":"Los Angeles Lakers","marketId":"0xcf949fe5f588e371e77436ee96035c09f0f5856e727220a07934ac0f042c96c5"},{"outcomeIndex":12,"code":"HOU","label":"Houston Rockets","marketId":"0xf0d675ab9b7fe2acb2c0330b38a5b490bb5706f0f2d5a245699cb32721e68341"},{"outcomeIndex":13,"code":"IND","label":"Indiana Pacers","marketId":"0x726bb67529bf806dfa8def45591cb69ca8568605992b07e98732262fa06d9456"},{"outcomeIndex":14,"code":"WAS","label":"Washington Wizards","marketId":"0x817abddf9adbd60bd09e753b42b10e43879cb7ac749ac172761cab1cc84b10eb"},{"outcomeIndex":15,"code":"GS","label":"Golden State Warriors","marketId":"0x6688440175b3490d85830d53586f5e2c6275a065f0ba3d82229f627781fa0ea6"},{"outcomeIndex":16,"code":"POR","label":"Portland Trail Blazers","marketId":"0x117e968feedaa7214d9c07200a6a7c8bc837c9802c5539a6452def10fb7683b1"},{"outcomeIndex":17,"code":"ATL","label":"Atlanta Hawks","marketId":"0x80c4979b1422b70ba840262888d9fb4d943077e4aa5e9c03a4ad576dcca513cb"},{"outcomeIndex":18,"code":"ORL","label":"Orlando Magic","marketId":"0x122b2c94e80f33c11c1bed06402f8eb5e6099bc37fdfb1c8ee59ae1197b9478d"},{"outcomeIndex":19,"code":"UTA","label":"Utah Jazz","marketId":"0xe0d38026767df9bf6232c4d727ab855b302e880be5c63d9145c5a35ce1422d9a"},{"outcomeIndex":20,"code":"DAL","label":"Dallas Mavericks","marketId":"0xcfcf356157958460c6a0caf97e0a556d826d7ab35b17c146dd72a4c2c93c7691"},{"outcomeIndex":21,"code":"PHX","label":"Phoenix Suns","marketId":"0x00ed8d68c7167b4fb5959fa52cce1e0ec84b495ac4fd0f341e7b70bf02c015a4"},{"outcomeIndex":22,"code":"CHA","label":"Charlotte Hornets","marketId":"0x3e94e4eef96381581d9d6d5839fc74ac6d5f77c1f6f8245d2ded62b2d956554c"},{"outcomeIndex":23,"code":"LAC","label":"Los Angeles Clippers","marketId":"0xbb55b376f3d77e9b6daceed082a5e3822263a65829433072b695fc3e2d211451"},{"outcomeIndex":24,"code":"CHI","label":"Chicago Bulls","marketId":"0x80c638152187cf0fc084197a6e04a48a7ac3d20846b39096ce2c4ad35935e3fc"},{"outcomeIndex":25,"code":"MEM","label":"Memphis Grizzlies","marketId":"0x4eb7c97718a092a518f3eb94e3f2dc9b91c10389082bd99f64a16c03e8f9ffb1"},{"outcomeIndex":26,"code":"BKN","label":"Brooklyn Nets","marketId":"0x0e5ff1cd01ead90c2568c3a4c182a4d479f7d5e94768adb08192d351caacfceb"},{"outcomeIndex":27,"code":"MIL","label":"Milwaukee Bucks","marketId":"0x30cf2aedee52466a301363bddad35f24babde57b67e6824b7476f1e3b88b5285"},{"outcomeIndex":28,"code":"NOP","label":"New Orleans Pelicans","marketId":"0x066fbe23fb0038f03d9d07216fe683c44937e45a73800f563686750d93597405"},{"outcomeIndex":29,"code":"SAC","label":"Sacramento Kings","marketId":"0x8b50b395f5eccdd58945b398ca3dba6009f0a0623ab41d9dadda53b20a8fbf05"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-04-12","time":"8:00 PM","league":"NBA","gameId":"NBA-ROY-SPECIAL-2027-1807574400","slug":"nba-roy-special-2027-1807574400","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2026-27 NBA Rookie of the Year","marketQuestion_es":"Novato del Año de la NBA 2026-27","teamACode":"CB","teamAName":"Cameron Boozer","teamBCode":"CW","teamBName":"Caleb Wilson","outcomesCount":30,"outcomes":[{"outcomeIndex":0,"code":"CB","label":"Cameron Boozer","marketId":"0x5e8007417cb65ab7a223dfb7c721dbf660517f8d4ece3c20de5745f820290455"},{"outcomeIndex":1,"code":"CW","label":"Caleb Wilson","marketId":"0x97a162338fcfb5fbf55d592368ca808428c873d0b9993c099d061e817436241f"},{"outcomeIndex":2,"code":"AD","label":"AJ Dybantsa","marketId":"0x35dfa1d02b84cfd67696eac99887224d7b7e404476c99657e45382a2269dee50"},{"outcomeIndex":3,"code":"DP","label":"Darryn Peterson","marketId":"0x5c2da33423399444f80780f3ab6c76d71cdb61b48afa4771cb79078e6c12584e"},{"outcomeIndex":4,"code":"DA","label":"Darius Acuff Jr.","marketId":"0x8f6faa7f0aaa0f723adc46fb2b4afa4490cc419f2db70d9d8979219ba4afd1f5"},{"outcomeIndex":5,"code":"MB","label":"Mikel Brown Jr.","marketId":"0xba2eb1409a825d9926054eb7454c77de5aa77480cf8bcfc6a4160939db09c625"},{"outcomeIndex":6,"code":"YL","label":"Yaxel Lendeborg","marketId":"0x60ed44537234b241b3e3c5656bb9e1d86fd946ef69ccf0c8df4052948b685119"},{"outcomeIndex":7,"code":"KF","label":"Kingston Flemings","marketId":"0x35a867397a32598e407acd1b47de92e41210c31cabbebe474051bfb67931d06e"},{"outcomeIndex":8,"code":"BB","label":"Brayden Burries","marketId":"0xd454628134317732960220dec4b43e6abf7947703d00223be4cdc6b8ff276c6e"},{"outcomeIndex":9,"code":"KW","label":"Keaton Wagler","marketId":"0x0b67073ce689fd757f69174edfaa8a304887b026ca672f4ceff663633b8e6a53"},{"outcomeIndex":10,"code":"CCE","label":"Chris Cenac Jr.","marketId":"0x0ba774e62d9c6d16f4cc4b1334c7ffd90a0bc9afe22a356cd06cc1fc08b2a925"},{"outcomeIndex":11,"code":"AM","label":"Aday Mara","marketId":"0xb1d15bb93abfd3ebbc5fd3f520a7cb7c2e6612c7c08aabf9422e7283c433f418"},{"outcomeIndex":12,"code":"JJ","label":"Joshua Jefferson","marketId":"0xba8f6f76a98fc8f304b829a45e53cd6eda7f08173d4cd725f8ba6040f1ba860e"},{"outcomeIndex":13,"code":"LP","label":"Labaron Philon Jr.","marketId":"0x6957d928026f4f2a09fe52bb6ad41dcd1fc996090c94e2b17caf5498be1cf213"},{"outcomeIndex":14,"code":"MJ","label":"Morez Johnson Jr.","marketId":"0xc4f5a8f22795373ee436145b22d384a8e5e2a9abcfa8eaf0f903c9ddcdc7065f"},{"outcomeIndex":15,"code":"NA","label":"Nate Ament","marketId":"0xa433cb10bcade26bc48b7cce9c64bebc7e150c1c97c24d81ffeaa767dddf03a7"},{"outcomeIndex":16,"code":"CA","label":"Christian Anderson","marketId":"0xa6630342cd16f650b1876f62e9dccc55c41d0101d787948529f00fc5009ddc50"},{"outcomeIndex":17,"code":"AG","label":"Allen Graves","marketId":"0x860ee2c437e707d85152e664206d7c3a75f729ff50ead791fc318a3a942f4fd8"},{"outcomeIndex":18,"code":"CCA","label":"Cameron Carr","marketId":"0xd3c3e7b882a2eed87116342c3653f231370f1e8de268efd256acf7fd40ec92a9"},{"outcomeIndex":19,"code":"AK","label":"Alex Karaban","marketId":"0xccb41c7be15101d8de55130a0575b9df9870c5dcff58a1cb1cea59f4b884d21a"},{"outcomeIndex":20,"code":"KP","label":"Koa Peat","marketId":"0x327a3260fcae148e2ace52e60af819bfa21a0f0bf3dd39d580ed937de3cc6b21"},{"outcomeIndex":21,"code":"SD","label":"Sergio De Larrea","marketId":"0xcbece3a01e3c326ee7a2dff88b4473c1cab9d991062b7086c18e50c041a1db27"},{"outcomeIndex":22,"code":"ZE","label":"Zuby Ejiofor","marketId":"0x87d9c95ad64202d0151c3ef3b88e4e7788d463a3a01ce87fbf6cfc678a811403"},{"outcomeIndex":23,"code":"EO","label":"Ebuka Okorie","marketId":"0x106d3822ba037094114907710987fbb5f3214c90a21b61ba72ba655de7cf8c02"},{"outcomeIndex":24,"code":"HS","label":"Hannes Steinbach","marketId":"0xc21814f75abeacf94551dd6455b76339d1202a790467066d416f8d3b12d850d7"},{"outcomeIndex":25,"code":"BS","label":"Bennett Stirtz","marketId":"0xf039e2c3fb549d01aae47cc3fb5c64e59f729e427bf1b6a0153e32b2d616426e"},{"outcomeIndex":26,"code":"KL","label":"Karim López","marketId":"0x00467b27072cedaa6dc864011805cc91e3595f3874b7668efcf0c632ae38cf9f"},{"outcomeIndex":27,"code":"TR","label":"Tarris Reed Jr.","marketId":"0x1d1079649bb2b126c4db1f8ea41616529a84fd950c08a95e16ffb0104ebfe331"},{"outcomeIndex":28,"code":"DS","label":"Dailyn Swain","marketId":"0x6161c1a866e3be40703c6c52cdd8a23b9be8aad42ea99f7cb7339e5a289fc193"},{"outcomeIndex":29,"code":"JQ","label":"Jayden Quaintance","marketId":"0xfda881b2dd14ed1d751ef894ca47c3d13da86a8626b50296fc52c72aa4ef6cee"}]}
   ],
   "NHL": [
-    {
-      "contractAddress": "0xddd6cD49bA19d28C557DccbC0D10c2BDf38c600B",
-      "date": "2026-01-31",
-      "time": "4:00 PM",
-      "teamA": "WPG",
-      "teamB": "FLA",
-      "teamAName": "Winnipeg Jets",
-      "teamBName": "Florida Panthers"
-    },
-    {
-      "contractAddress": "0x4402f7B919D8049A1462E15801c19029a2f531b4",
-      "date": "2026-01-31",
-      "time": "9:00 PM",
-      "teamA": "DAL",
-      "teamB": "UTA",
-      "teamAName": "Dallas Stars",
-      "teamBName": "Utah Mammoth"
-    },
-    {
-      "contractAddress": "0x1a4D147451352E44eb022D76fAcBB6985A0627c8",
-      "date": "2026-01-31",
-      "time": "10:00 PM",
-      "teamA": "MIN",
-      "teamB": "EDM",
-      "teamAName": "Minnesota Wild",
-      "teamBName": "Edmonton Oilers"
-    },
-    {
-      "contractAddress": "0x8F934118F13d262EA4744C2303EcD7d5073ce36E",
-      "date": "2026-01-31",
-      "time": "10:00 PM",
-      "teamA": "SEA",
-      "teamB": "VGK",
-      "teamAName": "Seattle Kraken",
-      "teamBName": "Vegas Golden Knights"
-    },
-    {
-      "contractAddress": "0x0Eb72ae3b818eA97C1eed48A1D85077a216DEee8",
-      "date": "2026-02-01",
-      "time": "3:00 PM",
-      "teamA": "LAK",
-      "teamB": "CAR",
-      "teamAName": "Los Angeles Kings",
-      "teamBName": "Carolina Hurricanes"
-    },
-    {
-      "contractAddress": "0x9959FC9E62183f8e84949907cB69473d67741e22",
-      "date": "2026-02-01",
-      "time": "6:30 PM",
-      "teamA": "BOS",
-      "teamB": "TBL",
-      "teamAName": "Boston Bruins",
-      "teamBName": "Tampa Bay Lightning"
-    },
-    {
-      "contractAddress": "0xE61A21D12A10CE4B226b8d1D2b97B8A8cC8941e2",
-      "date": "2026-02-01",
-      "time": "9:30 PM",
-      "teamA": "VGK",
-      "teamB": "ANA",
-      "teamAName": "Vegas Golden Knights",
-      "teamBName": "Anaheim Ducks"
-    },
-    {
-      "contractAddress": "0xd35D3c2D984Dd9FdAE4BCE15Cc9B0e1a1565157c",
-      "date": "2026-02-02",
-      "time": "7:00 PM",
-      "teamA": "BUF",
-      "teamB": "FLA",
-      "teamAName": "Buffalo Sabres",
-      "teamBName": "Florida Panthers"
-    },
-    {
-      "contractAddress": "0xFdfc847BF588ff64DBECED4D42F9b09Cad305379",
-      "date": "2026-02-02",
-      "time": "7:00 PM",
-      "teamA": "OTT",
-      "teamB": "PIT",
-      "teamAName": "Ottawa Senators",
-      "teamBName": "Pittsburgh Penguins"
-    },
-    {
-      "contractAddress": "0xbb4034cd9013cae05B6728667D2fE570E7cBD078",
-      "date": "2026-02-02",
-      "time": "7:00 PM",
-      "teamA": "NYI",
-      "teamB": "WSH",
-      "teamAName": "New York Islanders",
-      "teamBName": "Washington Capitals"
-    },
-    {
-      "contractAddress": "0x79Ae243071182a6cC68B8aE68820C69703ed8448",
-      "date": "2026-02-02",
-      "time": "7:30 PM",
-      "teamA": "MTL",
-      "teamB": "MIN",
-      "teamAName": "Montreal Canadiens",
-      "teamBName": "Minnesota Wild"
-    },
-    {
-      "contractAddress": "0x6Dd36e19b076AB609fB07FcA2af3E1F45e45683f",
-      "date": "2026-02-02",
-      "time": "8:00 PM",
-      "teamA": "STL",
-      "teamB": "NSH",
-      "teamAName": "St. Louis Blues",
-      "teamBName": "Nashville Predators"
-    },
-    {
-      "contractAddress": "0xB49F1ca3588514211d451267f5452A3E49670f11",
-      "date": "2026-02-02",
-      "time": "8:30 PM",
-      "teamA": "SJS",
-      "teamB": "CHI",
-      "teamAName": "San Jose Sharks",
-      "teamBName": "Chicago Blackhawks"
-    },
-    {
-      "contractAddress": "0xd357Fb92C8fA1aE0AB5006561D461C7c440d52AF",
-      "date": "2026-02-02",
-      "time": "8:30 PM",
-      "teamA": "WPG",
-      "teamB": "DAL",
-      "teamAName": "Winnipeg Jets",
-      "teamBName": "Dallas Stars"
-    },
-    {
-      "contractAddress": "0x0BED1361C332606329E6DD87624eF6DfBf1a4F6F",
-      "date": "2026-02-02",
-      "time": "9:00 PM",
-      "teamA": "DET",
-      "teamB": "COL",
-      "teamAName": "Detroit Red Wings",
-      "teamBName": "Colorado Avalanche"
-    },
-    {
-      "contractAddress": "0x564ECd1F590bc85606A133CC364E2eE9B94ef373",
-      "date": "2026-02-02",
-      "time": "9:30 PM",
-      "teamA": "VAN",
-      "teamB": "UTA",
-      "teamAName": "Vancouver Canucks",
-      "teamBName": "Utah Mammoth"
-    },
-    {
-      "contractAddress": "0xD523Ef89294b099231A16ca1CCaB57949FeCE6E4",
-      "date": "2026-02-02",
-      "time": "10:00 PM",
-      "teamA": "TOR",
-      "teamB": "CGY",
-      "teamAName": "Toronto Maple Leafs",
-      "teamBName": "Calgary Flames"
-    }
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-06-15","time":"8:00 PM","league":"NHL","gameId":"NHL-CHAMPION-2027-1813104000","slug":"nhl-champion-2027-1813104000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2027 NHL Champion","marketQuestion_es":"Campeón de la NHL 2027","teamACode":"FLA","teamAName":"Florida Panthers","teamBCode":"COL","teamBName":"Colorado Avalanche","outcomesCount":32,"outcomes":[{"outcomeIndex":0,"code":"FLA","label":"Florida Panthers","marketId":"0xc1c604932926946465a8b8b379127f6f408af41bd8ba84202afd96eaeb98526d"},{"outcomeIndex":1,"code":"COL","label":"Colorado Avalanche","marketId":"0xb97d24f7ecec39fb3d17687debd53ca6983e87aab3b2f5ddb1a76ea1ff6ff617"},{"outcomeIndex":2,"code":"CAR","label":"Carolina Hurricanes","marketId":"0x9df6c8e6f7ecc5ae755adcd4039ffdbfc1198d8ce25981e421aeeb46014ed6ff"},{"outcomeIndex":3,"code":"EDM","label":"Edmonton Oilers","marketId":"0x3494131e21bc3fa30b2f020e68846f2cd37a0fc8e9a0a372491f7a53dd811daf"},{"outcomeIndex":4,"code":"VGK","label":"Vegas Golden Knights","marketId":"0xfb8761b4269a3daea63789f07b42f8291f8e71c64f5eb4f66fc99078d49f27af"},{"outcomeIndex":5,"code":"MIN","label":"Minnesota Wild","marketId":"0xa33396bb54350a16d7c622fbc2fdcae556761244ee6706e67cbd6867fb06ff18"},{"outcomeIndex":6,"code":"TBL","label":"Tampa Bay Lightning","marketId":"0xe5855b319cbc37adf0172012f131486a89570f0f30e530510938525060d14f43"},{"outcomeIndex":7,"code":"DAL","label":"Dallas Stars","marketId":"0xc9badaabebfa3dcbfe9f43dae3a57e020ef3108e748a36fd13d7986193496746"},{"outcomeIndex":8,"code":"WSH","label":"Washington Capitals","marketId":"0xceab018096c140af3fb56fb24da1515af8ee23b970748588dc0806d71cfc739d"},{"outcomeIndex":9,"code":"MTL","label":"Montreal Canadiens","marketId":"0xd8d9ebf61c65093a8f4d0e5b890cbb0613c07ea39cc7040f394116afe2466afc"},{"outcomeIndex":10,"code":"TOR","label":"Toronto Maple Leafs","marketId":"0xee42a4a7d85ffe72bfe8f1240a0ea6f982857b919066816831619f9ab61b50ad"},{"outcomeIndex":11,"code":"BUF","label":"Buffalo Sabres","marketId":"0xe398f0de336551d90b2b4ddf447251890fb582538b70d2348f55fabd7953bd6a"},{"outcomeIndex":12,"code":"NYR","label":"New York Rangers","marketId":"0xfdbbd8df1062b68779638784b2213bafcf6a944db521900529e02bdf6902cbfc"},{"outcomeIndex":13,"code":"SJS","label":"San Jose Sharks","marketId":"0x57559bad9d95817013d3e602b6bf1b9f23b92727d4efdfea4d7a3283c3db7fbe"},{"outcomeIndex":14,"code":"ANA","label":"Anaheim Ducks","marketId":"0xda5fcc3fb3b61130c4c3de1a3eb75ab973a7b576368bc4c841827a336d597c36"},{"outcomeIndex":15,"code":"NJD","label":"New Jersey Devils","marketId":"0x1f2c919573eb4845a07b8c86067c9b1f40e95915307eb62d95dc6929a1f4e923"},{"outcomeIndex":16,"code":"UTA","label":"Utah Mammoth","marketId":"0xc7e34bfa3beaf9f4ace43028659b6732dcded8fa31e149a1b00c199f58731dc9"},{"outcomeIndex":17,"code":"OTT","label":"Ottawa Senators","marketId":"0x3d5115cdae1b8f77ac2fc078e0bd312168abfbf1f8f4614039e0fa853d735ba4"},{"outcomeIndex":18,"code":"PHI","label":"Philadelphia Flyers","marketId":"0x01801b8a1937cfbe7964681baa7ecca9791dda8b17895179d126d83fe5232f7f"},{"outcomeIndex":19,"code":"PIT","label":"Pittsburgh Penguins","marketId":"0xb04634b00a27ba5ea6f50efbd6badb15f0bedbba148d29315d58ab70cd68dcd2"},{"outcomeIndex":20,"code":"LAK","label":"Los Angeles Kings","marketId":"0x8847e1cf06efabba2df7274581f30aa14f7f10822636dc34eba6942f9ad22265"},{"outcomeIndex":21,"code":"CBJ","label":"Columbus Blue Jackets","marketId":"0x969a2446ecaef166dfaddc2f84a01759c6a56ce24ba43a77497c148099098633"},{"outcomeIndex":22,"code":"BOS","label":"Boston Bruins","marketId":"0xb0a1019b59de2417a6c5fed1bb30c126e2eaa713331c84cdf5b3a1077e01fa65"},{"outcomeIndex":23,"code":"WPG","label":"Winnipeg Jets","marketId":"0x445ca14a27be350e76d0385101bc81b6a6771cb898524f15547ba63205707a34"},{"outcomeIndex":24,"code":"NYI","label":"New York Islanders","marketId":"0x5a3fb5cc94eae3a051d82bca5d5ea60f7ec87eb663b030c5914785f4a5ccffd9"},{"outcomeIndex":25,"code":"STL","label":"St. Louis Blues","marketId":"0x65c26ceb49fa0bf9f2bebb7fa6d609f5d548560dcff69465809190c1511e6d5b"},{"outcomeIndex":26,"code":"DET","label":"Detroit Red Wings","marketId":"0x68a98addfc3d50f51ae33ccea9087d2f230535c67ce74bab28c9765408c6b6ca"},{"outcomeIndex":27,"code":"CHI","label":"Chicago Blackhawks","marketId":"0xe0aa65e777f275e0dbc405708f7475d3f7f3a761055639f26a3108b49a39ddf2"},{"outcomeIndex":28,"code":"NSH","label":"Nashville Predators","marketId":"0x6a0d6761c26ff686a81b107fae76b5f7f00e81a9d5ce45aa2cbd8e5cf7857e5a"},{"outcomeIndex":29,"code":"SEA","label":"Seattle Kraken","marketId":"0x9d0ac46d3354b0008acdc013954f958630fc0684acc3c448a41590f49e4e4a66"},{"outcomeIndex":30,"code":"CGY","label":"Calgary Flames","marketId":"0xcd7a13fa603f1070743471404a275c40eaaa6d830098848f945e72de76b4fb41"},{"outcomeIndex":31,"code":"VAN","label":"Vancouver Canucks","marketId":"0x36dc66be3b638e1941acfcdab8ac8422d934f6cee28cc429edcdd6c0a620a835"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-05-31","time":"8:00 PM","league":"NHL","gameId":"NHL-EAST-CHAMPION-SPECIAL-2027-1811808000","slug":"nhl-east-champion-special-2027-1811808000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2027 Eastern Conference Champion","marketQuestion_es":"Campeón de la Conferencia Este 2027","teamACode":"FLA","teamAName":"Florida Panthers","teamBCode":"CAR","teamBName":"Carolina Hurricanes","outcomesCount":16,"outcomes":[{"outcomeIndex":0,"code":"FLA","label":"Florida Panthers","marketId":"0xb5eab4f1e237e1c337b204d6c43e72aa0e58797b6e46e6e463bda5a9598c5ba0"},{"outcomeIndex":1,"code":"CAR","label":"Carolina Hurricanes","marketId":"0x0c2b0c605fe9b8c65edafbb32fc5e1dcde90c0866734c62eeb8e7211ad041723"},{"outcomeIndex":2,"code":"TBL","label":"Tampa Bay Lightning","marketId":"0x893c5cea747a54aad3151332da5a4ddf86dfe709bb84506bca216a7bd43db434"},{"outcomeIndex":3,"code":"WSH","label":"Washington Capitals","marketId":"0x5b5189a419e73f18ed0b0fec4ccc45751c47f3cd1638da0649f46ec3a7ee1578"},{"outcomeIndex":4,"code":"PHI","label":"Philadelphia Flyers","marketId":"0xa94a40c7863b6a54161d319cd01c74ea4c7c931723f66041ad5bb9b8c2cc953a"},{"outcomeIndex":5,"code":"MTL","label":"Montreal Canadiens","marketId":"0x80be9f4e73e0e8b4203815794d6a5e3513f7e1dec04649741a55d0342694a636"},{"outcomeIndex":6,"code":"BUF","label":"Buffalo Sabres","marketId":"0x1442cfa7c0c3a7b1dd6b9c5d0c9dcaa0d8f10f7f9960c21a4c6a0a335edcd1c0"},{"outcomeIndex":7,"code":"OTT","label":"Ottawa Senators","marketId":"0x0b8be0f13dd4a17cb97f6fe9651805f5d42299e9b17c13812baa9a3eb584acbd"},{"outcomeIndex":8,"code":"NJD","label":"New Jersey Devils","marketId":"0x2b0f6367752c286e2d4d05b1a922991d51793df5faa60cfafdac67e6e6827f1b"},{"outcomeIndex":9,"code":"PIT","label":"Pittsburgh Penguins","marketId":"0x9e937bcbab5ee52fa31d4fbd987f51912aedb6832935d49d5ed63927f2d565ae"},{"outcomeIndex":10,"code":"TOR","label":"Toronto Maple Leafs","marketId":"0x37befb294f14142823062a86c1685add4e730b6a630cdcbccd0034a9ec027eed"},{"outcomeIndex":11,"code":"BOS","label":"Boston Bruins","marketId":"0x49f8c35d350d87fea5b2aa67f1122773d3ec6f7e947fa000d0dcc7f83a25191e"},{"outcomeIndex":12,"code":"NYR","label":"New York Rangers","marketId":"0xd350d50e92e9a5e39f1483ca4280737d11d7831205dd561ab9fd6bdb26572b34"},{"outcomeIndex":13,"code":"NYI","label":"New York Islanders","marketId":"0xf5616bbb34fb8ceecb2dc50b498f823bd185e56d2b8dbb99784cfce0d6a463d0"},{"outcomeIndex":14,"code":"CBJ","label":"Columbus Blue Jackets","marketId":"0xd277925bd2440a37890c6217bbbdcfaf4409c1dfebbbf3a451bb620c358d7e33"},{"outcomeIndex":15,"code":"DET","label":"Detroit Red Wings","marketId":"0x5af99ac1572da6e5d4d61c90c9fc33f8bd941451b74d07cf977c57ff736bd624"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-05-31","time":"8:00 PM","league":"NHL","gameId":"NHL-WEST-CHAMPION-SPECIAL-2027-1811808000","slug":"nhl-west-champion-special-2027-1811808000","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2027 Western Conference Champion","marketQuestion_es":"Campeón de la Conferencia Oeste 2027","teamACode":"COL","teamAName":"Colorado Avalanche","teamBCode":"EDM","teamBName":"Edmonton Oilers","outcomesCount":16,"outcomes":[{"outcomeIndex":0,"code":"COL","label":"Colorado Avalanche","marketId":"0x0a50877cc305030421da639e552a5e7495b0fb1a7a7c4f01bb9f3b5b7b7dbcac"},{"outcomeIndex":1,"code":"EDM","label":"Edmonton Oilers","marketId":"0x8a08828ecb69f108a130705d62e0b44321de0d9a40a85372056cce1a9bcfb8c5"},{"outcomeIndex":2,"code":"VGK","label":"Vegas Golden Knights","marketId":"0x3aa1962cfff20eb1480058d8aac540e06101f510891687324c9bdcee00023920"},{"outcomeIndex":3,"code":"SJS","label":"San Jose Sharks","marketId":"0xc71caa9cba647f8e317cab0acd770648b563a8e7ee36ef4674a24f68dba7b970"},{"outcomeIndex":4,"code":"DAL","label":"Dallas Stars","marketId":"0xb1aee972b2847cdb9d87ba412d2d181b9fff6370afcbbd3d8798217faf9ad28e"},{"outcomeIndex":5,"code":"MIN","label":"Minnesota Wild","marketId":"0x45b23ef05033711f9be2d40690a3a9c7e28114826381a05eabd56bbb5c047a48"},{"outcomeIndex":6,"code":"UTA","label":"Utah Mammoth","marketId":"0xd61b8c5f9992020b4cb094fa76637f50b943e214f7e02f1cc8ba846f6fcbc15c"},{"outcomeIndex":7,"code":"ANA","label":"Anaheim Ducks","marketId":"0x3a3ef78878615bdea11fb25a10cc2ec9fb38229b0d6c49dc739fcaeb6d4509b9"},{"outcomeIndex":8,"code":"LAK","label":"Los Angeles Kings","marketId":"0x89ab84c2863f817a25cbbfba6517ca267df976bc1ee8c8273e4876a7f520457d"},{"outcomeIndex":9,"code":"WPG","label":"Winnipeg Jets","marketId":"0x1a64b82e921b992e0cd93db059cf34dd4bd69c0e36068ecacdefcd4a401f9ff6"},{"outcomeIndex":10,"code":"STL","label":"St. Louis Blues","marketId":"0x491a28ec0fdfc2500915775d59a3bb9ef43456b44d480556481ce9c708ff13fd"},{"outcomeIndex":11,"code":"CHI","label":"Chicago Blackhawks","marketId":"0xabb71e2f85b23d423cdb1aa31d111d13b43bdc392122010ffaa2259e50ca9274"},{"outcomeIndex":12,"code":"CGY","label":"Calgary Flames","marketId":"0x896b08dbd69bb869f029be4ab11f648930934296ddfe848b540c046b2845e9a5"},{"outcomeIndex":13,"code":"NSH","label":"Nashville Predators","marketId":"0xf798fb519c1d4186a32227b7d9c191207877faa4212df0b99e73e09103a20eb3"},{"outcomeIndex":14,"code":"SEA","label":"Seattle Kraken","marketId":"0x07acee341e39d602916bae3ffb963e22b1c6995f8f86f8bfbdc539d789942b8f"},{"outcomeIndex":15,"code":"VAN","label":"Vancouver Canucks","marketId":"0xa49a24307bce4915f199ff6ecfa5e5e5c979ae42828a60ae462f5d0ca5b4f786"}]}
   ],
   "EPL": [
-    {
-      "contractAddress": "0x4d7dbf0a758e3be652f9D9dD3b937236f23635BC",
-      "date": "2026-01-31",
-      "time": "10:00 AM",
-      "teamA": "ARS",
-      "teamB": "LEE",
-      "teamAName": "Arsenal",
-      "teamBName": "Leeds"
-    },
-    {
-      "contractAddress": "0xeC9b4e1efE1aFC6f7b29755D2366F23bc2265D73",
-      "date": "2026-01-31",
-      "time": "3:00 PM",
-      "teamA": "NEW",
-      "teamB": "LIV",
-      "teamAName": "Newcastle",
-      "teamBName": "Liverpool"
-    },
-    {
-      "contractAddress": "0xc1c9E08D774A0C66A6173b4913bEBcb3c9bfc977",
-      "date": "2026-02-01",
-      "time": "9:00 AM",
-      "teamA": "BRE",
-      "teamB": "AVL",
-      "teamAName": "Brentford",
-      "teamBName": "Aston Villa"
-    },
-    {
-      "contractAddress": "0x0338d2cd4b6a09C4113342C782F0d213D50DDEdD",
-      "date": "2026-02-01",
-      "time": "9:00 AM",
-      "teamA": "FUL",
-      "teamB": "MUN",
-      "teamAName": "Fulham",
-      "teamBName": "Manchester Utd"
-    },
-    {
-      "contractAddress": "0xfb051B907fF675c3AfB3E627f404Ad3B2f3C6cE8",
-      "date": "2026-02-01",
-      "time": "9:00 AM",
-      "teamA": "CRY",
-      "teamB": "NFO",
-      "teamAName": "Crystal Palace",
-      "teamBName": "Nottingham"
-    },
-    {
-      "contractAddress": "0xa4Fc0c1Ba285A39aC79e93AE6afc9724775bE139",
-      "date": "2026-02-01",
-      "time": "11:30 AM",
-      "teamA": "MCI",
-      "teamB": "TOT",
-      "teamAName": "Manchester City",
-      "teamBName": "Tottenham"
-    },
-    {
-      "contractAddress": "0xCEBEB40d1714bd8a0f5ae4c2FBC4E3Da6f08Fa79",
-      "date": "2026-02-02",
-      "time": "3:00 PM",
-      "teamA": "BUR",
-      "teamB": "SUN",
-      "teamAName": "Burnley",
-      "teamBName": "Sunderland"
-    }
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2027-05-23","time":"11:00 AM","league":"EPL","gameId":"EPL-CHAMPION-2027-1811084400","slug":"epl-champion-2027-1811084400","v2":true,"marketType":"LEAGUE_WINNER","marketQuestion":"2027 EPL Champion","marketQuestion_es":"Campeón de la EPL 2027","teamACode":"ARS","teamAName":"Arsenal","teamBCode":"MCI","teamBName":"Manchester City","outcomesCount":20,"outcomes":[{"outcomeIndex":0,"code":"ARS","label":"Arsenal","marketId":"0x84fcba3764d15f4ea775029dbf21fe79ca219ad26636499836c0d8030ababe7d"},{"outcomeIndex":1,"code":"MCI","label":"Manchester City","marketId":"0x883745622be605025317ae1547e9cc74f58619f32affef0f8fb0abba0bec3cee"},{"outcomeIndex":2,"code":"LIV","label":"Liverpool","marketId":"0xf9a3ad0a197f4c1e4795ff8b9e9b06b13a4a412de9e5d51e5b178d8ba5a3a8a8"},{"outcomeIndex":3,"code":"MUN","label":"Manchester United","marketId":"0xf4c4db18a0a85fc04e990caaaf8464392b42fcdfb6e2646a23012bca1500db0d"},{"outcomeIndex":4,"code":"CHE","label":"Chelsea","marketId":"0xbaada428d17f8d6b99f815b2c37fb5e5870fa7244b215b88397e820d8f78a61c"},{"outcomeIndex":5,"code":"TOT","label":"Tottenham Hotspur","marketId":"0x3b4706709db26cc39677ca946a23c1859c9dae26155df44e1a12b502c76ddec2"},{"outcomeIndex":6,"code":"AVL","label":"Aston Villa","marketId":"0x4c58cd465ad50cc90bb6597e68316e868a45db70c47f4cd772c444a5db26cb90"},{"outcomeIndex":7,"code":"NEW","label":"Newcastle United","marketId":"0x21f3fab65b3799379e39e6014ec1b3e75078f888e9def226f3958d7f29abff11"},{"outcomeIndex":8,"code":"BHA","label":"Brighton","marketId":"0x62f452211e7d9f829868aee1b4ec2dc9936a35726c5d79031aea593d9f8aee0a"},{"outcomeIndex":9,"code":"BOU","label":"Bournemouth","marketId":"0xd2c73c88efe19d6e189842bbb20427b582d5b9e3e7ded1da794c3622d2d9d470"},{"outcomeIndex":10,"code":"BRE","label":"Brentford","marketId":"0xcc2e4d145aec4aba7bf0e9e8bef66a7b75ff1055712cf2a664421b9e417df3e4"},{"outcomeIndex":11,"code":"CRY","label":"Crystal Palace","marketId":"0x153a1e4bb2a0d1c5f464c50410ca1a63fcaa3c7fa8f3fcbfe741e9c6ad0b008e"},{"outcomeIndex":12,"code":"EVE","label":"Everton","marketId":"0x17d8bc1315c1b29018c0d9ed49716544c4a8ec6926f7e52252207fd03146fbe7"},{"outcomeIndex":13,"code":"FUL","label":"Fulham","marketId":"0x7a0893c068a1f50d311ed5986329f54f90795a66262856f6c8d3e4fab1946c0f"},{"outcomeIndex":14,"code":"LEE","label":"Leeds United","marketId":"0x476c56123ff3d36b42f0c296163206ac4b916408eaac0a062439de9a39fa968e"},{"outcomeIndex":15,"code":"NFO","label":"Nottingham Forest","marketId":"0x6b13d4ea0d7595bf7e5516e68a0e171cdd86baf513352ebc2e1cc8047c633e12"},{"outcomeIndex":16,"code":"SUN","label":"Sunderland","marketId":"0x649bf8322e825442282af30388e9d9be3d21eb116ffbf3091b2e34e242100959"},{"outcomeIndex":17,"code":"COV","label":"Coventry City","marketId":"0x4e0127097bdb73c3b3f62f254b7d6ff3675dc4f9689bb775fb71894e3c04b92b"},{"outcomeIndex":18,"code":"IPS","label":"Ipswich Town","marketId":"0x41fe320f8ee547537e5ae78e7461972beaf06759b26d44514727c42b3896e239"},{"outcomeIndex":19,"code":"HUL","label":"Hull City","marketId":"0x7c0c78e60011afce974aedf9a3db810e6f8e5967957814041d97150c00e7904c"}]}
   ],
-  "UCL": [],
-  "WC": [
-    {
-      "contractAddress": "0x181e21cB36772d27E3e845e46d6EB79c88cFD860",
-      "date": "2026-06-11",
-      "time": "3:00 PM",
-      "teamA": "RSA",
-      "teamB": "MEX",
-      "teamAName": "South Africa",
-      "teamBName": "Mexico",
-      "initialPriceBps": [
-        1100,
-        2100,
-        6800
-      ],
-      "league": "WC",
-      "location": "Group A",
-      "lockTime": 1781204400,
-      "marketId": "0x0ff9c3e021a985c3644e19e5ed9e0482b593217eb2a5a68cadac9877b815adf9",
-      "maxBetPerTx": "30",
-      "outcomeCodes": [
-        "RSA",
-        "DRAW",
-        "MEX"
-      ],
-      "outcomeNames": [
-        "South Africa",
-        "DRAW",
-        "Mexico"
-      ],
-      "outcomesCount": 3,
-      "virtualLiquidityTotal": "600"
-    },
-    {
-      "contractAddress": "0x4787a51120AB942F8b87A303144069B5ffAfEcfd",
-      "date": "2026-06-11",
-      "time": "10:00 PM",
-      "teamA": "CZE",
-      "teamB": "KOR",
-      "teamAName": "Czech Republic",
-      "teamBName": "South Korea",
-      "initialPriceBps": [
-        3400,
-        3200,
-        3400
-      ],
-      "league": "WC",
-      "location": "Group A",
-      "lockTime": 1781229600,
-      "marketId": "0x4ce9f0bbe23af3e2f230524c326d187efd028a7780e9c5d678dbc3fa1af7f008",
-      "maxBetPerTx": "30",
-      "outcomeCodes": [
-        "CZE",
-        "DRAW",
-        "KOR"
-      ],
-      "outcomeNames": [
-        "Czech Republic",
-        "DRAW",
-        "South Korea"
-      ],
-      "outcomesCount": 3,
-      "virtualLiquidityTotal": "600"
-    },
-    {
-      "contractAddress": "0x8A01AC905832379adAab1FD8B8A836D68cB017D2",
-      "date": "2026-06-12",
-      "time": "3:00 PM",
-      "teamA": "BIH",
-      "teamB": "CAN",
-      "teamAName": "Bosnia & Herzegovina",
-      "teamBName": "Canada",
-      "initialPriceBps": [
-        2100,
-        2600,
-        5300
-      ],
-      "league": "WC",
-      "location": "Group B",
-      "lockTime": 1781290800,
-      "marketId": "0x5bf696513fece74844528499472aaada11225140077bb0924a104ef19b6da0bc",
-      "maxBetPerTx": "30",
-      "outcomeCodes": [
-        "BIH",
-        "DRAW",
-        "CAN"
-      ],
-      "outcomeNames": [
-        "Bosnia & Herzegovina",
-        "DRAW",
-        "Canada"
-      ],
-      "outcomesCount": 3,
-      "virtualLiquidityTotal": "600"
-    },
-    {
-      "contractAddress": "0x24A212fcbcEeeb44e67e122E01e987A309A49015",
-      "date": "2026-06-12",
-      "time": "9:00 PM",
-      "teamA": "PAR",
-      "teamB": "USA",
-      "teamAName": "Paraguay",
-      "teamBName": "USA",
-      "initialPriceBps": [
-        2400,
-        2900,
-        4700
-      ],
-      "league": "WC",
-      "location": "Group D",
-      "lockTime": 1781312400,
-      "marketId": "0x1e9321d48edc6effa36b0f34ec8194eaab157f3adc8619bcda8be1a2e632bd5e",
-      "maxBetPerTx": "30",
-      "outcomeCodes": [
-        "PAR",
-        "DRAW",
-        "USA"
-      ],
-      "outcomeNames": [
-        "Paraguay",
-        "DRAW",
-        "USA"
-      ],
-      "outcomesCount": 3,
-      "virtualLiquidityTotal": "600"
-    },
-    {
-      "contractAddress": "0xAd57788eac106300AD723E8D581De03010F5c719",
-      "date": "2026-06-13",
-      "time": "3:00 PM",
-      "teamA": "SUI",
-      "teamB": "QAT",
-      "teamAName": "Switzerland",
-      "teamBName": "Qatar",
-      "initialPriceBps": [
-        8100,
-        1400,
-        500
-      ],
-      "league": "WC",
-      "location": "Group B",
-      "lockTime": 1781377200,
-      "marketId": "0x6ce3d9215c3711cfe313a0cc903d115078915eb238300c45c3623ff6c093a875",
-      "maxBetPerTx": "30",
-      "outcomeCodes": [
-        "SUI",
-        "DRAW",
-        "QAT"
-      ],
-      "outcomeNames": [
-        "Switzerland",
-        "DRAW",
-        "Qatar"
-      ],
-      "outcomesCount": 3,
-      "virtualLiquidityTotal": "600"
-    },
-    {
-      "contractAddress": "0x71F2bD38f56d4a4C5dbE287C80Edd4e07ed57911",
-      "date": "2026-06-13",
-      "time": "6:00 PM",
-      "teamA": "MAR",
-      "teamB": "BRA",
-      "teamAName": "Morocco",
-      "teamBName": "Brazil",
-      "initialPriceBps": [
-        1800,
-        2600,
-        5600
-      ],
-      "league": "WC",
-      "location": "Group C",
-      "lockTime": 1781388000,
-      "marketId": "0xb3ee815afa4d2896f1e0873e37e0c1e2cd5aa1f0e0be0655cf7e6d2f2786599b",
-      "maxBetPerTx": "30",
-      "outcomeCodes": [
-        "MAR",
-        "DRAW",
-        "BRA"
-      ],
-      "outcomeNames": [
-        "Morocco",
-        "DRAW",
-        "Brazil"
-      ],
-      "outcomesCount": 3,
-      "virtualLiquidityTotal": "600"
-    },
-    {
-      "contractAddress": "0x2eCA5B975f8fd90f71E27A4E1BA17226e1b5C527",
-      "date": "2026-06-13",
-      "time": "9:00 PM",
-      "teamA": "SCO",
-      "teamB": "HAI",
-      "teamAName": "Scotland",
-      "teamBName": "Haiti",
-      "initialPriceBps": [
-        6200,
-        2300,
-        1500
-      ],
-      "league": "WC",
-      "location": "Group C",
-      "lockTime": 1781398800,
-      "marketId": "0x7653301cd0e1e112e5b83cb5906c75e8f5098c205ce6061444836f6b7cbffaf4",
-      "maxBetPerTx": "30",
-      "outcomeCodes": [
-        "SCO",
-        "DRAW",
-        "HAI"
-      ],
-      "outcomeNames": [
-        "Scotland",
-        "DRAW",
-        "Haiti"
-      ],
-      "outcomesCount": 3,
-      "virtualLiquidityTotal": "600"
-    }
-  ]
+  "UCL": [
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"12:45 PM","league":"UCL","gameId":"UCL-HBS-SB-2026-08-25-1787676300","slug":"ucl-hbs-sb-2026-08-25-1787676300","v2":true,"marketType":"THREE_WAY","marketKind":"THREE_WAY","marketQuestion":"H. Beer Sheva vs Sabah Baku — Result","teamACode":"HBS","teamAName":"H. Beer Sheva","teamBCode":"SB","teamBName":"Sabah Baku","outcomesCount":3,"outcomes":[{"outcomeIndex":0,"code":"HBS","label":"H. Beer Sheva","marketId":"0x4fee3d6546eb41ed1a9bb7694fd1da1e24edd8970fa897ee600e2809f7d69fdc"},{"outcomeIndex":2,"code":"DRAW","label":"Draw","marketId":"0xde5288006f9318f41b9e29bc004c34a85c5769e2d3e1bfb47cd415866068de93"},{"outcomeIndex":1,"code":"SB","label":"Sabah Baku","marketId":"0x63b1f70c6da2b8f0bd5861c782aa0c6cc6c2e458bf994672897a2616f8eb4c24"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"3:00 PM","league":"UCL","gameId":"UCL-N-BG-2026-08-25-1787684400","slug":"ucl-n-bg-2026-08-25-1787684400","v2":true,"marketType":"THREE_WAY","marketKind":"THREE_WAY","marketQuestion":"Nijmegen vs Bodo/Glimt — Result","teamACode":"N","teamAName":"Nijmegen","teamBCode":"BG","teamBName":"Bodo/Glimt","outcomesCount":3,"outcomes":[{"outcomeIndex":0,"code":"N","label":"Nijmegen","marketId":"0x5d3770e9a045a9309c40ec7967b64abf4c09a20d8b9de38ae742eb344c5bbd4d"},{"outcomeIndex":2,"code":"DRAW","label":"Draw","marketId":"0x90e9ba527fe69cdfca93b5f5b14ad0d981ef7f4badfe083f44095d800f95a1c6"},{"outcomeIndex":1,"code":"BG","label":"Bodo/Glimt","marketId":"0xd2df261bebd6dd58164d81ce8752e3bfc5a6d38c4da84ba64efedcd0d212012e"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-25","time":"3:00 PM","league":"UCL","gameId":"UCL-C-L-2026-08-25-1787684400","slug":"ucl-c-l-2026-08-25-1787684400","v2":true,"marketType":"THREE_WAY","marketKind":"THREE_WAY","marketQuestion":"Celtic vs LASK — Result","teamACode":"C","teamAName":"Celtic","teamBCode":"L","teamBName":"LASK","outcomesCount":3,"outcomes":[{"outcomeIndex":0,"code":"C","label":"Celtic","marketId":"0x4b829ebd657fc04470c52ae05561ffff267405a63717358361b20d2c697f3810"},{"outcomeIndex":2,"code":"DRAW","label":"Draw","marketId":"0x8d18ad7b8cfbffcc73191c44a3395fa7b9bfe079676f4e186253e93f09fe8cf2"},{"outcomeIndex":1,"code":"L","label":"LASK","marketId":"0x17289ea5a3ac0230e28f62235ef87f09fb88cfe9007c0b2f3ca53e718616eec8"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"3:00 PM","league":"UCL","gameId":"UCL-LS-AA-2026-08-26-1787770800","slug":"ucl-ls-aa-2026-08-26-1787770800","v2":true,"marketType":"THREE_WAY","marketKind":"THREE_WAY","marketQuestion":"Levski Sofia vs AEK Athens — Result","teamACode":"LS","teamAName":"Levski Sofia","teamBCode":"AA","teamBName":"AEK Athens","outcomesCount":3,"outcomes":[{"outcomeIndex":0,"code":"LS","label":"Levski Sofia","marketId":"0x23b732d2ecf895b97497fc076e2cdcee00b1a1578234d06eaacbaac2e9fa9db9"},{"outcomeIndex":2,"code":"DRAW","label":"Draw","marketId":"0x0ddd9b1028f8ffed8be6676496d8a8a388d7016d76016d15167f52936eb70e68"},{"outcomeIndex":1,"code":"AA","label":"AEK Athens","marketId":"0xe06423890f4b581002fa72157904629a4c41ed2e5b7da73645a0b22cfac72735"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"3:00 PM","league":"UCL","gameId":"UCL-SB-C-2026-08-26-1787770800","slug":"ucl-sb-c-2026-08-26-1787770800","v2":true,"marketType":"THREE_WAY","marketKind":"THREE_WAY","marketQuestion":"Slovan Bratislava vs Celje — Result","teamACode":"SB","teamAName":"Slovan Bratislava","teamBCode":"C","teamBName":"Celje","outcomesCount":3,"outcomes":[{"outcomeIndex":0,"code":"SB","label":"Slovan Bratislava","marketId":"0x8be6877969712fbde0619b7b749cdc19576e486e052ba02192c8ba9bec92dfa6"},{"outcomeIndex":2,"code":"DRAW","label":"Draw","marketId":"0x60c24b762967692d34812119e69a4023f448dd0444668d83f7c9a8ef8ceee926"},{"outcomeIndex":1,"code":"C","label":"Celje","marketId":"0xa1a0884394609bebef7b680092d7dab13bb8e0257b170bf3a16d5b51fdf2039f"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"3:00 PM","league":"UCL","gameId":"UCL-F-L-2026-08-26-1787770800","slug":"ucl-f-l-2026-08-26-1787770800","v2":true,"marketType":"THREE_WAY","marketKind":"THREE_WAY","marketQuestion":"Fenerbahce vs Lyon — Result","teamACode":"F","teamAName":"Fenerbahce","teamBCode":"L","teamBName":"Lyon","outcomesCount":3,"outcomes":[{"outcomeIndex":0,"code":"F","label":"Fenerbahce","marketId":"0x18787413c020b2fb2129e8bcf62fbc4030b3b6b8f7eca99bcd6d3da1baea7fcc"},{"outcomeIndex":2,"code":"DRAW","label":"Draw","marketId":"0x308ae02b0327a3b53eca1148af7ea832f76b8c644cec22b3b10cbb4b208ff5c1"},{"outcomeIndex":1,"code":"L","label":"Lyon","marketId":"0xeb4a1f6be4c61f9043e412b68b2cdcdf4739c9dded23051561c0e59b9e7bf0d7"}]},
+    {"contractAddress":"0x7f259179Db5Fee779f05DD52A878EF340B6d494b","date":"2026-08-26","time":"3:00 PM","league":"UCL","gameId":"UCL-DZ-V-2026-08-26-1787770800","slug":"ucl-dz-v-2026-08-26-1787770800","v2":true,"marketType":"THREE_WAY","marketKind":"THREE_WAY","marketQuestion":"Din. Zagreb vs Viking — Result","teamACode":"DZ","teamAName":"Din. Zagreb","teamBCode":"V","teamBName":"Viking","outcomesCount":3,"outcomes":[{"outcomeIndex":0,"code":"DZ","label":"Din. Zagreb","marketId":"0x01600077384de26a0dde4d1240594cbd420879770fb728b7f763e448d6c87ebc"},{"outcomeIndex":2,"code":"DRAW","label":"Draw","marketId":"0xfa2b2e1aeda6f64720d62d857544f201b7687ecebf60f07f960d896b399d3b54"},{"outcomeIndex":1,"code":"V","label":"Viking","marketId":"0x5810c9dfd7a0fcf55a689a2f1bfc0eb46f140787e894a81e24df1e603ef975f5"}]}
+  ],
+  "WC": []
 }
