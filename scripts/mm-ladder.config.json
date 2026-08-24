@@ -4122,6 +4122,116 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "EPL-MCI-CRY-2026-08-28-1787943600",
+      "mids": {
+        "MCI": 40,
+        "DRAW": 27,
+        "CRY": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-NFO-LIV-2026-08-29-1788003000",
+      "mids": {
+        "NFO": 40,
+        "DRAW": 27,
+        "LIV": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-EVE-BOU-2026-08-29-1788012000",
+      "mids": {
+        "EVE": 40,
+        "DRAW": 27,
+        "BOU": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-HUL-COV-2026-08-29-1788012000",
+      "mids": {
+        "HUL": 40,
+        "DRAW": 27,
+        "COV": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-NEW-TOT-2026-08-29-1788021000",
+      "mids": {
+        "NEW": 40,
+        "DRAW": 27,
+        "TOT": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-BHA-CHE-2026-08-30-1788094800",
+      "mids": {
+        "BHA": 40,
+        "DRAW": 27,
+        "CHE": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-BRE-LEE-2026-08-30-1788094800",
+      "mids": {
+        "BRE": 40,
+        "DRAW": 27,
+        "LEE": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-FUL-SUN-2026-08-30-1788094800",
+      "mids": {
+        "FUL": 40,
+        "DRAW": 27,
+        "SUN": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-IPS-MUN-2026-08-30-1788103800",
+      "mids": {
+        "IPS": 40,
+        "DRAW": 27,
+        "MUN": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-ARS-AVL-2026-08-31-1788202800",
+      "mids": {
+        "ARS": 40,
+        "DRAW": 27,
+        "AVL": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
