@@ -4111,6 +4111,17 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "EPL-CHE-FUL-2026-08-24-1787598000",
+      "mids": {
+        "CHE": 40,
+        "DRAW": 27,
+        "FUL": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
