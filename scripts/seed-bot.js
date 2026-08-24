@@ -284,6 +284,11 @@ const PROP_NAME_ALIASES = {
   "h beer sheva": ["Hapoel Be'er Sheva", "MH Hapoel Be'er Sheva"],
   "sabah baku": ["Sabah FK"],
   "lyon": ["Olympique Lyonnais"],
+  // Goalserve fixtures-feed abbreviations that are not word-subsets of the
+  // Polymarket title ("Utd" != "United") — without this, EPL-IPS-MUN never
+  // bound its event and the whole game stayed unseeded.
+  "manchester utd": ["Manchester United"],
+  "nottingham": ["Nottingham Forest"],
 };
 
 /**
