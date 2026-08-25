@@ -230,6 +230,17 @@ function normalizeGameRow(r: any) {
   return { homeName, awayName, homeScore, awayScore, status };
 }
 
+/** Word-subset (soccer club short names): Goalserve says "Sabah" where the
+ *  market says "Sabah Baku" — every word of the shorter name appearing in the
+ *  longer one counts like an acronym match. Guarded to names whose shorter
+ *  side has a real (≥4-char) word so "FC"/"St" fragments can't match. Mirrors
+ *  the seed bot's sameTeamStrict, which prices these clubs off the same names. */
+function wordSubsetMatch(aParts: string[], bParts: string[]): boolean {
+  if (!aParts.length || !bParts.length) return false;
+  const [shorter, longer] = aParts.length <= bParts.length ? [aParts, bParts] : [bParts, aParts];
+  return shorter.some((w) => w.length >= 4) && shorter.every((w) => longer.includes(w));
+}
+
 function teamMatchesOneSide(apiName: string, wantName: string, wantCode?: string): boolean {
   const nApi = norm(apiName);
   const nWant = norm(wantName);
@@ -243,6 +254,7 @@ function teamMatchesOneSide(apiName: string, wantName: string, wantCode?: string
   const apiParts = nApi.split(" ").filter(Boolean);
   const wantParts = nWant.split(" ").filter(Boolean);
   if (!apiParts.length || !wantParts.length) return false;
+  if (wordSubsetMatch(apiParts, wantParts)) return true;
   const apiMascot = apiParts[apiParts.length - 1];
   const wantMascot = wantParts[wantParts.length - 1];
   if (apiMascot && wantMascot && apiMascot === wantMascot) return true;
@@ -267,6 +279,7 @@ function matchStrength(apiName: string, wantName: string, wantCode?: string): nu
   if (wantAcr && apiAcr && apiAcr === wantAcr) return 2;
   const ap = nApi.split(" ").filter(Boolean);
   const wp = norm(wantName).split(" ").filter(Boolean);
+  if (wordSubsetMatch(ap, wp)) return 2;
   if (ap.length && wp.length && ap[ap.length - 1] === wp[wp.length - 1]) return 1;
   return 0;
 }
