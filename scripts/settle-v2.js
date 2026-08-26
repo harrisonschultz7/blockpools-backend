@@ -244,8 +244,17 @@ async function main() {
     if (!games.length) return console.log("no matching v2 markets");
 
     const flagged = [];
+    let preLock = 0;
     for (const g of games) {
       try {
+        // A market can't be final before kickoff — skip the lookup entirely.
+        // Goalserve 500s on future dates anyway, so every pre-lock game was a
+        // doomed request that logged as "HTTP 502 — retry next pass" noise and
+        // hammered the per-key Goalserve throttle ~100×/pass. lockTime=0
+        // (unparseable gameId) still falls through to the lookup as before,
+        // and a manual --winner override always runs.
+        const lockSec = lockTimeOf(g);
+        if (winnerOverride == null && lockSec > 0 && Date.now() / 1000 < lockSec) { preLock++; continue; }
         let api;
         if (winnerOverride != null) {
           const ov = String(winnerOverride).toLowerCase() === "void" ? OUTCOME_VOID : Number(winnerOverride);
@@ -311,6 +320,8 @@ async function main() {
         console.log(`  ${g.gameId}: ERROR ${e.shortMessage || e.message}`);
       }
     }
+
+    if (preLock) console.log(`  (${preLock} pre-kickoff market(s) skipped — no lookup)`);
 
     if (flagged.length) {
       console.warn(`\n🚩🚩 ${flagged.length} GAME(S) FLAGGED — resolved to void/draw and NOT settled on-chain. Review each, then settle manually:`);
