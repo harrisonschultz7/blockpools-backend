@@ -4232,6 +4232,94 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "EPL-LIV-IPS-2026-09-04-1788548400",
+      "mids": {
+        "LIV": 40,
+        "DRAW": 27,
+        "IPS": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-BOU-NEW-2026-09-05-1788607800",
+      "mids": {
+        "BOU": 40,
+        "DRAW": 27,
+        "NEW": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-SUN-BRE-2026-09-05-1788616800",
+      "mids": {
+        "SUN": 40,
+        "DRAW": 27,
+        "BRE": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-LEE-BHA-2026-09-05-1788616800",
+      "mids": {
+        "LEE": 40,
+        "DRAW": 27,
+        "BHA": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-CRY-FUL-2026-09-05-1788616800",
+      "mids": {
+        "CRY": 40,
+        "DRAW": 27,
+        "FUL": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-COV-MCI-2026-09-05-1788616800",
+      "mids": {
+        "COV": 40,
+        "DRAW": 27,
+        "MCI": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-TOT-NFO-2026-09-05-1788616800",
+      "mids": {
+        "TOT": 40,
+        "DRAW": 27,
+        "NFO": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-AVL-HUL-2026-09-05-1788625800",
+      "mids": {
+        "AVL": 40,
+        "DRAW": 27,
+        "HUL": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
