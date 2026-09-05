@@ -4320,6 +4320,325 @@
       "params": {
         "budgetUsd": 50
       }
+    },
+    {
+      "gameId": "EPL-MUN-EVE-2026-09-06-1788699600",
+      "mids": {
+        "MUN": 40,
+        "DRAW": 27,
+        "EVE": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-CHE-ARS-2026-09-06-1788708600",
+      "mids": {
+        "CHE": 40,
+        "DRAW": 27,
+        "ARS": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-LSK-AEK-2026-09-08-1788885900",
+      "mids": {
+        "LSK": 40,
+        "DRAW": 27,
+        "AEK": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-AV-CBK-2026-09-08-1788885900",
+      "mids": {
+        "AV": 40,
+        "DRAW": 27,
+        "CBK": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-VIL-D-2026-09-08-1788894000",
+      "mids": {
+        "VIL": 40,
+        "DRAW": 27,
+        "D": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-MCI-FCP-2026-09-08-1788894000",
+      "mids": {
+        "MCI": 40,
+        "DRAW": 27,
+        "FCP": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-B-LIL-2026-09-08-1788894000",
+      "mids": {
+        "B": 40,
+        "DRAW": 27,
+        "LIL": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-I-MAD-2026-09-08-1788894000",
+      "mids": {
+        "I": 40,
+        "DRAW": 27,
+        "MAD": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-F-BAR-2026-09-09-1788972300",
+      "mids": {
+        "F": 40,
+        "DRAW": 27,
+        "BAR": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-VIK-S-2026-09-09-1788972300",
+      "mids": {
+        "VIK": 40,
+        "DRAW": 27,
+        "S": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-AM-LIV-2026-09-09-1788980400",
+      "mids": {
+        "AM": 40,
+        "DRAW": 27,
+        "LIV": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-ARS-NAP-2026-09-09-1788980400",
+      "mids": {
+        "ARS": 40,
+        "DRAW": 27,
+        "NAP": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-SLB-P-2026-09-09-1788980400",
+      "mids": {
+        "SLB": 40,
+        "DRAW": 27,
+        "P": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-GAL-SPO-2026-09-09-1788980400",
+      "mids": {
+        "GAL": 40,
+        "DRAW": 27,
+        "SPO": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-ROM-FEN-2026-09-10-1789058700",
+      "mids": {
+        "ROM": 40,
+        "DRAW": 27,
+        "FEN": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-SHA-P-2026-09-10-1789058700",
+      "mids": {
+        "SHA": 40,
+        "DRAW": 27,
+        "P": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-BG-BAY-2026-09-10-1789066800",
+      "mids": {
+        "BG": 40,
+        "DRAW": 27,
+        "BAY": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-RBL-C-2026-09-10-1789066800",
+      "mids": {
+        "RBL": 40,
+        "DRAW": 27,
+        "C": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-SAB-MU-2026-09-10-1789066800",
+      "mids": {
+        "SAB": 40,
+        "DRAW": 27,
+        "MU": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "UCL-LENS-SP-2026-09-10-1789066800",
+      "mids": {
+        "LENS": 40,
+        "DRAW": 27,
+        "SP": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-NFO-AVL-2026-09-12-1789221600",
+      "mids": {
+        "NFO": 40,
+        "DRAW": 27,
+        "AVL": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-BRE-BOU-2026-09-12-1789221600",
+      "mids": {
+        "BRE": 40,
+        "DRAW": 27,
+        "BOU": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-HUL-CHE-2026-09-12-1789221600",
+      "mids": {
+        "HUL": 40,
+        "DRAW": 27,
+        "CHE": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-IPS-CRY-2026-09-12-1789221600",
+      "mids": {
+        "IPS": 40,
+        "DRAW": 27,
+        "CRY": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-FUL-LIV-2026-09-12-1789221600",
+      "mids": {
+        "FUL": 40,
+        "DRAW": 27,
+        "LIV": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-EVE-TOT-2026-09-12-1789230600",
+      "mids": {
+        "EVE": 40,
+        "DRAW": 27,
+        "TOT": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-ARS-SUN-2026-09-12-1789239600",
+      "mids": {
+        "ARS": 40,
+        "DRAW": 27,
+        "SUN": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-BHA-COV-2026-09-13-1789304400",
+      "mids": {
+        "BHA": 40,
+        "DRAW": 27,
+        "COV": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
+    },
+    {
+      "gameId": "EPL-MCI-MUN-2026-09-13-1789313400",
+      "mids": {
+        "MCI": 40,
+        "DRAW": 27,
+        "MUN": 33
+      },
+      "params": {
+        "budgetUsd": 50
+      }
     }
   ]
 }
