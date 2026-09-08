@@ -289,6 +289,15 @@ const PROP_NAME_ALIASES = {
   // bound its event and the whole game stayed unseeded.
   "manchester utd": ["Manchester United"],
   "nottingham": ["Nottingham Forest"],
+  // UCL Sept 2026 league phase — Polymarket titles clubs by their long
+  // official names, which are NOT word-supersets of our short Goalserve
+  // names, so both event binding and sub-market lookup missed and these
+  // games never seeded (cards showed "—").
+  "inter": ["FC Internazionale Milano", "Inter Milan"],
+  "atl madrid": ["Club Atlético de Madrid", "Atletico Madrid", "Atlético Madrid"],
+  "psg": ["Paris Saint-Germain"],
+  "bayern munich": ["FC Bayern München", "Bayern München"],
+  "slavia prague": ["SK Slavia Praha", "Slavia Praha"],
 };
 
 /**
