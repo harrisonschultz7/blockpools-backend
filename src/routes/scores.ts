@@ -43,6 +43,13 @@ const FETCH_TIMEOUT_MS       = 12_000;
 const STALE_LOCK_THRESHOLD_SEC = 60 * 86_400; // 60 days
 /** Serve non-final Postgres snapshot without calling Goalserve if fetched recently enough. */
 const PG_LIVE_CACHE_MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes
+/** Non-final Postgres rows older than this get a BACKGROUND Goalserve refresh
+ *  while the stale snapshot is still served. Without this, a live game's row
+ *  only refreshed when it aged past PG_LIVE_CACHE_MAX_AGE_MS — v2 games (all
+ *  sharing one exchange address, so absent from public.games and never touched
+ *  by the refresh cron) showed scores up to 15 minutes stale, which for soccer
+ *  looked like the ticker was dead ("Not Started" 10 minutes into the match). */
+const PG_REVALIDATE_AGE_MS = 60_000;
 
 // ── Tier 2: In-memory cache (live/upcoming games only) ──────────────────────
 
@@ -62,7 +69,12 @@ function memSet(key: string, data: any) {
 
 // ── Tier 1: Postgres cache (final games only) ───────────────────────────────
 
-type PgCacheHit = { data: any; header: "postgres-final" | "postgres-live" };
+type PgCacheHit = {
+  data: any;
+  header: "postgres-final" | "postgres-live";
+  /** Row age in ms — drives the background revalidation for non-final rows. */
+  ageMs: number;
+};
 
 async function pgCacheGet(contractAddress: string): Promise<PgCacheHit | null> {
   if (!contractAddress) return null;
@@ -78,13 +90,15 @@ async function pgCacheGet(contractAddress: string): Promise<PgCacheHit | null> {
     const data = row?.score_data;
     if (data == null) return null;
 
+    const fetchedAt = row.fetched_at ? new Date(row.fetched_at).getTime() : 0;
+    const ageMs = fetchedAt ? Date.now() - fetchedAt : Number.MAX_SAFE_INTEGER;
+
     if (row.is_final === true) {
-      return { data, header: "postgres-final" };
+      return { data, header: "postgres-final", ageMs };
     }
 
-    const fetchedAt = row.fetched_at ? new Date(row.fetched_at).getTime() : 0;
-    if (fetchedAt && Date.now() - fetchedAt <= PG_LIVE_CACHE_MAX_AGE_MS) {
-      return { data, header: "postgres-live" };
+    if (ageMs <= PG_LIVE_CACHE_MAX_AGE_MS) {
+      return { data, header: "postgres-live", ageMs };
     }
 
     return null;
@@ -515,6 +529,54 @@ function buildGoalserveUrls(league: string, lockTime: number): string[] {
   return urls;
 }
 
+// ── Background revalidation (stale-while-revalidate for live games) ─────────
+//
+// Serving a warm postgres-live row is great for page loads, but a LIVE game's
+// row must not sit for PG_LIVE_CACHE_MAX_AGE_MS between refreshes. When the
+// served row is older than PG_REVALIDATE_AGE_MS we kick this off after
+// responding: fetch Goalserve (via the 55s memory cache, which de-dupes
+// sibling games on the same league-day URL), re-match, and rewrite the row.
+// The NEXT poll then serves the fresh snapshot. In-flight set stops a
+// stampede of pollers from launching duplicate refreshes per game.
+
+const _revalidating = new Set<string>();
+
+async function revalidateScoreCache(
+  league: string,
+  teamAName: string,
+  teamBName: string,
+  lockTime: number,
+  contractAddress: string
+): Promise<void> {
+  const key = contractAddress.toLowerCase();
+  if (_revalidating.has(key)) return;
+  _revalidating.add(key);
+  try {
+    const urls = buildGoalserveUrls(league, lockTime);
+    for (const url of urls) {
+      try {
+        let data = memGet(url);
+        if (data == null) {
+          data = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
+          memSet(url, data);
+        }
+        const { found, isFinal, match, shape } = extractMatchStatus(
+          data, teamAName, teamBName, lockTime
+        );
+        if (!found) continue;
+        const cachePayload =
+          match && shape ? buildSingleMatchEnvelope(match, shape) : data;
+        await pgCacheSet(contractAddress, league, cachePayload, isFinal);
+        return;
+      } catch {
+        // Try the next URL; a failed revalidation just leaves the stale row.
+      }
+    }
+  } finally {
+    _revalidating.delete(key);
+  }
+}
+
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<any> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -564,6 +626,12 @@ router.get("/live", async (req: Request, res: Response) => {
     if (!forceFresh && contractAddress) {
       const pgHit = await pgCacheGet(contractAddress);
       if (pgHit) {
+        // Live (non-final) snapshot getting stale → refresh it in the
+        // background so the next poll sees a current score. Fire-and-forget;
+        // this response still serves the warm row instantly.
+        if (pgHit.header === "postgres-live" && pgHit.ageMs > PG_REVALIDATE_AGE_MS) {
+          void revalidateScoreCache(league, teamAName, teamBName, lockTime, contractAddress);
+        }
         res.setHeader("X-Score-Cache", pgHit.header);
         return res.json(pgHit.data);
       }
