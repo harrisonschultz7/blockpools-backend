@@ -529,6 +529,62 @@ function buildGoalserveUrls(league: string, lockTime: number): string[] {
   return urls;
 }
 
+// ── Soccer live-minute merge (commentaries feed has no game clock) ──────────
+//
+// The commentaries feed (EPL/UCL/WC) carries lineups + status ("First Half",
+// "Half-time") but its @timer is ALWAYS empty, so cards could never show the
+// match minute. Goalserve's soccernew/home live feed DOES carry @timer (and
+// @inj_minute for stoppage), and shares @static_id with commentaries — an
+// exact join key. One shared URL covers every soccer game today, memory-cached
+// 55s, so this adds at most ~1 upstream call/minute total. We merge the timer
+// into the matched match object before it is returned/cached, so the frontend
+// clock ("67'", "45+2'") lights up with no parser changes.
+
+const SOCCERNEW_URL = () =>
+  `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/soccernew/home?json=1`;
+
+async function soccerLiveTimerIndex(): Promise<Map<string, { timer: string; inj: string }>> {
+  const url = SOCCERNEW_URL();
+  let data = memGet(url);
+  if (data == null) {
+    data = await fetchWithTimeout(url, FETCH_TIMEOUT_MS);
+    memSet(url, data);
+  }
+  const idx = new Map<string, { timer: string; inj: string }>();
+  const cats = data?.scores?.category;
+  for (const c of Array.isArray(cats) ? cats : cats ? [cats] : []) {
+    const ms = c?.matches?.match ?? c?.match;
+    for (const m of Array.isArray(ms) ? ms : ms ? [ms] : []) {
+      const sid = String(m?.["@static_id"] || "").trim();
+      if (!sid) continue;
+      idx.set(sid, {
+        timer: String(m?.["@timer"] || "").trim(),
+        inj: String(m?.["@inj_minute"] || "").trim(),
+      });
+    }
+  }
+  return idx;
+}
+
+/** Copy the live minute onto a matched commentaries match (in place). No-op for
+ *  non-soccer shapes, pre-game/final games, or when soccernew has no clock. */
+async function mergeSoccerTimer(match: any, shape: MatchShape | null, isFinal: boolean) {
+  if (!match || isFinal) return;
+  if (shape !== "soccer-commentaries" && shape !== "soccer-tournament") return;
+  const status = String(match?.["@status"] ?? match?.status ?? "").toLowerCase();
+  if (!status || status.includes("not started") || status.includes("postp") || status.includes("cancel")) return;
+  try {
+    const sid = String(match?.["@static_id"] || "").trim();
+    if (!sid) return;
+    const live = (await soccerLiveTimerIndex()).get(sid);
+    if (live?.timer) {
+      match["@timer"] = live.inj ? `${live.timer}+${live.inj}` : live.timer;
+    }
+  } catch {
+    // Best-effort — a failed soccernew fetch just leaves the clock blank.
+  }
+}
+
 // ── Background revalidation (stale-while-revalidate for live games) ─────────
 //
 // Serving a warm postgres-live row is great for page loads, but a LIVE game's
@@ -564,6 +620,7 @@ async function revalidateScoreCache(
           data, teamAName, teamBName, lockTime
         );
         if (!found) continue;
+        await mergeSoccerTimer(match, shape, isFinal);
         const cachePayload =
           match && shape ? buildSingleMatchEnvelope(match, shape) : data;
         await pgCacheSet(contractAddress, league, cachePayload, isFinal);
@@ -669,6 +726,11 @@ router.get("/live", async (req: Request, res: Response) => {
           teamBName,
           lockTime
         );
+
+        // Soccer: graft the live minute from soccernew onto the matched
+        // match (mutates the object inside `data`, so both the JSON
+        // response and the cache envelope below carry it).
+        if (found) await mergeSoccerTimer(match, shape, isFinal);
 
         // Match not in this day's feed: games that kick off after midnight
         // GMT (e.g. 10 PM ET) live in the NEXT day's Goalserve feed, so try
