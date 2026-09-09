@@ -453,14 +453,32 @@ async function resolveOutcome(p: {
 
   if (!candidates.length) return { found: false, isFinal: false, outcome: null };
 
-  candidates.sort((a, b) => {
+  // KICKOFF TOLERANCE — a candidate is only THIS market's game if its kickoff
+  // is near the market's lockTime. Closest-kickoff sorting alone is unbounded:
+  // when the market's own game isn't final yet, the SAME TEAMS' game from the
+  // previous day (a series/doubleheader pairing) is the only final candidate
+  // and "closest" happily returns it — which is how the 2026-09-09 MLB slate
+  // got four of tonight's markets resolved at 4 AM with yesterday's results.
+  // 8h clears any same-day doubleheader drift while a day-adjacent game (24h)
+  // can never qualify. Candidates whose kickoff can't be parsed are kept
+  // (can't judge them — legacy behavior); the guard only runs when the caller
+  // supplied a lockTime.
+  const KICKOFF_TOLERANCE_SEC = 8 * 3600;
+  const inWindow = lockTime > 0
+    ? candidates.filter(
+        (c) => typeof c.kickoff !== "number" || Math.abs(c.kickoff - lockTime) <= KICKOFF_TOLERANCE_SEC
+      )
+    : candidates;
+  if (!inWindow.length) return { found: false, isFinal: false, outcome: null };
+
+  inWindow.sort((a, b) => {
     const t1 = typeof a.kickoff === "number" ? Math.abs(a.kickoff - lockTime) : Number.MAX_SAFE_INTEGER;
     const t2 = typeof b.kickoff === "number" ? Math.abs(b.kickoff - lockTime) : Number.MAX_SAFE_INTEGER;
     if (t1 !== t2) return t1 - t2;
     return (isFinalStatus(b.status) ? 1 : 0) - (isFinalStatus(a.status) ? 1 : 0);
   });
 
-  const best = candidates[0];
+  const best = inWindow[0];
   const base = {
     found: true,
     homeName: best.homeName,
