@@ -193,6 +193,12 @@ const NATION_ALIASES: Record<string, string> = {
   "cabo verde": "cape verde",
   "holland": "netherlands",
   "united arab emirates": "uae",
+  // CLUB aliases (UCL/EPL): Goalserve "Paris S.G." ↔ our "PSG" — no shared
+  // token, so score lookups for PSG games found nothing without this.
+  "paris s g": "psg",
+  "paris sg": "psg",
+  "paris saint germain": "psg",
+  "paris saint germain fc": "psg",
 };
 
 function normName(s: string): string {

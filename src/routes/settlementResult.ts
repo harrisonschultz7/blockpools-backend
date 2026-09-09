@@ -114,6 +114,13 @@ const NATION_ALIASES: Record<string, string> = {
   "cabo verde": "cape verde",
   holland: "netherlands",
   "united arab emirates": "uae",
+  // CLUB aliases (UCL/EPL). Goalserve says "Paris S.G." where games.json /
+  // on-chain names say "PSG" — no shared token, so the 2026-09-09 SLB-PSG
+  // game never matched and never auto-settled. Keys are post-norm() strings.
+  "paris s g": "psg",
+  "paris sg": "psg",
+  "paris saint germain": "psg",
+  "paris saint germain fc": "psg",
 };
 
 function canonName(str: string): string {
