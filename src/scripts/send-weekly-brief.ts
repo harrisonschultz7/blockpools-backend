@@ -67,7 +67,8 @@ async function getRecipients(): Promise<Recipient[]> {
     .from("users")
     .select("email, preferred_locale")
     .not("email", "is", null)
-    .neq("email", "");
+    .neq("email", "")
+    .eq("email_unsubscribed", false);
 
   if (error) {
     throw new Error(`Supabase fetch failed: ${error.message}`);
