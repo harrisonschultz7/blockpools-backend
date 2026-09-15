@@ -173,6 +173,20 @@ cacheRoutes.post("/user/:address/record-trade", async (req, res) => {
   const outcomeCode = b.outcomeCode != null ? String(b.outcomeCode) : null;
   const side = b.side != null ? String(b.side) : null;
 
+  // Optional trade direction. Defaults to BUY (back-compat with every existing
+  // caller). SELL records a close/exit: grossOutDec = proceeds, netOutDec =
+  // proceeds - fee, buy-side amount fields zeroed - mirroring the shape the
+  // subgraph and record-merge already use for SELL rows.
+  const tradeType = String(b.type || "BUY").toUpperCase() === "SELL" ? "SELL" : "BUY";
+  const proceeds =
+    b.grossOutDec != null ? String(b.grossOutDec)
+    : b.proceedsUsd != null ? String(b.proceedsUsd)
+    : b.amountUsd != null ? String(b.amountUsd)
+    : "0";
+  const netOut =
+    b.netOutDec != null ? String(b.netOutDec)
+    : String(Math.max(Number(proceeds) - Number(fee), 0).toFixed(6));
+
   if (!txHash || !gameId) {
     return res.status(400).json({ ok: false, error: "txHash and contract/gameId are required" });
   }
@@ -180,9 +194,10 @@ cacheRoutes.post("/user/:address/record-trade", async (req, res) => {
     return res.status(400).json({ ok: false, error: "outcomeIndex is required" });
   }
 
+  const isSell = tradeType === "SELL";
   const row = {
-    id: `buy-direct-${txHash.toLowerCase()}`,
-    type: "BUY",
+    id: `${isSell ? "sell" : "buy"}-direct-${txHash.toLowerCase()}`,
+    type: tradeType,
     side,
     outcomeIndex,
     outcomeCode,
@@ -190,15 +205,15 @@ cacheRoutes.post("/user/:address/record-trade", async (req, res) => {
     txHash,
     spotPriceBps,
     avgPriceBps,
-    grossInDec: gross,
-    grossOutDec: "0",
+    grossInDec: isSell ? "0" : gross,
+    grossOutDec: isSell ? proceeds : "0",
     feeDec: fee,
-    netStakeDec: netStake,
-    netOutDec: "0",
+    netStakeDec: isSell ? "0" : netStake,
+    netOutDec: isSell ? netOut : "0",
     costBasisClosedDec: "0",
     realizedPnlDec: "0",
     game: { id: gameId, league },
-    __source: "buy-direct",
+    __source: isSell ? "sell-direct" : "buy-direct",
   };
 
   try {
