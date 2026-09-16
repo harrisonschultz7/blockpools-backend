@@ -245,6 +245,38 @@ cacheRoutes.post("/user/:address/record-trade", async (req, res) => {
 //
 // Dedup: ids `merge-<txHash>-0/1`.
 // ------------------------------------------------------------
+cacheRoutes.post("/user/:address/record-resolution", async (req, res) => {
+  const address = normAddr(String(req.params.address));
+  if (!assertAddr(address)) return res.status(400).json({ ok: false, error: "Invalid address" });
+
+  const b = (req.body || {}) as Record<string, unknown>;
+  const gameId = b.contract
+    ? String(b.contract).toLowerCase()
+    : b.gameId
+      ? String(b.gameId).toLowerCase()
+      : "";
+  const league = b.league != null ? String(b.league) : null;
+  const woiNum = Number(b.winningOutcomeIndex);
+  const winningOutcomeIndex = Number.isFinite(woiNum) ? Math.trunc(woiNum) : null;
+
+  if (!gameId || winningOutcomeIndex == null) {
+    return res.status(400).json({ ok: false, error: "gameId and winningOutcomeIndex are required" });
+  }
+
+  // Games-only upsert: the row carries no valid trade fields, so persistTrades
+  // upserts the game (winner + is_final) and writes no trade.
+  const gameRow = { game: { id: gameId, league, winningOutcomeIndex, isFinal: true } };
+
+  try {
+    await upsertUserTradesAndGames({ user: address, tradeRows: [gameRow] });
+    bustUserCache(address);
+    return res.json({ ok: true, gameId, winningOutcomeIndex });
+  } catch (e: any) {
+    console.log(`[record-resolution] err: ${String(e?.message || e)}`);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 cacheRoutes.post("/user/:address/record-merge", async (req, res) => {
   const address = normAddr(String(req.params.address));
   if (!assertAddr(address)) return res.status(400).json({ ok: false, error: "Invalid address" });
