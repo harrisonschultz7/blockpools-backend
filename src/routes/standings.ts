@@ -75,6 +75,10 @@ const NA_LEAGUE_CONFIG: Record<string, { sport: string; id: string }> = {
 const MLB_STANDINGS_URL = () =>
   `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/baseball/mlb_standings?json=1`;
 
+// NFL uses the American-football feed (no season param)
+const NFL_STANDINGS_URL = () =>
+  `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/football/nfl-standings?json=1`;
+
 // MLB season is just the calendar year (e.g. "2026")
 function mlbSeason(): string {
   return String(new Date().getFullYear());
@@ -84,6 +88,7 @@ const ALL_KNOWN_LEAGUES = new Set([
   ...Object.keys(SOCCER_LEAGUE_IDS),
   ...Object.keys(NA_LEAGUE_CONFIG),
   "MLB",
+  "NFL",
 ]);
 
 // Leagues warmed by background cron
@@ -168,6 +173,7 @@ export interface NATeamStanding {
   name:    string;
   w:       number;
   l:       number;
+  t?:      number;   // NFL only (ties)
   otl?:    number;   // NHL only
   pts?:    number;   // NHL only
   pct:     number;
@@ -555,6 +561,80 @@ function normaliseMLB(raw: any): NormalisedStandings {
   };
 }
 
+// ── NFL normalisation ─────────────────────────────────────────────────────────
+//
+// Goalserve /football/nfl-standings shape (mirrors MLB): standings.category →
+// league[] (AFC / NFC) → division[] → team[], all fields @-prefixed. Output as
+// `conferences` so the frontend's flattenTeams handles it and reads w/l/t.
+
+function nflStreak(v: any): string {
+  const raw = String(v ?? "").trim();
+  let m = raw.match(/^won\s*(\d+)/i);   if (m) return `W${m[1]}`;
+  m = raw.match(/^lost\s*(\d+)/i);       if (m) return `L${m[1]}`;
+  m = raw.match(/^([WL])\s*-?\s*(\d+)/i); if (m) return `${m[1].toUpperCase()}${m[2]}`;
+  return "";
+}
+
+function normaliseNFL(raw: any): NormalisedStandings {
+  const season = currentSeason();
+  const s = raw?.standings ?? raw;
+  const catRaw = s?.category;
+  const cats: any[] = catRaw ? (Array.isArray(catRaw) ? catRaw : [catRaw]) : (s?.league ? [{ league: s.league }] : []);
+
+  // Gather conference nodes (each has a .division[] or .team[]).
+  const leagueNodes: any[] = [];
+  for (const c of cats) {
+    const l = c?.league;
+    if (l) leagueNodes.push(...(Array.isArray(l) ? l : [l]));
+    else if (c?.division || c?.team) leagueNodes.push(c);
+  }
+
+  const conferences: NAConference[] = [];
+  for (const lg of leagueNodes) {
+    const confName = String(lg?.["@name"] ?? lg?.name ?? "Conference");
+    const divRaw = lg?.division;
+    const divs: any[] = divRaw ? (Array.isArray(divRaw) ? divRaw : [divRaw]) : [];
+    const divList = divs.length ? divs : [lg]; // teams sometimes sit directly under the league
+
+    const teams: NATeamStanding[] = [];
+    for (const div of divList) {
+      const tmRaw = div?.team;
+      const tms: any[] = tmRaw ? (Array.isArray(tmRaw) ? tmRaw : [tmRaw]) : [];
+      for (const t of tms) {
+        const g = (k: string) => t?.["@" + k] ?? t?.[k];
+        const w = safeInt(g("won") ?? g("w"));
+        const l = safeInt(g("lost") ?? g("l"));
+        const ti = safeInt(g("ties") ?? g("tie") ?? g("t"));
+        const name = String(g("name") ?? "");
+        if (!name) continue;
+        const gp = w + l + ti;
+        const pct = gp > 0 ? Math.round((w / gp) * 1000) / 1000 : 0;
+        teams.push({
+          rank: safeInt(g("position") ?? g("rank") ?? 0),
+          teamId: String(g("id") ?? ""),
+          name,
+          w, l, t: ti,
+          pct,
+          streak: nflStreak(g("streak") ?? g("current_streak")),
+          playoff: false,
+        });
+      }
+    }
+    if (teams.length) {
+      teams.sort((a, b) => a.rank - b.rank);
+      conferences.push({ name: confName, teams });
+    }
+  }
+
+  return {
+    league: "NFL",
+    season,
+    updatedAt: new Date().toISOString(),
+    phase: "conference",
+    conferences,
+  };
+}
+
 // ── Main fetch + cache pipeline ───────────────────────────────────────────────
 
 async function getStandings(league: string, season: string): Promise<NormalisedStandings> {
@@ -568,10 +648,13 @@ async function getStandings(league: string, season: string): Promise<NormalisedS
 
   const isNA  = !!NA_LEAGUE_CONFIG[league];
   const isMLB = league === "MLB";
+  const isNFL = league === "NFL";
 
   let raw: any;
   if (isMLB) {
     raw = await fetchWithTimeout(MLB_STANDINGS_URL());
+  } else if (isNFL) {
+    raw = await fetchWithTimeout(NFL_STANDINGS_URL());
   } else if (isNA) {
     const cfg = NA_LEAGUE_CONFIG[league];
     const url = `${GOALSERVE_BASE_URL}/${encodeURIComponent(GOALSERVE_API_KEY)}/${cfg.sport}/${cfg.id}_table?json=1`;
@@ -585,9 +668,11 @@ async function getStandings(league: string, season: string): Promise<NormalisedS
 
   const data = isMLB
     ? normaliseMLB(raw)
-    : isNA
-      ? normaliseNA(raw, league, league === "NHL")
-      : normaliseSoccer(raw, league.toUpperCase(), season);
+    : isNFL
+      ? normaliseNFL(raw)
+      : isNA
+        ? normaliseNA(raw, league, league === "NHL")
+        : normaliseSoccer(raw, league.toUpperCase(), season);
 
   await pgSet(league, season, data);
   memSet(cacheKey, data);
@@ -665,6 +750,23 @@ export function startStandingsCron() {
         console.log(`[standings:cron] refreshed ${league}`);
       } catch (e: any) {
         console.error(`[standings:cron] failed for ${league}:`, e?.message);
+      }
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+
+    // NFL (dedicated football feed)
+    {
+      const season = currentSeason();
+      const cacheKey = `NFL:${season}`;
+      try {
+        delete _mem[cacheKey];
+        const raw  = await fetchWithTimeout(NFL_STANDINGS_URL());
+        const data = normaliseNFL(raw);
+        await pgSet("NFL", season, data);
+        memSet(cacheKey, data);
+        console.log(`[standings:cron] refreshed NFL ${season}`);
+      } catch (e: any) {
+        console.error(`[standings:cron] failed for NFL:`, e?.message);
       }
       await new Promise((r) => setTimeout(r, 2_000));
     }
