@@ -258,14 +258,31 @@ cacheRoutes.post("/user/:address/record-resolution", async (req, res) => {
   const league = b.league != null ? String(b.league) : null;
   const woiNum = Number(b.winningOutcomeIndex);
   const winningOutcomeIndex = Number.isFinite(woiNum) ? Math.trunc(woiNum) : null;
+  // The realized-ROI view (user_realized_events) keys its LOSS branch on
+  // resolution_type + winner_team_code/winner_side (NOT winning_outcome_index),
+  // so we MUST set them or losing bets never realize and ROI inflates. okey in
+  // that view is the outcome_code, so winner_team_code must be the team CODE.
+  const winnerTeamCode = b.winnerTeamCode != null ? String(b.winnerTeamCode) : null;
+  const winnerSideRaw = b.winnerSide != null ? String(b.winnerSide).toUpperCase().trim() : null;
+  const winnerSide = winnerSideRaw === "A" || winnerSideRaw === "B" ? winnerSideRaw : null;
 
   if (!gameId || winningOutcomeIndex == null) {
     return res.status(400).json({ ok: false, error: "gameId and winningOutcomeIndex are required" });
   }
 
   // Games-only upsert: the row carries no valid trade fields, so persistTrades
-  // upserts the game (winner + is_final) and writes no trade.
-  const gameRow = { game: { id: gameId, league, winningOutcomeIndex, isFinal: true } };
+  // upserts the game (winner + is_final + resolution) and writes no trade.
+  const gameRow = {
+    game: {
+      id: gameId,
+      league,
+      winningOutcomeIndex,
+      isFinal: true,
+      resolutionType: "RESOLVED",
+      winnerTeamCode,
+      winnerSide,
+    },
+  };
 
   try {
     await upsertUserTradesAndGames({ user: address, tradeRows: [gameRow] });
