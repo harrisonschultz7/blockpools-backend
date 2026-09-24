@@ -64,8 +64,15 @@ botsRouter.get("/", async (_req, res) => {
 
       // Selectivity is part of the story: this bot is meant to pass on most
       // games, so "traded 2 of 16" belongs on the card.
+      //
+      // COUNT DISTINCT GAMES, not decision rows. Every tick writes one row per
+      // game it looks at, so a plain count(*) counts EVALUATIONS: three manual
+      // runs over 16 games already read as 49. Under the 15-minute timer it
+      // would reach ~1,536/day and the tile would show "2/1536", which looks
+      // like extraordinary selectivity but is just the tick rate.
       const { rows: selRows } = await pg.query(
-        `select count(*) as looks, count(*) filter (where acted) as acted
+        `select count(distinct game_id) as looks,
+                count(distinct game_id) filter (where acted) as acted
            from bots.decisions
           where bot_id = $1 and asof_ts > now() - interval '8 days'`,
         [b.id],
