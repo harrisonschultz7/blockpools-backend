@@ -1,0 +1,16 @@
+[Unit]
+Description=BlockPools NFL trading bot -- forecast + paper trade tick
+After=network-online.target
+
+[Service]
+# PATH NOTE: WorkingDirectory/User MUST match the existing backend unit.
+# Confirm with:  systemctl cat blockpools-backend.service
+# (the first draft of these files guessed /root/blockpools-backend, which does
+#  not exist on this host -- the backend lives under /opt/blockpools/backend).
+Type=oneshot
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+ExecStart=/usr/bin/node trading-bot/run/tick.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-bot-tick

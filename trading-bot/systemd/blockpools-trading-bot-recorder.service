@@ -1,0 +1,25 @@
+[Unit]
+Description=BlockPools NFL trading bot -- Polymarket depth recorder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# PATH NOTE: WorkingDirectory/User MUST match the existing backend unit.
+# Confirm with:  systemctl cat blockpools-backend.service
+# (the first draft of these files guessed /root/blockpools-backend, which does
+#  not exist on this host -- the backend lives under /opt/blockpools/backend).
+Type=simple
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+ExecStart=/usr/bin/node trading-bot/run/record-books.js
+Restart=always
+RestartSec=5
+# Historical book depth cannot be backfilled, so downtime is permanent data
+# loss. Restart aggressively and never give up after N failures.
+StartLimitIntervalSec=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-bot-recorder
+
+[Install]
+WantedBy=multi-user.target

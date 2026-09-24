@@ -1,0 +1,128 @@
+{
+  "_comment": "NFL trading bot v1. ONE bot, medium risk, PRE-GAME ONLY, PAPER fills. Every tuned number lives here; feature code reads it and hardcodes nothing. Edits apply on the next tick (config is re-read each loop).",
+
+  "botId": "nfl-medium-v1",
+  "botName": "Astro",
+  "league": "NFL",
+  "riskTier": "medium",
+  "mode": "paper",
+  "modelVersion": "delta-v1",
+
+  "data": {
+    "_comment": "startSeason gates EVERY historical read. 2025 = user decision: game-to-game matchups older than that are considered stale. NOTE this leaves ~317 games to fit 4 factor weights, so CLV error bars will be wide -- treat early results as directional. replacementBaselineStartSeason is split out because what a backup QB costs you is stable across eras; widen it alone if the injury factor looks noisy.",
+    "startSeason": 2025,
+    "replacementBaselineStartSeason": 2025
+  },
+
+  "model": {
+    "_comment": "RESIDUAL model. The market price is the ANCHOR, not a weighted factor -- blending p_market as a factor alongside team strength would double-count, because the market price already contains team strength. The model forecasts only the DEVIATION from the market. deltaCap is therefore the real 'how much may the bot disagree with the public' knob.",
+    "deltaCap": 0.12,
+    "weights": {
+      "momentum": 0.30,
+      "matchup": 0.25,
+      "injury": 0.25,
+      "situational": 0.20
+    },
+    "momentum": {
+      "_comment": "Opponent-adjusted EPA/play, exponentially recency-weighted. halfLifeGames=4 means a game 4 weeks ago counts half as much as last week. shrinkGames damps teams with few games on record (week 1-3 of a season).",
+      "halfLifeGames": 4,
+      "shrinkGames": 6,
+      "ridgeIterations": 12,
+      "epaToProbPerPoint": 0.55
+    },
+    "matchup": {
+      "_comment": "The pace x defense INTERACTION. Two fast offenses produce more plays, so defensive EPA/play is applied more times and mechanically matters more in that game -- Lions/Bills. leagueAvgPlays is the normaliser; paceAmplification scales how hard extra plays tilt weight toward defence.",
+      "leagueAvgPlays": 128,
+      "paceAmplification": 0.6,
+      "styleMismatchWeight": 0.35
+    },
+    "injury": {
+      "_comment": "BASELINED, not raw player value. Penalty = player marginal value x (1 - demonstrated replacement quality). The Rams played exactly ONE 2025 game without Nacua, so 'they cope fine' rests on a single game -- shrinkGamesWithout forces that estimate back toward league-average positional replacement until the sample earns its way out. Without this the bot chases noise every week.",
+      "shrinkGamesWithout": 4,
+      "defaultReplacementQuality": 0.5,
+      "replacementScaleEpa": 0.20,
+      "positionValue": {
+        "QB": 1.00,
+        "WR": 0.22,
+        "RB": 0.12,
+        "TE": 0.14,
+        "OT": 0.18,
+        "OG": 0.10,
+        "C": 0.12,
+        "EDGE": 0.20,
+        "DE": 0.20,
+        "DT": 0.14,
+        "LB": 0.10,
+        "CB": 0.18,
+        "S": 0.12,
+        "K": 0.04,
+        "default": 0.08
+      },
+      "statusMultiplier": {
+        "Out": 1.0,
+        "Doubtful": 0.75,
+        "Questionable": 0.25,
+        "inactive": 1.0
+      },
+      "maxProbSwing": 0.10
+    },
+    "situational": {
+      "_comment": "Slowest factors for casual money to price. Values are probability points applied to the HOME side. Weather only applies when roof is outdoors/open.",
+      "restDayProbPerDay": 0.004,
+      "shortWeekPenalty": 0.012,
+      "divisionGameDamp": 0.15,
+      "primetimeRoadPenalty": 0.006,
+      "windThresholdMph": 15,
+      "windProbPerMphOver": 0.0015,
+      "coldThresholdF": 25,
+      "coldProbPerDegUnder": 0.0008,
+      "maxProbSwing": 0.06
+    },
+    "confidence": {
+      "_comment": "Scales delta down when inputs are thin (early season, missing injury report, stale book). A low-confidence game is skipped rather than traded small.",
+      "minToTrade": 0.45,
+      "staleBookSeconds": 900
+    }
+  },
+
+  "policy": {
+    "_comment_slippage": "maxSlippageCents, not bps, on purpose: these books tick in whole cents, so at a 0.30 price ONE tick is already 333bps. A percentage cap silently prevents the filler from ever walking past the top level, which looks like a tight risk control and is actually a broken one. Cents are the natural unit of an absolute-tick market.",
+    "_comment_window": "evaluationMode=week evaluates the whole upcoming NFL week as one slate, rather than a rolling 72h window. The window version could only see 1 of Week 3s 16 games at a time, which also made the weekly exposure cap meaningless -- it cannot ration capital across a slate it cannot see. openWindowHoursBeforeKickoff still acts as an outer bound.",
+    "_comment_exit": "exitAtFairValue rests a SELL at p_fair after each buy. Same expected value as holding to settlement but far lower variance, and it frees capital; if the market never reaches it the position rides to settlement exactly as before, so it is a free option. exitBufferCents sits just under fair so the order is marketable on arrival. The resting price is RE-PRICED every tick as p_fair moves -- a static limit goes stale when an injury shifts fair.",
+    "_comment": "MEDIUM tier. Pre-game only -- no in-play, because there is no live drive-level feed wired and in-play without one is guessing. The bot is meant to SKIP most games: edge must clear the threshold AND the book must be liquid enough to fill.",
+    "pregameOnly": true,
+    "evaluationMode": "week",
+    "exitAtFairValue": true,
+    "exitBufferCents": 0.005,
+    "minEdge": 0.025,
+    "kellyFraction": 0.25,
+    "maxPositionPctNav": 0.05,
+    "maxGameExposurePctNav": 0.05,
+    "maxWeeklyExposurePctNav": 0.25,
+    "minPrice": 0.05,
+    "maxPrice": 0.95,
+    "minBookDepthUsd": 50,
+    "maxSlippageCents": 0.02,
+    "openWindowHoursBeforeKickoff": 192,
+    "closeWindowMinutesBeforeKickoff": 10
+  },
+
+  "paper": {
+    "_comment": "Paper fills walk the recorded book: consume ask levels until the order is filled, average the price, and record any unfilled remainder honestly. Polymarket's ~$1 minimum order is why cent-sized real orders are not an option -- size here is notional, and the same sizing math carries over unchanged when mode flips to live.",
+    "startingNavUsd": 10000,
+    "walkRealDepth": true,
+    "assumeTakerFeeBps": 0
+  },
+
+  "ingest": {
+    "_comment": "bookPollSeconds is the depth recorder cadence. Historical book depth cannot be backfilled from anywhere, so this job must run continuously from day one. recordWindowHours is deliberately MUCH wider than policy.openWindowHoursBeforeKickoff: we record every book we can reach, but only trade inside the tighter window. Recording is free and unrepeatable; trading early is neither.",
+    "pmNflTagId": 450,
+    "recordWindowHours": 240,
+    "bookPollSeconds": 60,
+    "bookPollSecondsNearKickoff": 20,
+    "nearKickoffHours": 6,
+    "nflverseRefreshHours": 6,
+    "weatherRefreshHours": 6,
+    "bookLevelsStored": 10
+  }
+}

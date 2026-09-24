@@ -64,6 +64,7 @@ import analyticsAdminRouter from "./routes/analyticsAdmin";
 //   events; frontend reads open orders + monitoring stats.
 //   POST /api/v2/{order,fill,cancel,reload-markets}  GET /api/v2/{open-orders,stats}
 import v2Router from "./routes/v2Routes";
+import botsRouter from "./routes/bots";
 
 // ✅ Profile portfolio net-worth series (for the redesigned profile chart).
 //   POST /api/portfolio/:address/snapshot   GET /api/portfolio/:address/series
@@ -140,6 +141,10 @@ export function makeServer() {
 
   //   GET /api/hot-markets/one-sided
   app.use("/api/hot-markets", hotMarketsRouter);
+
+  // Trading bots (Astro). Reads with the service role because the bots/sports
+  // schemas are revoked from anon -- see routes/bots.ts.
+  app.use("/api/bots", botsRouter);
 
   // ✅ Trade agg (query-based)
   //   GET /api/profile/trade-agg?user=0x...&page=1&pageSize=10&league=ALL&range=ALL

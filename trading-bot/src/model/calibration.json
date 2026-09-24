@@ -1,0 +1,56 @@
+{
+  "fittedAt": "2026-09-23T01:24:02.378Z",
+  "samples": 300,
+  "startSeason": 2025,
+  "scale": {
+    "momentum": 0,
+    "matchup": 0.5184,
+    "injury": 0,
+    "situational": 0.1831
+  },
+  "beta": {
+    "momentum": 0.24718208240676046,
+    "matchup": 0.08587592003220955,
+    "injury": 0.07735646148673762,
+    "situational": 0.007300433283301772
+  },
+  "diagnostics": {
+    "momentum": {
+      "corrWithMarket": 0.7754,
+      "beta": 0.2472,
+      "residCorrWithOutcome": -0.0127,
+      "residSlopeToOutcome": -0.1622,
+      "scaleKept": 0,
+      "seOfCorr": 0.0577,
+      "sigmas": -0.22
+    },
+    "matchup": {
+      "corrWithMarket": 0.3775,
+      "beta": 0.0859,
+      "residCorrWithOutcome": 0.0942,
+      "residSlopeToOutcome": 1.1461,
+      "scaleKept": 0.942,
+      "seOfCorr": 0.0577,
+      "sigmas": 1.63
+    },
+    "injury": {
+      "corrWithMarket": 0.189,
+      "beta": 0.0774,
+      "residCorrWithOutcome": -0.0531,
+      "residSlopeToOutcome": -0.3387,
+      "scaleKept": 0,
+      "seOfCorr": 0.0577,
+      "sigmas": -0.92
+    },
+    "situational": {
+      "corrWithMarket": 0.1596,
+      "beta": 0.0073,
+      "residCorrWithOutcome": 0.0183,
+      "residSlopeToOutcome": 1.0388,
+      "scaleKept": 0.183,
+      "seOfCorr": 0.0577,
+      "sigmas": 0.32
+    }
+  },
+  "note": "beta = the part of each factor the closing line already prices. scale is damped toward 0 when the residual does not predict outcomes."
+}

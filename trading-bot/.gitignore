@@ -1,0 +1,3 @@
+# Refit cache -- regenerate with `node trading-bot/run/calibrate.js`.
+# Large, machine-specific, and derived entirely from the database.
+src/model/calibration-samples.json
