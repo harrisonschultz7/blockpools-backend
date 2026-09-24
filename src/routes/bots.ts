@@ -137,8 +137,11 @@ botsRouter.get("/", async (_req, res) => {
  *   - exit_price set  -> the resting sell filled at fair value before kickoff
  *   - settled         -> the game decided it; the share paid 1.00 or 0.00
  *
- * Only games that have started are exposed. An open pre-kickoff position would
- * reveal what the model likes while the market is still trading it.
+ * Every trade appears as soon as it is logged, including positions whose game
+ * has not kicked off yet. That is a deliberate reversal: withholding them hid
+ * the model's current hand, but it also meant the log looked empty for days at
+ * a time and could not serve as a live performance record. An open position
+ * simply has no closing event yet, so it shows a BUY with no return.
  */
 botsRouter.get("/:botId/trades", async (req, res) => {
   try {
@@ -151,7 +154,7 @@ botsRouter.get("/:botId/trades", async (req, res) => {
               g.away_team, g.home_team, g.kickoff, g.week, g.season
          from bots.trades t
          join sports.nfl_games g on g.game_id = t.game_id
-        where t.bot_id = $1 and g.kickoff <= now()
+        where t.bot_id = $1
         order by t.opened_at desc
         limit $2`,
       [req.params.botId, limit],
