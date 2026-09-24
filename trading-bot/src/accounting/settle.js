@@ -95,9 +95,11 @@ async function settleTrades() {
 async function botSummary(botId) {
   const { rows } = await q(
     `select
-       count(*) filter (where settled) settled_trades,
-       count(*) filter (where settled and won) wins,
-       count(*) filter (where settled and not won) losses,
+       count(*) filter (where settled and pnl_usd is not null) settled_trades,
+       -- Profitable trades, not game outcomes: a position closed early at fair
+       -- value is a win whoever wins the game. Must match src/routes/bots.ts.
+       count(*) filter (where settled and pnl_usd > 0) wins,
+       count(*) filter (where settled and pnl_usd <= 0) losses,
        coalesce(sum(pnl_usd) filter (where settled), 0) realized_pnl,
        avg(clv_bps) filter (where clv_bps is not null) mean_clv_bps,
        count(*) filter (where clv_bps > 0) clv_positive,

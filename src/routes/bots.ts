@@ -37,9 +37,15 @@ botsRouter.get("/", async (_req, res) => {
       // user leaderboard happened).
       const { rows: recRows } = await pg.query(
         `select
-           count(*) filter (where settled) as settled_trades,
-           count(*) filter (where settled and won) as wins,
-           count(*) filter (where settled and won = false) as losses,
+           -- RECORD = PROFITABLE TRADES, not game outcomes. The bot can close a
+           -- position before kickoff by filling its resting sell at fair value, in
+           -- which case who wins the game is irrelevant -- it already banked the
+           -- move. Scoring on "won" was wrong twice over: it mislabelled those
+           -- trades, and because settleExit never sets "won" at all, a limit-exited
+           -- trade counted as NEITHER a win nor a loss and vanished from the record.
+           count(*) filter (where settled and pnl_usd is not null) as settled_trades,
+           count(*) filter (where settled and pnl_usd > 0) as wins,
+           count(*) filter (where settled and pnl_usd <= 0) as losses,
            count(*) filter (where settled = false) as open_trades,
            coalesce(sum(pnl_usd) filter (where settled), 0) as realized_pnl,
            avg(clv_bps) filter (where clv_bps is not null) as mean_clv_bps,
