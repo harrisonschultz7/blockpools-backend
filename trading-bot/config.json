@@ -96,7 +96,7 @@
     "exitAtFairValue": true,
     "exitBufferCents": 0.005,
     "exitHoldThroughKickoff": true,
-    "exitInPlayExtraCents": 0.10,
+    "exitVolatilityAlphaLogit": 0.45,
     "exitInPlayMaxPrice": 0.97,
     "minEdge": 0.025,
     "kellyFraction": 0.25,

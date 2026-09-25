@@ -31,38 +31,46 @@ const { cfg } = require("../config");
 const { q } = require("../db");
 const log = require("../log");
 
+/** Probability <-> log-odds. */
+const logit = (p) => Math.log(p / (1 - p));
+const sigmoid = (x) => 1 / (1 + Math.exp(-x));
+
 /**
- * Exit target for a held side.
+ * Exit target for a held side, set ONCE before kickoff and then left alone.
  *
- * PRE-KICKOFF: the model has a live view, so the target is its own fair value,
- * a touch under so the order is marketable when the book arrives there.
+ *     target = sigmoid( logit(fair) + alpha )
  *
- * IN PLAY: p_fair is stale -- there is no live drive-level feed, so the
- * pre-game estimate says nothing about a game already in progress, and
- * re-pricing off it would be false precision. The target instead sits at
+ * The target is the model's fair value plus a volatility premium, because the
+ * order has to survive a live game and in-play prices swing. The premium is
+ * added in LOG-ODDS, not in cents, and that choice is the whole point:
  *
- *     entry + exitInPlayExtraCents,   floored at the pre-kickoff resting price
+ *   A flat +10c is wrong at both ends. On a 0.85 side it asks for 0.95 -- ten
+ *   cents out of the fifteen that exist -- while on a 0.15 side the same ten
+ *   cents is a near-doubling. A proportional premium is worse: +30% on 0.72 is
+ *   0.936, which is asking the market to call the game over.
  *
- * which is deliberately ambitious. That is the whole point: in-play prices
- * swing far enough to reach a level that would never print before kickoff, and
- * an order resting there costs nothing while it waits. Anchoring on ENTRY (not
- * on the last limit) keeps it stable -- anchoring on the current limit would
- * ratchet the target up a little on every tick and it would never fill.
+ *   In log-odds a fixed premium is a fixed amount of NEWS, which is how these
+ *   prices actually move. It compresses automatically at both extremes -- the
+ *   same alpha is ~+10.5c at 0.32, ~+6.7c at 0.15 and ~+4.9c at 0.85 -- and it
+ *   is mathematically incapable of producing a target above 1.
+ *
+ * Useful sanity check: for a price that behaves like a martingale, the chance
+ * of ever touching X before resolution is about fair/X. This rule holds that
+ * between roughly 70% and 95% across the whole price range, where flat cents
+ * swings from 60% to 89% and headroom-based from 50% to 97%.
  */
-function exitPriceFor(forecast, side, opts) {
+function exitPriceFor(forecast, side) {
   const p = cfg().policy;
-  const o = opts || {};
-
-  if (o.inPlay) {
-    const entry = Number(o.entryPrice) || 0;
-    const floor = Number(o.originalPrice) || 0;
-    const target = Math.max(floor, entry + (p.exitInPlayExtraCents || 0.1));
-    return Math.max(0.02, Math.min(p.exitInPlayMaxPrice || 0.97, target));
-  }
-
   const fair = side === "home" ? forecast.p_fair : 1 - forecast.p_fair;
-  const target = fair - (p.exitBufferCents || 0);
-  return Math.max(0.02, Math.min(0.98, target));
+  const safe = Math.max(0.02, Math.min(0.98, fair));
+  const target = sigmoid(logit(safe) + (p.exitVolatilityAlphaLogit || 0));
+  return Math.max(0.02, Math.min(p.exitInPlayMaxPrice || 0.97, target));
+}
+
+/** Martingale odds of the price ever touching the target -- for logging. */
+function touchProbability(fair, target) {
+  if (!target) return null;
+  return Math.max(0, Math.min(1, fair / target));
 }
 
 /** Walk the recorded BID ladder -- the mirror of the entry's ask walk. */
@@ -96,7 +104,7 @@ function walkBids(bids, sharesWanted, limitPrice) {
 /** Post the resting exit for a freshly opened position. */
 async function createExitOrder(args) {
   const { botId, tradeId, game, decision, forecast, fill } = args;
-  const price = exitPriceFor(forecast, decision.side, { inPlay: false });
+  const price = exitPriceFor(forecast, decision.side);
   // Nothing to capture if fair is already at or below what we paid.
   if (price <= fill.avgPrice) return null;
 
@@ -212,25 +220,28 @@ async function manageExits(botId, forecasts, now) {
     }
 
     let limit = Number(o.limit_price);
-    const target = inPlay
-      ? exitPriceFor(null, o.side, {
-          inPlay: true,
-          entryPrice: o.entry_price,
-          originalPrice: o.original_price,
-        })
-      : (forecasts.get(o.game_id)
-          ? exitPriceFor(forecasts.get(o.game_id), o.side, { inPlay: false })
-          : null);
 
-    // 1c deadband so a stable target causes no churn.
-    if (target !== null && Math.abs(target - limit) >= 0.01) {
-      limit = target;
-      await q(
-        `update bots.limit_orders set limit_price=$2,
-           reprice_count=reprice_count+1, updated_at=now() where id=$1`,
-        [o.id, limit],
-      );
-      repriced++;
+    // FROZEN AT KICKOFF. Before the game the target tracks p_fair, because new
+    // information (an injury, a line move) genuinely changes what the position
+    // is worth. Once the game starts the model is blind -- there is no live
+    // drive-level feed -- so anything it "learned" would be noise dressed as a
+    // signal, and moving the order on it would mostly be chasing the price.
+    // The bot sets its price before kickoff and then lets it ride.
+    if (!inPlay) {
+      const f = forecasts.get(o.game_id);
+      if (f) {
+        const target = exitPriceFor(f, o.side);
+        // 1c deadband so a stable fair causes no churn.
+        if (Math.abs(target - limit) >= 0.01) {
+          limit = target;
+          await q(
+            `update bots.limit_orders set limit_price=$2,
+               reprice_count=reprice_count+1, updated_at=now() where id=$1`,
+            [o.id, limit],
+          );
+          repriced++;
+        }
+      }
     }
 
     const { rows: books } = await q(
