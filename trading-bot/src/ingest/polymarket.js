@@ -216,14 +216,29 @@ async function recordBooks() {
   // an early recording costs one HTTP call.
   const hoursBefore = recordWindowHours || c.policy.openWindowHoursBeforeKickoff;
 
+  // Two sources, unioned:
+  //   1. the ordinary forward window -- everything we might trade soon
+  //   2. ANY market this bot still has an open resting order against
+  //
+  // (2) matters now that exits ride through kickoff. An in-play game drops out
+  // of a kickoff-relative window while the order is still live, and with no
+  // fresh book there is nothing for the filler to walk -- the order would sit
+  // there unfillable while the price ran straight through it.
   const { rows: markets } = await q(
-    `select m.condition_id, m.game_id, m.home_token_id, m.away_token_id, g.kickoff
+    `select distinct m.condition_id, m.game_id, m.home_token_id, m.away_token_id, g.kickoff
        from sports.pm_markets m
        join sports.nfl_games g on g.game_id = m.game_id
+       left join bots.limit_orders o
+              on o.game_id = m.game_id and o.status = 'open'
       where m.closed = false
         and m.home_token_id is not null
-        and g.kickoff between now() - interval '6 hours'
-                          and now() + ($1 || ' hours')::interval
+        and (
+          g.kickoff between now() - interval '6 hours'
+                        and now() + ($1 || ' hours')::interval
+          or (o.id is not null
+              and g.home_score is null
+              and g.kickoff > now() - interval '12 hours')
+        )
       order by g.kickoff`,
     [String(hoursBefore)],
   );

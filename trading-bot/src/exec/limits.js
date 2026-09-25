@@ -31,12 +31,36 @@ const { cfg } = require("../config");
 const { q } = require("../db");
 const log = require("../log");
 
-/** Exit target for a held side, from the current forecast. */
-function exitPriceFor(forecast, side) {
+/**
+ * Exit target for a held side.
+ *
+ * PRE-KICKOFF: the model has a live view, so the target is its own fair value,
+ * a touch under so the order is marketable when the book arrives there.
+ *
+ * IN PLAY: p_fair is stale -- there is no live drive-level feed, so the
+ * pre-game estimate says nothing about a game already in progress, and
+ * re-pricing off it would be false precision. The target instead sits at
+ *
+ *     entry + exitInPlayExtraCents,   floored at the pre-kickoff resting price
+ *
+ * which is deliberately ambitious. That is the whole point: in-play prices
+ * swing far enough to reach a level that would never print before kickoff, and
+ * an order resting there costs nothing while it waits. Anchoring on ENTRY (not
+ * on the last limit) keeps it stable -- anchoring on the current limit would
+ * ratchet the target up a little on every tick and it would never fill.
+ */
+function exitPriceFor(forecast, side, opts) {
   const p = cfg().policy;
+  const o = opts || {};
+
+  if (o.inPlay) {
+    const entry = Number(o.entryPrice) || 0;
+    const floor = Number(o.originalPrice) || 0;
+    const target = Math.max(floor, entry + (p.exitInPlayExtraCents || 0.1));
+    return Math.max(0.02, Math.min(p.exitInPlayMaxPrice || 0.97, target));
+  }
+
   const fair = side === "home" ? forecast.p_fair : 1 - forecast.p_fair;
-  // Sit a touch below fair so the order is marketable when the book arrives
-  // there, rather than requiring the market to trade through us.
   const target = fair - (p.exitBufferCents || 0);
   return Math.max(0.02, Math.min(0.98, target));
 }
@@ -72,7 +96,7 @@ function walkBids(bids, sharesWanted, limitPrice) {
 /** Post the resting exit for a freshly opened position. */
 async function createExitOrder(args) {
   const { botId, tradeId, game, decision, forecast, fill } = args;
-  const price = exitPriceFor(forecast, decision.side);
+  const price = exitPriceFor(forecast, decision.side, { inPlay: false });
   // Nothing to capture if fair is already at or below what we paid.
   if (price <= fill.avgPrice) return null;
 
@@ -142,42 +166,78 @@ async function settleExit(botId, order, hit, bookTs) {
  * latest recorded book. `forecasts` is Map<game_id, forecast>.
  */
 async function manageExits(botId, forecasts, now) {
+  const p = cfg().policy;
   const { rows: orders } = await q(
-    `select o.*, g.kickoff
+    `select o.*, g.kickoff,
+            (g.home_score is not null and g.away_score is not null) as game_final,
+            coalesce(m.closed, false) as market_closed,
+            t.fill_price as entry_price
        from bots.limit_orders o
        join sports.nfl_games g on g.game_id = o.game_id
+       join bots.trades t on t.id = o.trade_id
+       left join sports.pm_markets m on m.game_id = o.game_id
       where o.bot_id = $1 and o.status = 'open'`,
     [botId],
   );
   let filled = 0;
   let repriced = 0;
+  let cancelled = 0;
 
   for (const o of orders) {
-    // Kickoff cancels the exit: the bot does not trade in play, so from here
-    // the position simply rides to settlement.
-    if (new Date(o.kickoff).getTime() <= now.getTime()) {
-      await q(`update bots.limit_orders set status='cancelled',
-                 closed_reason='kickoff', updated_at=now() where id=$1`, [o.id]);
+    const inPlay = new Date(o.kickoff).getTime() <= now.getTime();
+
+    // The order now dies only when there is nothing left to trade against --
+    // the game is final or the market has closed. Kickoff no longer cancels
+    // it. Riding through adds no downside the position did not already carry
+    // (the alternative was holding to settlement regardless); it only adds the
+    // chance of being paid on an in-play swing.
+    if (o.game_final || o.market_closed) {
+      await q(
+        `update bots.limit_orders set status='cancelled',
+           closed_reason=$2, updated_at=now() where id=$1`,
+        [o.id, o.game_final ? "game_final" : "market_closed"],
+      );
+      cancelled++;
+      continue;
+    }
+
+    if (!p.exitHoldThroughKickoff && inPlay) {
+      await q(
+        `update bots.limit_orders set status='cancelled',
+           closed_reason='kickoff', updated_at=now() where id=$1`,
+        [o.id],
+      );
+      cancelled++;
       continue;
     }
 
     let limit = Number(o.limit_price);
-    const f = forecasts.get(o.game_id);
-    if (f) {
-      const target = exitPriceFor(f, o.side);
-      // 1c deadband, so a stable fair causes no churn.
-      if (Math.abs(target - limit) >= 0.01) {
-        limit = target;
-        await q(`update bots.limit_orders set limit_price=$2,
-                   reprice_count=reprice_count+1, updated_at=now() where id=$1`,
-                [o.id, limit]);
-        repriced++;
-      }
+    const target = inPlay
+      ? exitPriceFor(null, o.side, {
+          inPlay: true,
+          entryPrice: o.entry_price,
+          originalPrice: o.original_price,
+        })
+      : (forecasts.get(o.game_id)
+          ? exitPriceFor(forecasts.get(o.game_id), o.side, { inPlay: false })
+          : null);
+
+    // 1c deadband so a stable target causes no churn.
+    if (target !== null && Math.abs(target - limit) >= 0.01) {
+      limit = target;
+      await q(
+        `update bots.limit_orders set limit_price=$2,
+           reprice_count=reprice_count+1, updated_at=now() where id=$1`,
+        [o.id, limit],
+      );
+      repriced++;
     }
 
     const { rows: books } = await q(
       `select bids, ts from sports.odds_history
-        where token_id = $1 order by ts desc limit 1`, [o.token_id]);
+        where token_id = $1 order by ts desc limit 1`,
+      [o.token_id],
+    );
     if (!books[0]) continue;
 
     const hit = walkBids(books[0].bids, Number(o.shares), limit);
@@ -186,8 +246,10 @@ async function manageExits(botId, forecasts, now) {
     filled++;
   }
 
-  if (repriced || filled) log(`  exits: ${repriced} repriced, ${filled} filled`);
-  return { filled, repriced };
+  if (repriced || filled || cancelled) {
+    log(`  exits: ${repriced} repriced, ${filled} filled, ${cancelled} cancelled`);
+  }
+  return { filled, repriced, cancelled };
 }
 
 module.exports = { manageExits, createExitOrder, walkBids, exitPriceFor, settleExit };
