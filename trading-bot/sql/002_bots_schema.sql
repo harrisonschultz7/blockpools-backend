@@ -12,7 +12,7 @@ create schema if not exists bots;
 
 -- == Bot registry ===========================================================
 create table if not exists bots.bot (
-  id           text primary key,          -- 'nfl-medium-v1'
+  id           text primary key,          -- 'adam-7'
   name         text not null,             -- display name on the homepage
   league       text not null default 'NFL',
   risk_tier    text not null,             -- 'medium'

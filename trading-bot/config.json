@@ -1,8 +1,8 @@
 {
   "_comment": "NFL trading bot v1. ONE bot, medium risk, PRE-GAME ONLY, PAPER fills. Every tuned number lives here; feature code reads it and hardcodes nothing. Edits apply on the next tick (config is re-read each loop).",
 
-  "botId": "nfl-medium-v1",
-  "botName": "Astro",
+  "botId": "adam-7",
+  "botName": "Adam 7",
   "league": "NFL",
   "riskTier": "medium",
   "mode": "paper",

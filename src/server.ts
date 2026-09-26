@@ -142,7 +142,7 @@ export function makeServer() {
   //   GET /api/hot-markets/one-sided
   app.use("/api/hot-markets", hotMarketsRouter);
 
-  // Trading bots (Astro). Reads with the service role because the bots/sports
+  // Trading bots (Adam 7). Reads with the service role because the bots/sports
   // schemas are revoked from anon -- see routes/bots.ts.
   app.use("/api/bots", botsRouter);
 

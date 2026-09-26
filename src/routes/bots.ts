@@ -1,6 +1,6 @@
 // src/routes/bots.ts
 //
-// Public read surface for the trading bots (Astro).
+// Public read surface for the trading bots (Adam 7).
 //
 // The `bots` and `sports` schemas are REVOKED from anon/authenticated on
 // purpose: sports.features holds p_fair before kickoff, and bots.positions
