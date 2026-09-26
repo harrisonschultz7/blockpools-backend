@@ -61,7 +61,12 @@ const sigmoid = (x) => 1 / (1 + Math.exp(-x));
  */
 function exitPriceFor(forecast, side) {
   const p = cfg().policy;
-  const fair = side === "home" ? forecast.p_fair : 1 - forecast.p_fair;
+  // p_fair is always the probability of the PRIMARY outcome -- home for a
+  // moneyline, over for a total -- so the complement covers away and under. One
+  // function for both bots, because the exit arithmetic has nothing to do with
+  // which market type produced the position.
+  const primary = side === "home" || side === "over";
+  const fair = primary ? forecast.p_fair : 1 - forecast.p_fair;
   const safe = Math.max(0.02, Math.min(0.98, fair));
   const target = sigmoid(logit(safe) + (p.exitVolatilityAlphaLogit || 0));
   return Math.max(0.02, Math.min(p.exitInPlayMaxPrice || 0.97, target));
@@ -111,10 +116,12 @@ async function createExitOrder(args) {
   const { rows } = await q(
     `insert into bots.limit_orders
        (bot_id, trade_id, game_id, token_id, side, action,
-        limit_price, original_price, shares)
-     values ($1,$2,$3,$4,$5,'SELL',$6,$6,$7) returning id`,
+        limit_price, original_price, shares, condition_id, market_type, line)
+     values ($1,$2,$3,$4,$5,'SELL',$6,$6,$7,$8,$9,$10) returning id`,
     [botId, tradeId, game.game_id, fill.tokenId, decision.side,
-     price, fill.filledShares],
+     price, fill.filledShares,
+     fill.conditionId || null, decision.marketType || "moneyline",
+     decision.line ?? null],
   );
   log(`    exit: rest SELL ${fill.filledShares.toFixed(0)} @ ${price.toFixed(3)} (fair)`);
   return rows[0].id;
@@ -178,12 +185,17 @@ async function manageExits(botId, forecasts, now) {
   const { rows: orders } = await q(
     `select o.*, g.kickoff,
             (g.home_score is not null and g.away_score is not null) as game_final,
-            coalesce(m.closed, false) as market_closed,
+            coalesce(ml.closed, tm.closed, false) as market_closed,
             t.fill_price as entry_price
        from bots.limit_orders o
        join sports.nfl_games g on g.game_id = o.game_id
        join bots.trades t on t.id = o.trade_id
-       left join sports.pm_markets m on m.game_id = o.game_id
+       -- Joined by condition_id, not game_id. A game has ONE moneyline but many
+       -- totals lines, so game_id cannot identify a totals order's market: the
+       -- old join silently resolved every totals order against the game's
+       -- moneyline, which is right by coincidence until the two close apart.
+       left join sports.pm_markets        ml on ml.condition_id = o.condition_id
+       left join sports.pm_totals_markets tm on tm.condition_id = o.condition_id
       where o.bot_id = $1 and o.status = 'open'`,
     [botId],
   );

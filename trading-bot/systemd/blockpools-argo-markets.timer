@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh the NFL totals market registry hourly
+
+[Timer]
+# Hourly is enough: new lines appear as a week is priced, and the recorder can
+# only track markets this job has already mapped. Runs more often than strictly
+# needed because a missed market is a game the bot cannot see at all.
+OnBootSec=1min
+OnUnitActiveSec=1h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

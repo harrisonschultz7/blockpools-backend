@@ -1,0 +1,19 @@
+[Unit]
+Description=BlockPools Argo-7 -- NFL totals forecast + paper trade tick
+After=network-online.target
+
+[Service]
+# PATH NOTE: WorkingDirectory/User MUST match the existing backend unit.
+# Confirm with:  systemctl cat blockpools-backend.service
+Type=oneshot
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+# run/tick-totals.js calls selectConfig("config.argo-7.json") itself, so the
+# env var is redundant. It is set anyway as the belt to that braces: if the
+# call were ever dropped, this unit would still run Argo rather than silently
+# running Adam-7's moneyline logic against the totals ledger.
+Environment=TRADING_BOT_CONFIG=config.argo-7.json
+ExecStart=/usr/bin/node trading-bot/run/tick-totals.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-argo-tick

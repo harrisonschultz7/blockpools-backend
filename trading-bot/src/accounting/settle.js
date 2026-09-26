@@ -48,6 +48,12 @@ async function gradeClv() {
 /**
  * Settle trades whose game is final.
  * A share pays $1 if its side won, $0 otherwise -- so pnl = payout - cost.
+ *
+ * TOTALS NEED NO PUSH BRANCH. Verified against all 2028 open NFL totals markets
+ * on 2026-09-26: every line is a half-point (44.5, 46.5, ...) and not one was an
+ * integer, so a total can never land exactly on the line. If Polymarket ever
+ * lists an integer line, this comparison silently grades a push as an under and
+ * the resolution text ("45 or more points") is where the real rule lives.
  * Positions closed early by a resting exit are excluded: their P&L was booked
  * at the sale, and settling them again would inflate the record with shares
  * the bot no longer held.
@@ -62,15 +68,31 @@ async function settleTrades() {
                            else -t.notional_usd end
        from (
          select t2.id,
-                (case when t2.side = 'home' then g.home_score > g.away_score
-                      else g.away_score > g.home_score end) won
+                -- BRANCHED ON MARKET TYPE. The moneyline form alone was actively
+                -- wrong for Argo-7: side is 'over' or 'under', so "side = 'home'"
+                -- is false and every totals trade fell through to
+                -- "away_score > home_score" -- settled as an away moneyline bet,
+                -- with a plausible-looking win rate and no error anywhere.
+                (case
+                   when t2.market_type = 'totals' then
+                     case when t2.side = 'over'
+                          then (g.home_score + g.away_score) > t2.line
+                          else (g.home_score + g.away_score) < t2.line end
+                   when t2.side = 'home' then g.home_score > g.away_score
+                   else g.away_score > g.home_score
+                 end) won
            from bots.trades t2
            join sports.nfl_games g on g.game_id = t2.game_id
           where t2.settled = false
             and t2.exited = false   -- closed by a limit sell; paying it out again
                                     -- would double-count the same shares
             and g.home_score is not null and g.away_score is not null
-            and g.home_score <> g.away_score
+            -- A tie voids a moneyline but is a perfectly good total, so the
+            -- draw exclusion applies only to sides. Totals need t2.line instead:
+            -- without it the comparison above is against NULL and settles nothing.
+            and (t2.market_type = 'totals'
+                 or g.home_score <> g.away_score)
+            and (t2.market_type <> 'totals' or t2.line is not null)
        ) w
       where t.id = w.id
       returning t.id, t.won, t.pnl_usd`,

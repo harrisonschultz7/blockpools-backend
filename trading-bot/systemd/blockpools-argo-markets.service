@@ -1,0 +1,13 @@
+[Unit]
+Description=BlockPools Argo-7 -- discover NFL totals markets
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+Environment=TRADING_BOT_CONFIG=config.argo-7.json
+ExecStart=/usr/bin/node trading-bot/run/ingest-totals-markets.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-argo-markets

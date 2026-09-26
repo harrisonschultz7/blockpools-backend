@@ -1,0 +1,191 @@
+{
+  "_comment": "Argo-7. NFL GAME TOTALS (over/under) only -- no spreads, no moneylines. Second bot, same infrastructure as Adam-7: same feature store, same depth recorder, same paper filler, same NAV accounting. Select it with TRADING_BOT_CONFIG=config.argo-7.json. Every tuned number lives here; feature code reads it and hardcodes nothing. Edits apply on the next tick.",
+  "botId": "argo-7",
+  "botName": "Argo-7",
+  "league": "NFL",
+  "marketScope": "totals",
+  "riskTier": "medium",
+  "mode": "paper",
+  "modelVersion": "totals-delta-v1",
+  "data": {
+    "_comment": "startSeason gates historical reads, as in Adam-7. schemePriorSeason is separate and deliberately looks back one year: scheme is coach-driven and stable year to year, and FTN charting LAGS -- checked live on 2026-09-26, the 2026 file had weeks 1-2 complete and only one week-3 game. Without a prior-season anchor the scheme factor would be running on two games per team well into October.",
+    "startSeason": 2025,
+    "schemePriorSeason": 2025,
+    "replacementBaselineStartSeason": 2025
+  },
+  "model": {
+    "_comment": "Same residual architecture as Adam-7 -- the market is the ANCHOR, never a weighted factor -- but the arithmetic happens in POINTS. The bot reads the market implied mean total by inverting the price, adjusts that mean in points, then converts back to a probability. sigmaTotalPoints is the SD of actual total minus closing total; deltaCap stays in probability points, which at sigma 10.5 makes 0.16 equal to about 4.3 points of permitted disagreement at a coin-flip line (narrower at the extremes).",
+    "deltaCap": 0.16,
+    "sigmaTotalPoints": 10.5,
+    "leagueAvgTotal": 45,
+    "expectedPlaysPerTeam": 64,
+    "weights": {
+      "weather": 0.3,
+      "scheme": 0.29,
+      "rest": 0.15,
+      "pace": 0.1,
+      "injury": 0.08,
+      "situational": 0.08
+    },
+    "weather": {
+      "_comment": "TOP WEIGHT, and a HINGE rather than a slope. A linear wind term is wrong because 8 mph and 3 mph are both no effect, so the term must be flat until the threshold and only then steepen -- which also means this factor contributes NOTHING in most games, and its 0.30 weight bites only on the handful where it matters. Indoor and closed-roof games are hard-zeroed. Forecasts come from sports.nfl_weather, recorded by ingest/weather.js at the time we saw them, never from the nflverse temp/wind columns, which are observed post-hoc and would be a look-ahead leak.",
+      "_comment_direction": "Wind, cold and rain all push the SAME way: fewer points. So this factor is one-directional and Argo-7 will be a systematic UNDER buyer in bad weather -- which is also the one adjustment recreational money does make, so expect the edge here to be thinner than the weight implies. Recorded plainly so a run of losing weather unders is read as a known property rather than a surprise.",
+      "requireOutdoors": true,
+      "windThresholdMph": 12,
+      "pointsPerMphOverThreshold": 0.2,
+      "coldThresholdF": 30,
+      "pointsPerDegUnderThreshold": 0.035,
+      "precipProbThreshold": 50,
+      "pointsAtCertainPrecip": 0.8,
+      "maxPoints": 4.5,
+      "forecastMaxAgeHours": 18,
+      "_comment_precip_units": "precipProbThreshold is in PERCENT, 0-100, because that is what sports.nfl_weather.precip_prob actually holds: Open-Meteo returns precipitation_probability as a percentage and ingest/weather.js stores it raw (observed range 0-83 across 70 rows). Reading it as a 0-1 fraction made a 3% chance of rain worth -4 points and pinned the weather factor at its cap on a calm game. Adam-7 never consumed this column, so the ambiguity sat unnoticed until now."
+    },
+    "scheme": {
+      "_comment": "PLAY-STYLE MATCHUP, second weight. Built from nflverse ftn_charting -- the only free source that charts how a play was run. Two axes per side, which is all ~350 games of fit will support: offence carries aggression (play-action + motion + shotgun) and tempo (no-huddle); defence carries pressure (blitz rate + pass rushers) and front weight (defenders in the box). Four interaction terms.",
+      "_comment_interaction": "ONLY THE INTERACTION TERMS FEED THE MODEL. Main effects are deliberately discarded: how good an offence is, on its own, is exactly what the market price already contains, so including main effects would re-price team strength a second time. The interaction -- whether THIS offence profile gains or loses against THIS defence profile, beyond what either is worth alone -- is the part a midpoint plausibly misses. This is what makes the factor non-duplicative rather than just another strength estimate.",
+      "_comment_league_level": "The coefficients are fitted LEAGUE-WIDE, not per team. With two charted games per team this season there is no way to estimate what a specific offence does against a specific scheme; the honest claim is 'offences with this profile fare this way against defences with that profile'. Revisit around week 10 when team-level splits start to have any sample at all.",
+      "_comment_coverage_gap": "Zone versus man coverage is NOT in FTN or any other free source, so the literal question 'is this offence good against zone' cannot be asked. Pressure rate and box count are a pressure-scheme axis, not a coverage axis. Do not let the fitted numbers imply otherwise.",
+      "neutral": {
+        "_comment": "Neutral-script band. Tendencies measured outside it are the scoreboard talking, not the scheme. Costs roughly half the sample, which is why shrinkGames exists.",
+        "wpMin": 0.15,
+        "wpMax": 0.85,
+        "maxQuarter": 3,
+        "maxAbsMargin": 14
+      },
+      "minNeutralPlaysPerGame": 12,
+      "shrinkGames": 4,
+      "priorSeasonWeight": 1,
+      "coachingChangeResetToLeagueAvg": true,
+      "maxPoints": 3,
+      "minFitGames": 200,
+      "minNeutralDropbacksPerGame": 6,
+      "_comment_sample": "Measured on 2026 weeks 1-2 charted data: the neutral band keeps 60% of charted plays, median 39 neutral snaps per team-game, p10 of 19, tail into single digits. The two gates null out a side that is too thin to read rather than storing a blitz rate derived from two dropbacks, which is always exactly 0 or 1. Pooling across games uses the raw counts column, not these per-game rates.",
+      "typicalNeutralPlaysPerGame": 39,
+      "typicalNeutralDropbacksPerGame": 13,
+      "_comment_shrink": "Shrinkage is applied on each rate's OWN denominator, which is why these two constants exist: snap-denominated rates (motion, no-huddle, shotgun) and dropback-denominated ones (play action, blitz) differ by roughly 3x, and one shared constant would over-shrink the smaller. Both measured from 2026 weeks 1-2 charted data: median 39 neutral snaps and 13 neutral dropbacks per team-game.",
+      "fitRidge": 0.001,
+      "_comment_fit": "fitRidge is a small diagonal add on the normal equations. The four interaction products are correlated with their own main effects by construction, so the design matrix is near-collinear and plain OLS can invert into nonsense. minFitGames is a refusal threshold, not a target: below it, run/fit-scheme.js writes nothing and the scheme factor contributes exactly 0 rather than a coefficient fitted on 80 games.",
+      "requireSignificantFit": true,
+      "_comment_significance": "requireSignificantFit makes the factor contribute 0 unless some interaction reaches |t| >= 2. First real fit, 2025 + 2026 weeks 1-2, 587 team-game observations: max |t| 0.61, r2 0.008 -- no signal. So as shipped, the 0.29 scheme weight is DORMANT and Argo-7 is effectively running on weather, rest, pace, injury and situational. That is deliberate: a dead factor that announces itself is recoverable, a live factor fitted on noise is not. Re-run run/fit-scheme.js as the season adds charted games.",
+      "fitStartSeason": 2022,
+      "_comment_fit_window": "fitStartSeason (2022, FTN's first charted season) governs ONLY the league-wide interaction coefficient. Team TRAITS still start at data.schemePriorSeason (2025) per the no-stale-matchups rule -- the two windows are separate because they describe different objects: a team's tendencies go stale, but whether a no-huddle offence gains against a blitz-heavy defence is structural football and does not. Precedent: replacementBaselineStartSeason in Adam-7's config is split out for exactly this reason. MEASURED EFFECT OF THE WINDOW -- max interaction |t| by fit start: 2025 -> 0.61 (n=587), 2024 -> 1.38 (n=1142), 2023 -> 1.77 (n=1698), 2022 -> 2.28 (n=2253). The surviving term is tempo_pressure, positive: a high-tempo offence gains on a blitz-heavy defence, which is sensible (no-huddle denies substitution and disguise). Caveat that is NOT resolved: 4 terms times 4 windows is 16 tests, so a nominal t of 2.28 is suggestive rather than established -- Bonferroni across the 4 terms wants 2.5. The monotone climb with sample and the stable sign are the real evidence. Set this back to 2025 to veto the wider window; the factor then goes dormant via requireSignificantFit.",
+      "betaShrinkByT": true
+    },
+    "rest": {
+      "_comment": "Third weight, user-ranked. For a TOTAL the relevant quantity is the SUM of both sides' rest, not the differential Adam-7 uses -- two rested offences produce more points than one rested and one gassed. Honest caveat: the rest-to-total relationship is weaker in the literature than rest-to-margin, so this coefficient is deliberately small and the cap is tight.",
+      "pointsPerNetRestDaySum": 0.1,
+      "shortWeekThresholdDays": 4,
+      "shortWeekPoints": -0.6,
+      "byeWeekThresholdDays": 11,
+      "byeWeekPoints": 0.5,
+      "maxPoints": 1.5
+    },
+    "pace": {
+      "_comment": "Low weight ON PURPOSE, and the reason is double-counting, not weak signal. Pace is the most mechanically direct driver of a total -- more snaps means more scoring chances -- which is exactly why the market prices it well. It keeps its own small weight because the user wants the pace-specific part represented above whatever the anchor already carries, but a larger weight here would mostly re-bet the market's own view.",
+      "secPerPlayShrinkGames": 4,
+      "leagueAvgSecPerPlay": 27.5,
+      "pointsPerExtraPlay": 0.36,
+      "maxPoints": 2.5
+    },
+    "injury": {
+      "_comment": "Lowest weight of the substantive factors, per the user's read that injuries matter less to a total than to a side. SIGN DEPENDS ON UNIT: an offensive player lost pushes the total DOWN, a defensive player lost pushes it UP. This is the structural difference from Adam-7, where injury is signed by team rather than by unit. Baselining is unchanged -- the penalty is the player's marginal value times one minus demonstrated replacement quality, shrunk toward positional replacement until the sample earns its way out.",
+      "shrinkGamesWithout": 4,
+      "defaultReplacementQuality": 0.5,
+      "qbOutPoints": 2.5,
+      "statusMultiplier": {
+        "Out": 1,
+        "Doubtful": 0.75,
+        "Questionable": 0.25,
+        "inactive": 1
+      },
+      "maxPoints": 3.5,
+      "positionValue": {
+        "QB": 1,
+        "WR": 0.16,
+        "RB": 0.08,
+        "TE": 0.1,
+        "OT": 0.14,
+        "OG": 0.07,
+        "C": 0.08,
+        "EDGE": 0.16,
+        "DE": 0.16,
+        "DT": 0.1,
+        "LB": 0.08,
+        "CB": 0.14,
+        "S": 0.1,
+        "K": 0.06,
+        "default": 0.06
+      },
+      "_comment_key": "Named positionValue, not positionPointsScale, so features/injuries.js currentReport/playerBaseline can be reused unchanged -- the baselining is the valuable part and should not be duplicated. qbOutPoints converts the resulting 0..1 cost into points.",
+      "replacementScaleEpa": 0.2,
+      "_comment_shared_keys": "replacementScaleEpa, shrinkGamesWithout, defaultReplacementQuality, positionValue and statusMultiplier are all read by the SHARED features/injuries.js helpers (currentReport, playerBaseline). Omitting any of them does not throw -- it produces NaN, which then passes every policy gate, because NaN < threshold is false. That is exactly what happened on the first live dry run: replacementScaleEpa was missing, injury points were NaN, and the bot proposed trades on 14 of 15 games. run/tick-totals.js now validates the forecast before the policy sees it."
+    },
+    "situational": {
+      "_comment": "Very low weight, per the user. Division familiarity compresses scoring slightly; a closed roof raises it, but the roof is known to everyone and sits in the anchor, so only the division and primetime terms are applied.",
+      "divisionGamePoints": -0.4,
+      "primetimePoints": -0.2,
+      "maxPoints": 1
+    },
+    "confidence": {
+      "_comment": "Scales the points delta down when inputs are thin, and a game below minToTrade is skipped rather than traded small. noWeatherForecast matters more here than in Adam-7 because weather carries the top weight: a 72h window means the forecast should exist, and if it does not, the model is missing its largest single input.",
+      "minToTrade": 0.45,
+      "staleBookSeconds": 900
+    },
+    "calibration": {
+      "_comment": "Governs run/calibrate-totals.js. minNonZeroGamesPerFactor is the important one: the weather hinge is zero in most games BY DESIGN, so a season with few windy games gives nothing to regress, and a beta fitted on four games would be noise handed the heaviest weight in the model. maxScale caps how far a factor may be amplified above our own points estimate. A negative beta is clamped to 0, never flipped -- a factor that points the wrong way gets stopped, not reversed off one seasons evidence.",
+      "minGames": 250,
+      "minNonZeroGamesPerFactor": 25,
+      "ridge": 0.001,
+      "maxScale": 1.5
+    }
+  },
+  "policy": {
+    "_comment": "MEDIUM tier, same shape as Adam-7. Two deliberate differences.",
+    "_comment_window": "openWindowHoursBeforeKickoff is 72, not Adam-7's 192, because WEATHER CARRIES THE TOP WEIGHT and a wind forecast eight days out is close to worthless. A window that opens before the model's largest input exists would mean entering on a thesis the model cannot yet evaluate. 72h is roughly where wind forecasts start to carry information.",
+    "_comment_line": "ONE line per game -- the deepest book. Verified live: the deepest line is always the one priced nearest 50/50, so deepest and closest-to-a-coin-flip pick the same market. Taking several lines on one game would be the same bet sized up, correlated almost perfectly, while looking like diversification in the trade log.",
+    "_comment_exit": "Unchanged from Adam-7 and the whole point of the strategy: a resting sell is placed after each buy and RIDES THROUGH KICKOFF. It is repriced every tick while the game is pre-kickoff, then frozen once the ball is in the air, because in play the model has no live feed and p_fair is stale. If the price never reaches the target the position settles exactly as a held bet would, so the resting order is a free option, not a stop.",
+    "_comment_fees": "assumeTakerFee reads sports.pm_totals_markets.fee_rate per market instead of a constant. Live check on 2026-09-26: NFL totals carry feeType zero_fees while game moneylines carry sports_fees_v3 at rate 0.05 taker-only. Zero taker fee is a genuine structural advantage for a round-tripping strategy and it is Polymarket's to withdraw at any time, so it is read, not assumed.",
+    "marketType": "totals",
+    "lineSelection": "deepest",
+    "pregameEntryOnly": true,
+    "evaluationMode": "week",
+    "exitAtFairValue": true,
+    "exitBufferCents": 0.005,
+    "exitHoldThroughKickoff": true,
+    "exitVolatilityAlphaLogit": 0.45,
+    "exitInPlayMaxPrice": 0.97,
+    "minEdge": 0.025,
+    "kellyFraction": 0.25,
+    "maxPositionPctNav": 0.05,
+    "maxGameExposurePctNav": 0.05,
+    "maxWeeklyExposurePctNav": 0.25,
+    "minPrice": 0.05,
+    "maxPrice": 0.95,
+    "minBookDepthUsd": 250,
+    "maxSlippageCents": 0.02,
+    "openWindowHoursBeforeKickoff": 72,
+    "closeWindowMinutesBeforeKickoff": 10,
+    "requireWeatherForecast": true,
+    "_comment_weather_gate": "requireWeatherForecast skips an outdoor game whose forecast was never recorded, rather than trading it as though the weather were known to be benign. Without the gate the heaviest factor contributes 0 while the other five still clear minToTrade, so the bot would trade a weather thesis with no weather in it."
+  },
+  "paper": {
+    "_comment": "Paper fills walk the recorded book -- consume ask levels until filled, average the price, record any unfilled remainder honestly. Never the midpoint, which would manufacture half the spread as free edge. orderMinUsd is 5 on these markets (read from Gamma, not guessed), so sub-$5 sizing is refused rather than silently rounded.",
+    "startingNavUsd": 10000,
+    "walkRealDepth": true,
+    "feeRateOverride": null
+  },
+  "ingest": {
+    "_comment": "Shares the nflverse and weather jobs with Adam-7; adds FTN charting and a totals book recorder.",
+    "_comment_recorder": "totalsLinesRecordedPerGame is the single most important number in this block. There are 2028 open NFL totals markets, so recording every one would be 4056 book calls per poll. Only the top few lines per game by liquidity are recorded -- the bot trades the deepest, and the neighbours are kept so a later version can compare lines without having lost the history. Historical depth cannot be backfilled from anywhere at any price, so an unrecorded line is gone for good.",
+    "_comment_ftn_lag": "FTN charting lags the schedule. On 2026-09-26 the 2026 file held weeks 1-2 complete and one week-3 game. The scheme factor must therefore lean on the prior season for most of the first half of the year, which is what data.schemePriorSeason is for.",
+    "pmNflTagId": 450,
+    "totalsLinesRecordedPerGame": 3,
+    "recordWindowHours": 120,
+    "bookPollSeconds": 60,
+    "bookPollSecondsNearKickoff": 20,
+    "nearKickoffHours": 6,
+    "ftnRefreshHours": 12,
+    "bookLevelsStored": 10
+  }
+}

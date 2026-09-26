@@ -1,0 +1,18 @@
+{
+  "_comment": "MAINTAINED BY HAND. There is no reliable free coordinator table in nflverse, so this file is the source of truth for scheme discontinuity. It exists because the scheme factor blends a team's prior-season tendencies into its current ones -- which is right for a team that kept its staff and badly wrong for one that did not. A team listed for a season has its prior-season scheme prior DISCARDED and is shrunk toward the league average instead, until the current season produces enough charted games to stand on its own.",
+  "_comment_maintenance": "Update in the offseason, and again if a coordinator is fired mid-season. A stale file fails silently and in the worst direction: it keeps quoting a scheme the team no longer runs, with full confidence. features/scheme.js logs the list size on every run so an empty or forgotten file is visible in the logs.",
+  "_comment_scope": "off = offensive scheme changed (new HC calling plays, or new OC). def = defensive scheme changed (new DC). A head-coach change usually implies both unless the coordinator was retained.",
+  "_comment_verify": "2026 entries below are a STARTING SKELETON and have not been verified against a source. Confirm before trusting the factor in a live week; an unverified entry is the same failure mode as a missing one.",
+
+  "2026": {
+    "_verified": false,
+    "_verified_note": "TODO: confirm against a 2026 coaching-change list before this factor is given real weight.",
+    "teams": {}
+  },
+
+  "2025": {
+    "_verified": false,
+    "_verified_note": "TODO: confirm. Only matters for reading 2025 tendencies as a prior into 2026, so an error here is one season removed from the live forecast.",
+    "teams": {}
+  }
+}

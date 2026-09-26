@@ -37,9 +37,18 @@ async function situationalSignal(game, asOf) {
   let signal = 0;
 
   // Rest differential. Positive when the home side is the fresher one.
-  const homeRest = Number(game.home_rest);
-  const awayRest = Number(game.away_rest);
-  if (Number.isFinite(homeRest) && Number.isFinite(awayRest)) {
+  // Number(null) is 0 and passes Number.isFinite, so a null rest day would be
+  // read as ZERO days of rest rather than as missing -- see the numOrNull comment
+  // in features/paceTotals.js. Adam-7 has never hit it because nfl_games rest
+  // columns are populated for every scheduled game, but the coercion is the same.
+  const numOrNull = (v) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const homeRest = numOrNull(game.home_rest);
+  const awayRest = numOrNull(game.away_rest);
+  if (homeRest !== null && awayRest !== null) {
     const restEdge = (homeRest - awayRest) * c.restDayProbPerDay;
     parts.rest = +restEdge.toFixed(5);
     signal += restEdge;

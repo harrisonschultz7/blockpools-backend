@@ -1,0 +1,24 @@
+[Unit]
+Description=BlockPools Argo-7 -- Polymarket TOTALS depth recorder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# PATH NOTE: WorkingDirectory/User MUST match the existing backend unit.
+# Confirm with:  systemctl cat blockpools-backend.service
+Type=simple
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+Environment=TRADING_BOT_CONFIG=config.argo-7.json
+ExecStart=/usr/bin/node trading-bot/run/record-totals-books.js
+Restart=always
+RestartSec=5
+# Historical book depth cannot be backfilled from any source at any price, so
+# downtime here is permanent data loss. Restart aggressively, never give up.
+StartLimitIntervalSec=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-argo-recorder
+
+[Install]
+WantedBy=multi-user.target

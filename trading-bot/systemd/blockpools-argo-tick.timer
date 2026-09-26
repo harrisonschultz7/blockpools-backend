@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Argo-7 totals tick every 15 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+# Offset from the Adam-7 tick so the two are not hammering Gamma and Supabase in
+# the same second.
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

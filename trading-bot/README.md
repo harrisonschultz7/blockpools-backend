@@ -195,3 +195,206 @@ option and paper fills against recorded depth were used instead.
 - **Venue is keyed off the home team**, which is wrong for international games.
 - **Weather is forecast-only by design.** nflverse `temp`/`wind` are observed
   after the fact; using them would be a look-ahead leak.
+
+---
+
+# Argo-7 -- NFL game totals
+
+Second bot. **Totals (over/under) only** -- no spreads, no moneylines. Shares
+Adam-7's feature store, paper filler, exit engine and NAV accounting; a second
+copy of the folder would have duplicated ~1500 lines and doubled every future fix.
+
+Which bot is active is chosen by `TRADING_BOT_CONFIG=config.argo-7.json`, or by
+`selectConfig()` at the top of a run script. Every Argo run script selects its own
+config, so it cannot be started against the wrong one by accident.
+
+## The thesis
+
+The edge is not picking winners -- it is the **resting limit exit**. A sportsbook
+makes you hold to settlement; here the bot names a price above fair and rides the
+position through kickoff, taking the sale if an in-play swing reaches it and
+settling normally if it does not. The resting order is a free option, never a stop.
+
+Totals support this at size: **$20.5M of resting liquidity across 68 games**
+(measured 2026-09-26), $300-440k on the single deepest line per game. And NFL
+totals carry **`feeType: zero_fees`** while game moneylines carry
+`sports_fees_v3` at rate 0.05 taker-only -- a real structural advantage for a
+round-tripping strategy, and Polymarket's to withdraw at any time, which is why
+`fee_rate` is stored per market rather than assumed.
+
+## How a decision is made
+
+Points first, probability second:
+
+```
+implied_mean = line + sigma * inverse_normal(p_market)   # invert the price
+model_mean   = implied_mean + sum(weight_k * scale_k * points_k)
+p_fair       = normal_cdf((model_mean - line) / sigma)   # back to a price
+delta        = capped(p_fair - p_market)
+```
+
+The market is the **anchor**, never a weighted factor. A from-scratch projection
+compared against the book would mostly be measuring the model's own error, since
+both are built from the same public data.
+
+`deltaCap` 0.16 means the model may disagree by about **5.5 points** at the fitted
+sigma of 13.4 (4.3 at the 10.5 originally assumed), narrowing toward the price
+extremes. That translation is the single best sanity check in the system: if the
+model ever wants to move a total 8 points, it is broken.
+
+One line per game -- the **deepest book**. Verified live: the deepest line is
+always the one priced nearest 50/50, so "deepest" and "closest to a coin flip"
+select the same market. Taking three lines would be the same bet three times.
+
+The window is **72 hours**, not Adam-7's 192, because weather carries the top
+weight and a wind forecast eight days out is close to worthless.
+
+## Weights, and what the calibration did to them
+
+The user set these, in this order of importance:
+
+| factor | weight | the reasoning given |
+|---|---|---|
+| weather | 0.30 | top weight, but only above a threshold |
+| scheme / play style | 0.29 | the matchup that others miss |
+| rest | 0.15 | third |
+| pace | 0.10 | small weight of its own, above what the anchor carries |
+| injury | 0.08 | matters less to a total than to a side |
+| situational | 0.08 | "doesn't matter in my opinion" |
+
+**The calibration then overrode most of that.** `run/calibrate-totals.js` regresses
+`actual_total - closing_line` on each factor's points, so the fitted beta reads
+directly as *how much of this factor the market has not already priced*. On 318
+games (2025 + 2026 weeks 1-3):
+
+| factor | beta | t | scale applied | verdict |
+|---|---|---|---|---|
+| weather | +2.73 | 1.16 | 0.86 | survives, on only 45 non-zero games |
+| situational | +8.27 | 2.25 | 1.25 | strongest t of the six |
+| pace | +0.95 | 1.14 | 0.54 | survives, weakly |
+| scheme | **-1.26** | -1.24 | **0** | wrong sign, zeroed |
+| rest | **-1.45** | -1.11 | **0** | wrong sign, zeroed |
+| injury | -- | -- | **0** | non-zero in <25 games, disabled |
+
+So the shipped model is roughly **62% weather, 24% situational, 13% pace**, and the
+user's stated #2 and #3 factors contribute nothing. A negative beta is clamped to
+zero, never flipped -- a factor pointing the wrong way gets stopped, not reversed
+off one season of evidence. Surviving betas are damped by `t^2/(t^2+1)`, so an
+unreliable one is shrunk rather than traded at full size or dropped entirely.
+
+Re-run the calibration as the season adds games. These conclusions are provisional
+and several are one good month from changing.
+
+## The scheme factor, and why it is mostly dormant
+
+Built from nflverse `ftn_charting` -- the only free source that charts *how* a play
+was run. Two axes per side: offence carries aggression (play action + motion +
+shotgun) and tempo (no-huddle); defence carries pressure (blitz rate + pass
+rushers) and front weight (defenders in the box). Four interaction terms.
+
+**Only the interaction is used.** Main effects are fitted as controls and then
+discarded: how good an offence is in the abstract is exactly what the price already
+contains. The interaction -- whether *this* profile gains against *that* profile,
+beyond what either is worth alone -- is the part a midpoint can plausibly miss.
+
+**League-level, not team-level.** With two charted games per team there is no
+sample for "the Eagles specifically against this scheme". The claim the model makes
+is weaker than it sounds: offences that *look like* this one fare this way against
+defences that *look like* that one.
+
+**Zone versus man coverage is not available.** Not in FTN, not anywhere free. The
+defensive axes are pressure and front weight, which is a pressure-scheme axis, not
+a coverage axis. The original motivating example ("this offence is good against
+zone, that defence plays a lot of zone") cannot be expressed at all.
+
+Interaction significance by fit window, which is why `fitStartSeason` is 2022:
+
+| fit start | n | max abs t | |
+|---|---|---|---|
+| 2025 | 587 | 0.61 | nothing |
+| 2024 | 1142 | 1.38 | |
+| 2023 | 1698 | 1.77 | |
+| 2022 | 2253 | **2.28** | `tempo_pressure`, positive |
+
+The surviving term says a high-tempo offence gains on a blitz-heavy defence, which
+is sensible: no-huddle denies substitution and disguise. **Caveat that is not
+resolved:** 4 terms x 4 windows is 16 tests, so a nominal 2.28 is suggestive rather
+than established -- Bonferroni across the four terms wants 2.5. The monotone climb
+with sample and the stable sign are the real evidence.
+
+`fitStartSeason` (2022) governs only the league-wide coefficient. Team **traits**
+still start at `schemePriorSeason` (2025), per the no-stale-matchups rule. The two
+windows are separate because they describe different objects: a team's tendencies
+go stale, whether tempo beats pressure does not. Set `fitStartSeason` back to 2025
+to veto the wider window; the factor then goes dormant via `requireSignificantFit`.
+
+## Running it
+
+```bash
+node trading-bot/run/migrate.js                  # adds sql/004 (idempotent)
+node trading-bot/run/ingest-totals-markets.js    # discover totals markets
+node trading-bot/run/ingest-ftn.js               # scheme tendencies
+node trading-bot/run/fit-scheme.js               # -> src/model/scheme-fit.json
+node trading-bot/run/calibrate-totals.js         # -> src/model/calibration-totals.json
+node trading-bot/run/record-totals-books.js      # long-running depth recorder
+node trading-bot/run/tick-totals.js --dry        # inspect a slate, write nothing
+node trading-bot/test/factors.test.js            # no DB, no network
+```
+
+**Calibration is mandatory.** `forecastTotal()` returns `{skip: "not_calibrated"}`
+when `calibration-totals.json` is absent, because there is no safe default: 1.0
+would trade the market's own opinion back at it, and 0.0 would silently disable the
+bot while looking operational.
+
+systemd units: `blockpools-argo-tick.{service,timer}` (15 min),
+`blockpools-argo-recorder.service` (continuous),
+`blockpools-argo-markets.{service,timer}` (hourly). `run/daily.js` now loops every
+enabled bot rather than needing one invocation per config.
+
+## Bugs this build hit, kept as warnings
+
+- **A missing config key produced NaN, and NaN passed every gate.**
+  `replacementScaleEpa` was absent from Argo's config; the shared
+  `playerBaseline()` computed `1 - drop/undefined`; injury points went NaN; p_fair
+  went NaN; and the policy proposed trades on **14 of 15 games** with
+  `edge NaNc size $NaN`. Nothing objected, because every gate is a comparison and
+  every comparison against NaN is false. `forecastTotal()` now validates finiteness
+  and names the offending factor, the policy re-checks, and
+  `test/factors.test.js` asserts every shared key is present.
+- **`Number(null)` is `0`, and `0` is finite.** A null rest day slipped past a
+  `Number.isFinite` guard and was read as *zero days of rest* -- the most extreme
+  short week possible -- pushing the total down 1.3 points. Caught by a test, not
+  by reading the code. The same coercion exists in Adam-7's `situational.js` and
+  was fixed there too.
+- **Open-Meteo returns precipitation probability as a percent (0-100).**
+  `nfl_weather.precip_prob` stores it raw (observed range 0-83). Reading it as a
+  0-1 fraction made a 3% chance of rain worth -4 points and pinned the weather
+  factor at its cap on a calm game. Adam-7 never consumed the column, so the
+  ambiguity sat unnoticed.
+- **Totals settlement fell through to the moneyline branch.** `side` is
+  `over`/`under`, so `side = 'home'` is false and every totals trade was graded as
+  `away_score > home_score` -- an away moneyline bet, with a plausible win rate and
+  no error anywhere. Now branched on `market_type`.
+- **Two tables existed only in the live database.**
+  `nfl_team_game_stats.def_pass_epa`/`def_rush_epa`/`def_pass_rate` and the whole
+  of `bots.limit_orders` had been created by hand and were never in `sql/`, so a
+  fresh database could not reproduce the running one. Both are now declared in 004.
+
+## Known limitations beyond Adam-7's
+
+- **FTN charting lags.** On 2026-09-26 the 2026 file held weeks 1-2 complete and a
+  single week-3 game, so scheme traits lean on the prior season well into October.
+- **The coaching-change list is a hand-maintained skeleton and is unverified.**
+  `data/coaching-changes.json` is currently empty, which means every team keeps its
+  2025 scheme prior. A stale file fails in the worst direction: it keeps quoting a
+  scheme the team no longer runs, with full confidence. `features/scheme.js` logs
+  the list size on every run so an empty file is visible.
+- **`beta_weather` is fitted optimistically.** There is no archive of what a
+  forecast said three days before a 2025 game, so the calibrator substitutes
+  *observed* nflverse temp and wind. Sound for asking what the line contained,
+  and better information than the live bot will ever have.
+- **Weather is one-directional**, so Argo-7 is a systematic under-buyer in bad
+  weather -- which is also the one adjustment recreational money does make. A run
+  of losing weather unders is a known property of this design.
+- **Zero trades is the expected base rate.** On the 2026 week-3 slate the model
+  landed within 0.3 points of the book on all 15 games and traded none.

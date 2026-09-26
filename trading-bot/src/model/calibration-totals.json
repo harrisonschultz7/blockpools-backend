@@ -1,0 +1,74 @@
+{
+  "fittedAt": "2026-09-26T21:43:55.837Z",
+  "n": 318,
+  "seasons": [
+    2025,
+    2026
+  ],
+  "sigma": 13.416,
+  "meanLineError": 0.969,
+  "r2": 0.0287,
+  "scale": {
+    "weather": 0.8626,
+    "scheme": 0,
+    "rest": 0,
+    "pace": 0.5358,
+    "injury": 0,
+    "situational": 1.2524
+  },
+  "diagnostics": {
+    "weather": {
+      "beta": 2.7343,
+      "t": 1.16,
+      "se": 2.3504,
+      "clamped": 1.5,
+      "reliability": 0.5751,
+      "scale": 0.8626,
+      "nonZeroGames": 45,
+      "wrongSign": false
+    },
+    "scheme": {
+      "beta": -1.2623,
+      "t": -1.24,
+      "se": 1.0179,
+      "clamped": 0,
+      "reliability": 0.606,
+      "scale": 0,
+      "nonZeroGames": 302,
+      "wrongSign": true
+    },
+    "rest": {
+      "beta": -1.4543,
+      "t": -1.11,
+      "se": 1.3095,
+      "clamped": 0,
+      "reliability": 0.5523,
+      "scale": 0,
+      "nonZeroGames": 158,
+      "wrongSign": true
+    },
+    "pace": {
+      "beta": 0.946,
+      "t": 1.14,
+      "se": 0.8278,
+      "clamped": 0.946,
+      "reliability": 0.5664,
+      "scale": 0.5358,
+      "nonZeroGames": 302,
+      "wrongSign": false
+    },
+    "situational": {
+      "beta": 8.2665,
+      "t": 2.25,
+      "se": 3.6752,
+      "clamped": 1.5,
+      "reliability": 0.835,
+      "scale": 1.2524,
+      "nonZeroGames": 156,
+      "wrongSign": false
+    }
+  },
+  "disabledFactors": [
+    "injury"
+  ]
+}

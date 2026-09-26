@@ -1,24 +1,60 @@
 // trading-bot/src/config.js
 //
-// Config + env loader. config.json is re-read on every access so a live tuning
-// edit (a weight, the delta cap) applies on the next tick without a restart --
-// same ergonomics as seed-bot.config.json.
+// Config + env loader. The active config file is re-read on every access so a
+// live tuning edit (a weight, the delta cap) applies on the next tick without a
+// restart -- same ergonomics as seed-bot.config.json.
+//
+// TWO BOTS, ONE CODEBASE. config.json is Adam-7 (moneylines) and
+// config.argo-7.json is Argo-7 (totals). They share the feature store, the
+// depth recorder, the paper filler and the NAV accounting, so the alternative
+// -- a second copy of the folder -- would have duplicated ~1500 lines and
+// doubled every future fix. Which config is active is chosen by
+// TRADING_BOT_CONFIG (systemd sets it per unit) or by selectConfig() at the top
+// of a run script.
+//
+// cfg() is read lazily inside functions everywhere, never at module scope, so
+// selectConfig() called from a run script's first lines still takes effect for
+// modules that were already required.
 
 const fs = require("fs");
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "../../.env") });
 
-const CONFIG_PATH = path.join(__dirname, "../config.json");
+const CONFIG_DIR = path.join(__dirname, "..");
+const DEFAULT_CONFIG = "config.json";
 
+let _active = process.env.TRADING_BOT_CONFIG || DEFAULT_CONFIG;
 let _cache = null;
 let _mtime = 0;
+let _cachedPath = null;
 
-/** Re-reads config.json when it changes on disk. */
+/**
+ * Point the loader at a different config file. Refuses anything outside the
+ * bot directory: the file is parsed and then trusted completely, so a path
+ * that could escape the folder is a wider hole than it looks.
+ */
+function selectConfig(fileName) {
+  const resolved = path.resolve(CONFIG_DIR, fileName);
+  if (path.dirname(resolved) !== path.resolve(CONFIG_DIR)) {
+    throw new Error(`config must live in the bot directory: ${fileName}`);
+  }
+  if (!fs.existsSync(resolved)) throw new Error(`no such config: ${fileName}`);
+  _active = fileName;
+  _cache = null;
+  _mtime = 0;
+  return resolved;
+}
+
+const configPath = () => path.resolve(CONFIG_DIR, _active);
+
+/** Re-reads the active config when it changes on disk, or when it changes. */
 function cfg() {
-  const st = fs.statSync(CONFIG_PATH);
-  if (!_cache || st.mtimeMs !== _mtime) {
-    _cache = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+  const p = configPath();
+  const st = fs.statSync(p);
+  if (!_cache || st.mtimeMs !== _mtime || p !== _cachedPath) {
+    _cache = JSON.parse(fs.readFileSync(p, "utf8"));
     _mtime = st.mtimeMs;
+    _cachedPath = p;
   }
   return _cache;
 }
@@ -52,4 +88,6 @@ function requireDb() {
   return ENV.DATABASE_URL;
 }
 
-module.exports = { cfg, ENV, requireDb, CONFIG_PATH };
+module.exports = { cfg, ENV, requireDb, selectConfig, configPath, CONFIG_DIR };
+// Kept for the existing callers that import CONFIG_PATH as a constant.
+Object.defineProperty(module.exports, "CONFIG_PATH", { get: configPath });
