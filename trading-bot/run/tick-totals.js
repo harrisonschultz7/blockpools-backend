@@ -18,7 +18,9 @@ selectConfig("config.argo-7.json");
 const { q, close } = require("../src/db");
 const log = require("../src/log");
 const { loadSchemeContext } = require("../src/features/scheme");
-const { loadPace } = require("../src/features/paceTotals");
+const { loadPace, paceSignal } = require("../src/features/paceTotals");
+const { solveRatings } = require("../src/features/teamStrength");
+const { loadAbsoluteFit } = require("../src/model/fitAbsolute");
 const { forecastTotal, saveForecastTotal, loadCalibration } = require("../src/model/forecastTotals");
 const { decideTotals } = require("../src/policy/totals");
 const { executePaper } = require("../src/exec/paper");
@@ -91,11 +93,31 @@ async function main() {
   if (!games.length) { log("tick-totals: no mapped totals markets for this week yet"); return; }
 
   // Contexts are expensive and identical across games -- build once.
-  const [scheme, pace] = await Promise.all([
+  //
+  // Ratings use model.absolute.fitStartSeason, the SAME window the base model was
+  // fitted on. Mismatching them would apply coefficients to inputs on a different
+  // scale. Recency weighting means the wider window barely touches a current
+  // rating anyway -- a game 40 back carries ~0.001 of last week's weight.
+  const independent = c.model.priceMode === "independent";
+  const ratingsFrom = c.model.absolute.fitStartSeason || c.data.startSeason;
+  const [scheme, pace, ratings] = await Promise.all([
     loadSchemeContext(season, week),
     loadPace(asOf, c.data.startSeason),
+    independent ? solveRatings(asOf, { fromSeason: ratingsFrom }) : Promise.resolve(new Map()),
   ]);
-  const ctx = { scheme, pace, calibration };
+
+  const absoluteFit = loadAbsoluteFit();
+  if (independent && !absoluteFit.fitted) {
+    log.err("tick-totals: priceMode is 'independent' but model/absolute-fit.json is missing. " +
+            "Run run/fit-absolute.js -- there is no base total to price from.");
+    return;
+  }
+  if (independent) {
+    log(`tick-totals: INDEPENDENT price mode. base model r2 ${absoluteFit.r2OutOfSample} ` +
+        `out of sample, game sigma ${absoluteFit.gameSigmaOutOfSample} pts ` +
+        `(closing line's own error: ${calibration.sigma} pts)`);
+  }
+  const ctx = { scheme, pace, ratings, absoluteFit, calibration };
 
   const nav = await currentNav(c.botId);
   const weekRow = await q(
@@ -104,7 +126,9 @@ async function main() {
   let weekExposure = Number(weekRow.rows[0].v);
 
   let traded = 0;
+  let dryNotional = 0;
   const forecasts = new Map();
+  const candidates = [];
 
   for (const game of games) {
     const market = {
@@ -125,7 +149,10 @@ async function main() {
     const bySide = { over: books.find((b) => b.side === "over"),
                      under: books.find((b) => b.side === "under") };
 
-    const forecast = await forecastTotal(game, market, bySide, asOf, ctx);
+    // The base model needs this game's expected play count, which is per-matchup
+    // rather than per-slate, so it is computed here and handed down.
+    const gameCtx = { ...ctx, paceDetail: paceSignal(game, pace).detail };
+    const forecast = await forecastTotal(game, market, bySide, asOf, gameCtx);
     const label = `${game.away_team}@${game.home_team} O/U${game.line}`;
 
     if (!forecast || forecast.skip) {
@@ -156,17 +183,59 @@ async function main() {
       continue;
     }
 
-    log(`  TRADE ${label.padEnd(20)} ${decision.side.toUpperCase()} @ ${decision.price.toFixed(2)} ` +
-        `edge ${(decision.edge * 100).toFixed(1)}c size $${decision.notionalUsd.toFixed(2)} ` +
-        `[${decision.pointsVsMarket > 0 ? "+" : ""}${decision.pointsVsMarket} pts vs book]`);
+    // COLLECTED, not funded yet. See the allocation pass below.
+    candidates.push({ game, market, bySide, decision, forecast });
+  }
 
+  // ---- allocation: best edge first ---------------------------------------
+  // The weekly cap is a real constraint -- on the 2026 week-3 slate the slate
+  // wanted 37% of NAV against a 25% cap. Funding in kickoff order means an early
+  // 4-cent edge crowds out a late 16-cent one, which is allocation by accident.
+  // evaluationMode "week" exists precisely so capital can be rationed across a
+  // slate the bot can see all of; this is the part that actually does it.
+  candidates.sort((x, y) => y.decision.edge - x.decision.edge);
+
+  const weekBudget = nav * c.policy.maxWeeklyExposurePctNav;
+  for (const cand of candidates) {
+    const room = Math.max(0, weekBudget - weekExposure);
+    const minOrder = Number(cand.market.min_order_usd) || 0;
+    if (room < Math.max(minOrder, 1)) {
+      await logDecision(c.botId, cand.game, cand.market, cand.forecast,
+                        { acted: false, skip_reason: "exposure_cap", edge: cand.decision.edge }, null);
+      log(`  CUT   ${(cand.game.away_team + "@" + cand.game.home_team).padEnd(20)} ` +
+          `edge ${(cand.decision.edge * 100).toFixed(1)}c -- weekly budget exhausted`);
+      continue;
+    }
+    // Trim the last funded position to the remaining room rather than dropping it.
+    const notional = Math.min(cand.decision.notionalUsd, room);
+    const decision = notional < cand.decision.notionalUsd
+      ? { ...cand.decision, notionalUsd: notional, shares: notional / cand.decision.price }
+      : cand.decision;
+
+    const label = `${cand.game.away_team}@${cand.game.home_team} O/U${cand.game.line}`;
+    log(`  TRADE ${label.padEnd(20)} ${decision.side.toUpperCase()} @ ${decision.price.toFixed(2)} ` +
+        `edge ${(decision.edge * 100).toFixed(1)}c size ${decision.notionalUsd.toFixed(2)}` +
+        (notional < cand.decision.notionalUsd ? " (trimmed to budget)" : "") +
+        ` [${decision.pointsVsMarket > 0 ? "+" : ""}${decision.pointsVsMarket} pts vs book]`);
+
+    traded++;
+    dryNotional += decision.notionalUsd;
+    weekExposure += decision.notionalUsd;
     if (DRY) continue;
-    await openPosition(c, game, market, bySide, decision, forecast, () => weekExposure,
-                       (v) => { weekExposure = v; }, () => { traded++; });
+    await openPosition(c, cand.game, cand.market, cand.bySide, decision, cand.forecast,
+                       () => weekExposure, (v) => { weekExposure = v; }, () => {});
   }
 
   if (!DRY) await manageExits(c.botId, forecasts, now);
-  log(`tick-totals: looked at ${games.length} games, traded ${traded}` + (DRY ? " (DRY RUN)" : ""));
+  // Exposure is reported alongside the count because the count alone hides the
+  // thing that matters: nine trades at the 5%-of-NAV cap is most of the weekly
+  // budget, and a bot that is meant to be selective should not be quietly
+  // spending it.
+  const pctNav = nav > 0 ? (100 * dryNotional / nav).toFixed(1) : "n/a";
+  log(`tick-totals: looked at ${games.length} games, traded ${traded}` +
+      ` (${dryNotional.toFixed(0)} = ${pctNav}% of ${nav.toFixed(0)} NAV,` +
+      ` weekly cap ${(100 * c.policy.maxWeeklyExposurePctNav).toFixed(0)}%)` +
+      (DRY ? " (DRY RUN)" : ""));
 }
 
 /**

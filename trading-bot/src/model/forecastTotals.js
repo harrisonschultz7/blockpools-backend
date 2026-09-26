@@ -39,6 +39,7 @@ const { weatherTotalsSignal } = require("../features/weatherTotals");
 const { schemeSignal } = require("../features/scheme");
 const { paceSignal, restSignal, situationalTotalsSignal } = require("../features/paceTotals");
 const { injuryTotalsSignal } = require("../features/injuryTotals");
+const { baseTotal, absoluteSigma } = require("./absoluteTotals");
 
 const CALIB_PATH = path.join(__dirname, "calibration-totals.json");
 const FACTORS = ["weather", "scheme", "rest", "pace", "injury", "situational"];
@@ -135,13 +136,28 @@ async function forecastTotal(game, market, books, asOf, ctx) {
   if (p_market === null) return { skip: "no_book" };
 
   const line = Number(market.line);
-  const sigma = Number(cal.sigma) || m.sigmaTotalPoints;
+  const independent = m.priceMode === "independent";
 
-  // Invert the price into the market's own expected total. Clamped away from the
-  // tails first: at p 0.995 the inverse normal runs away and a one-cent quoting
-  // artefact would become a 27-point implied total.
+  // sigma is the error of whichever estimate is forming the opinion. In residual
+  // mode that is the closing LINE's error (fitted by calibrateTotals); in
+  // independent mode it is the BASE MODEL's own out-of-sample error. Using the
+  // line's sigma for the bot's own model would overstate its confidence and size
+  // the positions up accordingly.
+  const sigma = independent ? absoluteSigma(ctx) : (Number(cal.sigma) || m.sigmaTotalPoints);
+
+  // The market's implied total. In independent mode this is computed for the LOG
+  // and for the circuit-breaker only -- it is never the thing adjusted.
+  // Clamped away from the tails first: at p 0.995 the inverse normal runs away and
+  // a one-cent quoting artefact becomes a 27-point implied total.
   const pClamped = Math.max(0.02, Math.min(0.98, p_market));
   const implied_mean = line + sigma * normInv(pClamped);
+
+  // INDEPENDENT MODE: the bot's own total, with no market input.
+  let base = null;
+  if (independent) {
+    base = baseTotal(game, ctx);
+    if (base.skip) return { skip: base.skip, detail: base.detail || base };
+  }
 
   const [weather, injury] = await Promise.all([
     weatherTotalsSignal(game, asOf),
@@ -172,17 +188,22 @@ async function forecastTotal(game, market, books, asOf, ctx) {
     const parts = raw[k].parts;
     let scaled = 0;
     const partDetail = {};
+    // INDEPENDENT MODE APPLIES NO SCALE. The scale answers "how much of this is
+    // already in the market price", which is only a meaningful question when the
+    // market price is the thing being adjusted. Here the bot forms its own number
+    // and the factors speak at the weights they were given.
+    const scaleFor = (key) => (independent ? 1 : (cal.scale[key] ?? 0));
     if (parts && Object.keys(parts).length) {
       for (const [name, pts] of Object.entries(parts)) {
         const key = `${k}.${name}`;
-        const sc = cal.scale[key] ?? 0;
+        const sc = scaleFor(key);
         const v = (Number(pts) || 0) * sc;
         partDetail[name] = { points: +(Number(pts) || 0).toFixed(3), scale: +sc.toFixed(3),
                              scaled: +v.toFixed(3) };
         scaled += v;
       }
     } else {
-      const sc = cal.scale[k] ?? 0;
+      const sc = scaleFor(k);
       scaled = raw[k].points * sc;
       partDetail.whole = { points: +raw[k].points.toFixed(3), scale: +sc.toFixed(3),
                            scaled: +scaled.toFixed(3) };
@@ -201,15 +222,40 @@ async function forecastTotal(game, market, books, asOf, ctx) {
   // Weight-weighted average of the factors' own confidence.
   const confidence = FACTORS.reduce((s, k) => s + m.weights[k] * raw[k].confidence, 0);
 
-  const model_mean = implied_mean + pointsDelta;
+  // The bot's total. In independent mode it starts from its OWN base; in residual
+  // mode it starts from the market's implied total.
+  const model_mean = (independent ? base.total : implied_mean) + pointsDelta;
   const p_fair_raw = normCdf((model_mean - line) / sigma);
-
-  // tanh saturation then the hard cap, so an extreme factor bends toward the
-  // limit instead of hitting a wall -- a hard clamp would make every large
-  // signal produce an identical bet.
   const rawDelta = p_fair_raw - p_market;
-  const delta = m.deltaCap * Math.tanh(rawDelta / m.deltaCap) * confidence;
-  const p_fair = Math.max(0.01, Math.min(0.99, p_market + delta));
+
+  let delta, p_fair;
+  if (independent) {
+    // No cap toward the market, because the whole point of this mode is that the
+    // bot's number stands on its own. Confidence still scales the opinion toward
+    // the market when inputs are thin -- a team rated off three games should not
+    // produce a full-conviction price.
+    const blended = p_market + (p_fair_raw - p_market) * confidence;
+    p_fair = Math.max(0.01, Math.min(0.99, blended));
+    delta = p_fair - p_market;
+
+    // CIRCUIT BREAKER, not a muzzle. A gap this large is far more likely to be a
+    // stale rating or an empty book than a real 6-point insight, and in
+    // independent mode there is no anchor to stop it sizing into the error.
+    const gap = Math.abs(model_mean - implied_mean);
+    if (gap > m.absolute.maxPointsVsMarket) {
+      return {
+        skip: "exceeds_market_gap_rail",
+        detail: { model_mean: +model_mean.toFixed(2), implied_mean: +implied_mean.toFixed(2),
+                  gap: +gap.toFixed(2), rail: m.absolute.maxPointsVsMarket },
+      };
+    }
+  } else {
+    // tanh saturation then the hard cap, so an extreme factor bends toward the
+    // limit instead of hitting a wall -- a hard clamp would make every large
+    // signal produce an identical bet.
+    delta = m.deltaCap * Math.tanh(rawDelta / m.deltaCap) * confidence;
+    p_fair = Math.max(0.01, Math.min(0.99, p_market + delta));
+  }
 
   const out = {
     game_id: game.game_id,
@@ -232,6 +278,9 @@ async function forecastTotal(game, market, books, asOf, ctx) {
     f_injury: contrib.injury.weighted,
     f_situational: contrib.situational.weighted,
     inputs: {
+      priceMode: m.priceMode,
+      absolute: independent ? base.detail : null,
+      baseTotal: independent ? +base.total.toFixed(2) : null,
       calibration: { sigma: cal.sigma, scale: cal.scale, fittedAt: cal.fittedAt, n: cal.n },
       contrib,
       // The whole reason a decision can be explained a month later without

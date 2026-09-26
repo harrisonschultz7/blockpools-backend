@@ -398,3 +398,64 @@ enabled bot rather than needing one invocation per config.
   of losing weather unders is a known property of this design.
 - **Zero trades is the expected base rate.** On the 2026 week-3 slate the model
   landed within 0.3 points of the book on all 15 games and traded none.
+
+## Independent price mode (the default)
+
+`model.priceMode` is `independent`. The bot computes its **own** expected total and
+never reads the market price to form a view — the market is only what it trades
+against.
+
+```
+base_total  = expected_points(home) + expected_points(away)   # offence/defence/plays
+model_total = base_total + sum(weight_k * points_k)           # your weights, full strength
+p_fair      = normal_cdf((model_total - line) / sigma)
+```
+
+No factor scales are applied in this mode. "How much has the market already priced
+this" is a question that only means something when you are *adding* to the market's
+number, which is what `residual` mode does. Here every factor speaks at the weight
+it was given.
+
+**The base model** is opponent-adjusted offensive and defensive quality plus
+expected plays — the three biggest effects on points scored, by a wide margin:
+
+| predictor | t |
+|---|---|
+| my offence rating | 13.4 |
+| expected plays | 11.1 |
+| opponent defence rating | 7.1 |
+
+Scheme **style** is deliberately excluded from the base and lives in the scheme
+factor at weight 0.29, so style gets its own voice instead of being buried in a
+coefficient — and so the two cannot count the same thing twice.
+
+**How good it is, measured on 318 held-out games:** 13.075 points of error on a
+game total, against the closing line's 13.069. Out-of-sample r² 0.124. Dead even
+with the market — not better, not worse. That is the honest basis for trading its
+disagreements, and `sigma` is taken from this model's own error rather than the
+line's so the forecast is not overconfident and Kelly sizes accordingly.
+
+**What "equal accuracy but large disagreement" implies.** On the 2026 week-3 slate
+the model differed from the book by 1.5–5.6 points on 9 of 15 games. Two estimators
+of equal accuracy that disagree that much are both making large independent errors,
+so a good share of those disagreements is mutual noise rather than edge. The paper
+record over a season is the thing that settles it, which is what paper mode is for.
+
+**The rail.** `maxPointsVsMarket` (6.0) is a circuit breaker, not a muzzle: a gap
+that large is far likelier to be a stale rating or an empty book than real insight,
+and independent mode has no anchor to stop it sizing into the error. Three week-3
+games hit it.
+
+**Capital is rationed best-edge-first.** The week-3 slate wanted 37% of NAV against
+a 25% weekly cap. Funding in kickoff order let a 4-cent edge crowd out a 16-cent
+one, which is allocation by accident — `evaluationMode: "week"` exists so the slate
+can be seen whole, and the tick now sorts by edge and funds down the list, trimming
+the last position to the remaining budget rather than dropping it.
+
+## The scale floor
+
+`model.calibration.minScale` (0.30) lifts a weak but **correctly signed** factor off
+zero in residual mode, so a factor you believe in still moves the price when the
+regression cannot confirm it. It is deliberately not applied to a wrong-signed
+factor — flooring one of those is betting against the only evidence available,
+which is a different thing from taking risk where there is no evidence.

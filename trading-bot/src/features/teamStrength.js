@@ -25,9 +25,18 @@ const { q } = require("../db");
  * Returns Map<team, { off, def, net, games }>, all in EPA/play units where
  * `off` higher is better and `def` LOWER is better (it is EPA allowed).
  */
-async function solveRatings(asOf) {
+async function solveRatings(asOf, opts) {
   const c = cfg().model.momentum;
-  const { startSeason } = cfg().data;
+  // The lookback is overridable because Argo's absolute model has to price 2022
+  // games during its fit, and data.startSeason (2025) leaves those games with no
+  // ratings at all -- which silently cut the fit sample from 2344 to 540 and left
+  // the training split empty.
+  //
+  // Widening it barely moves a CURRENT rating: the recency weight is
+  // 0.5^(gamesAgo/halfLifeGames), so a game 40 games back carries about 0.001 of
+  // the weight of last week's. The staleness rule that motivated the 2025 cutoff
+  // is already enforced by that decay, not by the window.
+  const startSeason = (opts && opts.fromSeason) || cfg().data.startSeason;
 
   const { rows } = await q(
     `select s.team, s.opponent, s.off_epa_per_play, s.def_epa_per_play, g.kickoff

@@ -176,7 +176,20 @@ async function calibrateTotals({ write = true } = {}) {
       // uses. Most of these betas will not be distinguishable from zero, and the
       // honest response is to trade a fraction rather than all or nothing.
       const keep = (t * t) / (t * t + 1);
-      scale[k] = +(clamped * keep).toFixed(4);
+      let sc = clamped * keep;
+      // THE FLOOR. User decision, 2026-09-26: a factor they believe in should still
+      // move the price when the history cannot confirm it -- the bot is supposed to
+      // take risk, not wait for statistical permission. minScale therefore lifts a
+      // weak-but-correctly-signed factor off zero.
+      //
+      // It is deliberately NOT applied to a wrong-signed factor. Flooring one of
+      // those would mean betting against the only evidence available, which is a
+      // different thing from taking risk where there is no evidence. Note this
+      // only affects RESIDUAL mode; independent mode ignores scales entirely and
+      // every factor already speaks at full weight.
+      const floor = cal.minScale || 0;
+      if (floor > 0 && beta >= 0 && sc < floor) sc = floor;
+      scale[k] = +sc.toFixed(4);
       diagnostics[k] = {
         beta: +beta.toFixed(4), t: +t.toFixed(2), se: +res.se[i + 1].toFixed(4),
         clamped: +clamped.toFixed(4), reliability: +keep.toFixed(4),

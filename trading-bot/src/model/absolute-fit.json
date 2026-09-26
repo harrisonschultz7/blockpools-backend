@@ -1,0 +1,49 @@
+{
+  "fittedAt": "2026-09-26T23:39:56.814Z",
+  "n": 2248,
+  "seasons": [
+    2022,
+    2023,
+    2024,
+    2025,
+    2026
+  ],
+  "holdoutSeasons": [
+    2025,
+    2026
+  ],
+  "coef": {
+    "intercept": -7.33159,
+    "myOffRating": 33.40249,
+    "oppDefRating": 23.56035,
+    "expPlays": 0.46352
+  },
+  "diagnostics": {
+    "intercept": {
+      "beta": -7.33159,
+      "se": 2.68684,
+      "t": -2.73
+    },
+    "myOffRating": {
+      "beta": 33.40249,
+      "se": 2.49399,
+      "t": 13.39
+    },
+    "oppDefRating": {
+      "beta": 23.56035,
+      "se": 3.31502,
+      "t": 7.11
+    },
+    "expPlays": {
+      "beta": 0.46352,
+      "se": 0.04174,
+      "t": 11.1
+    }
+  },
+  "r2InSample": 0.1338,
+  "r2OutOfSample": 0.124,
+  "teamSigmaOutOfSample": 9.416,
+  "gameSigmaOutOfSample": 13.075,
+  "gamesInHoldout": 318,
+  "meanGameBias": 1.357
+}

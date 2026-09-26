@@ -139,7 +139,26 @@
       "ridge": 0.001,
       "maxScale": 1.5,
       "startSeason": 2022,
-      "_comment_window": "startSeason (2022, FTNs first charted season) is the CALIBRATION window and is deliberately wider than data.startSeason (2025). The 2025 cutoff exists because game-to-game team matchups go stale; the calibration measures how much of each factor the closing LINE already contains, which is a property of the market rather than of this years rosters. At 318 games every beta had a standard error about its own size (scheme -1.26, t -1.24, 95% range roughly -3.3 to +0.7), so nothing could be concluded either way. Run run/backfill-history.js to populate it. Forecasting is unaffected: features still gate on data.startSeason."
+      "_comment_window": "startSeason (2022, FTNs first charted season) is the CALIBRATION window and is deliberately wider than data.startSeason (2025). The 2025 cutoff exists because game-to-game team matchups go stale; the calibration measures how much of each factor the closing LINE already contains, which is a property of the market rather than of this years rosters. At 318 games every beta had a standard error about its own size (scheme -1.26, t -1.24, 95% range roughly -3.3 to +0.7), so nothing could be concluded either way. Run run/backfill-history.js to populate it. Forecasting is unaffected: features still gate on data.startSeason.",
+      "minScale": 0.3,
+      "_comment_floor": "minScale lifts a weak but CORRECTLY SIGNED factor off zero so it still moves the price when the regression cannot confirm it -- the bot is meant to take risk rather than wait for statistical permission. Not applied to a wrong-signed factor, which would be betting against the only evidence there is. Residual mode only; independent mode applies no scales at all."
+    },
+    "momentum": {
+      "_comment": "Read by the SHARED features/teamStrength.js solveRatings(). Argo does not have a momentum FACTOR -- these ratings feed the absolute model's base total instead, where opponent-adjusted offence and defence are the structural core (t 13.1 and 6.6 against points scored). Present because a missing block here throws rather than degrading, unlike the injury keys.",
+      "halfLifeGames": 4,
+      "shrinkGames": 6,
+      "ridgeIterations": 12,
+      "minGamesToRate": 3
+    },
+    "priceMode": "independent",
+    "_comment_priceMode": "independent | residual. RESIDUAL is p_fair = market_price + adjustment: the market is the anchor and the calibration exists only to stop a factor being counted twice (once in the anchor, once by us). INDEPENDENT computes the bot's OWN absolute total from offence/defence ratings plus the weighted factors and never reads the market price to form an opinion -- the market is only the thing it trades against. User chose independent on 2026-09-26 after being shown the measured cost, which is recorded here rather than softened: the absolute model's out-of-sample error on a game total is 13.54 points against the closing line's 13.07, so on average it is a slightly worse estimate than the price it is betting against. Factor scales are NOT applied in this mode, because 'how much has the market already priced' is a question that only means something when you are adding to the market's own number.",
+    "absolute": {
+      "_comment": "The independent mode's base total. Offence and defence QUALITY only (opponent-adjusted EPA/play) plus expected plays -- style deliberately excluded here so it cannot be counted twice against the scheme factor, which carries the style terms at its own weight.",
+      "_comment_rail": "maxPointsVsMarket is a CIRCUIT BREAKER, not a muzzle. It exists to catch a broken rating or a stale book producing a 15-point disagreement and a maximum-size bet off it, not to stop the bot disagreeing. Set generously: a 6-point gap is already a very large call, about 0.44 sigma.",
+      "maxPointsVsMarket": 6,
+      "minGamesToPrice": 3,
+      "fitStartSeason": 2022,
+      "useFittedSigma": true
     }
   },
   "policy": {
