@@ -160,6 +160,11 @@ function restSignal(game) {
   return {
     points,
     confidence: 1,
+    // Two sub-terms, calibrated separately. They can genuinely pull against each
+    // other -- a bye-week bonus and a short-week penalty are different claims --
+    // and when they were lumped into one number the combined factor fitted with
+    // the WRONG SIGN. Splitting them says which half, if either, is real.
+    parts: { restSum: parts.restSum, shortWeek: parts.shortWeek },
     detail: { homeRest, awayRest, netSum,
               restSumPoints: +parts.restSum.toFixed(3),
               shortWeekPoints: +parts.shortWeek.toFixed(3),
@@ -190,6 +195,7 @@ function situationalTotalsSignal(game) {
   return {
     points,
     confidence: 1,
+    parts: { division: parts.division || 0, primetime: parts.primetime || 0 },
     detail: { ...parts, divGame: !!game.div_game, isPrimetime, uncapped: +raw.toFixed(3) },
   };
 }

@@ -156,19 +156,44 @@ async function forecastTotal(game, market, books, asOf, ctx) {
     situational: situationalTotalsSignal(game),
   };
 
-  // Weighted, scaled sum. scale_k strips the part the closing line already has.
+  // Weighted, scaled sum. scale strips the part the closing line already has.
+  //
+  // SUB-TERM SCALES WHERE THEY EXIST. Weather, rest and situational report named
+  // parts (wind/cold/precip, restSum/shortWeek, division/primetime) and each gets
+  // its own fitted scale. This is not cosmetic: a single lumped scale can only
+  // answer "is weather, as a bundle, mispriced", so a real wind effect and a
+  // useless cold effect cancel and the factor reads as noise. Rest fitted with the
+  // WRONG SIGN as one number, which is exactly the shape of two sub-terms pulling
+  // against each other. Factors without parts (scheme, pace, injury) fall back to
+  // a single scale keyed on the factor name.
   const contrib = {};
   let pointsDelta = 0;
   for (const k of FACTORS) {
-    const scale = cal.scale[k] ?? 0;
-    const scaled = raw[k].points * scale;
+    const parts = raw[k].parts;
+    let scaled = 0;
+    const partDetail = {};
+    if (parts && Object.keys(parts).length) {
+      for (const [name, pts] of Object.entries(parts)) {
+        const key = `${k}.${name}`;
+        const sc = cal.scale[key] ?? 0;
+        const v = (Number(pts) || 0) * sc;
+        partDetail[name] = { points: +(Number(pts) || 0).toFixed(3), scale: +sc.toFixed(3),
+                             scaled: +v.toFixed(3) };
+        scaled += v;
+      }
+    } else {
+      const sc = cal.scale[k] ?? 0;
+      scaled = raw[k].points * sc;
+      partDetail.whole = { points: +raw[k].points.toFixed(3), scale: +sc.toFixed(3),
+                           scaled: +scaled.toFixed(3) };
+    }
     const weighted = m.weights[k] * scaled;
     contrib[k] = {
       points: +raw[k].points.toFixed(3),
-      scale: +scale.toFixed(3),
       scaled: +scaled.toFixed(3),
       weighted: +weighted.toFixed(3),
       confidence: +raw[k].confidence.toFixed(3),
+      parts: partDetail,
     };
     pointsDelta += weighted;
   }

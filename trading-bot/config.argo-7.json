@@ -137,7 +137,9 @@
       "minGames": 250,
       "minNonZeroGamesPerFactor": 25,
       "ridge": 0.001,
-      "maxScale": 1.5
+      "maxScale": 1.5,
+      "startSeason": 2022,
+      "_comment_window": "startSeason (2022, FTNs first charted season) is the CALIBRATION window and is deliberately wider than data.startSeason (2025). The 2025 cutoff exists because game-to-game team matchups go stale; the calibration measures how much of each factor the closing LINE already contains, which is a property of the market rather than of this years rosters. At 318 games every beta had a standard error about its own size (scheme -1.26, t -1.24, 95% range roughly -3.3 to +0.7), so nothing could be concluded either way. Run run/backfill-history.js to populate it. Forecasting is unaffected: features still gate on data.startSeason."
     }
   },
   "policy": {

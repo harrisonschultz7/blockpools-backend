@@ -138,6 +138,13 @@ async function weatherTotalsSignal(game, asOf) {
   return {
     points,
     confidence,
+    // NAMED SUB-TERMS, calibrated independently. Wind, cold and rain are three
+    // different physical claims, and lumping them into one number means the
+    // regression can only ever answer "is weather, as a bundle, priced?" -- so a
+    // strong wind effect and a useless cold effect cancel and the whole factor
+    // reads as noise. Fitting a scale per sub-term is what lets the model keep
+    // the part that works.
+    parts: { wind: parts.wind, cold: parts.cold, precip: parts.precip },
     detail: {
       roof, wind, temp, precip,
       windPoints: +parts.wind.toFixed(3),

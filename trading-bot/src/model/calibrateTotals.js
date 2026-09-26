@@ -51,8 +51,29 @@ const { CALIB_PATH, FACTORS } = require("./forecastTotals");
  * asOf is the KICKOFF, which is the moment the closing line was struck, so every
  * feature is read as of then and nothing downstream can see the result.
  */
+/**
+ * Flatten one factor's signal into named regressors.
+ *
+ * A factor that reports a parts object is fitted PER SUB-TERM; one that does not is
+ * fitted whole. The distinction is the point of this file's second revision: as a
+ * single lumped number, rest fitted with the wrong sign, which is exactly what two
+ * sub-terms pulling against each other looks like.
+ */
+function flatten(name, sig, into) {
+  if (sig.parts && Object.keys(sig.parts).length) {
+    for (const [k, v] of Object.entries(sig.parts)) into[`${name}.${k}`] = Number(v) || 0;
+  } else {
+    into[name] = Number(sig.points) || 0;
+  }
+  return into;
+}
+
 async function buildSamples() {
   const c = cfg();
+  // The CALIBRATION window, wider than data.startSeason on purpose -- see
+  // run/backfill-history.js. Standard errors were the binding constraint: at 318
+  // games every beta had an SE about its own size.
+  const first = c.model.calibration.startSeason || c.data.startSeason;
   const { rows: games } = await q(
     `select * from sports.nfl_games
       where season >= $1
@@ -60,7 +81,7 @@ async function buildSamples() {
         and home_score is not null and away_score is not null
         and kickoff is not null
       order by kickoff`,
-    [c.data.startSeason],
+    [first],
   );
   log(`calibrate-totals: ${games.length} finished games with a closing total`);
 
@@ -76,7 +97,7 @@ async function buildSamples() {
     const key = `${g.season}-${g.week}`;
     if (key !== ctxKey) {
       schemeCtx = await loadSchemeContext(g.season, g.week);
-      paceCtx = await loadPace(g.kickoff, c.data.startSeason);
+      paceCtx = await loadPace(g.kickoff, first);
       ctxKey = key;
     }
     const asOf = new Date(g.kickoff).toISOString();
@@ -90,14 +111,14 @@ async function buildSamples() {
       game_id: g.game_id, season: g.season, week: g.week,
       y: actual - line,
       line, actual,
-      x: {
-        weather: wx.points,
-        scheme: schemeSignal(g, schemeCtx).points,
-        rest: restSignal(g).points,
-        pace: paceSignal(g, paceCtx).points,
-        injury: injury.points,
-        situational: situationalTotalsSignal(g).points,
-      },
+      x: [
+        ["weather", wx],
+        ["scheme", schemeSignal(g, schemeCtx)],
+        ["rest", restSignal(g)],
+        ["pace", paceSignal(g, paceCtx)],
+        ["injury", injury],
+        ["situational", situationalTotalsSignal(g)],
+      ].reduce((acc, [n, sig]) => flatten(n, sig, acc), {}),
     });
   }
   return samples;
@@ -120,48 +141,46 @@ async function calibrateTotals({ write = true } = {}) {
   const ymean = ys.reduce((a, b) => a + b, 0) / ys.length;
   const sigma = Math.sqrt(ys.reduce((a, b) => a + (b - ymean) ** 2, 0) / (ys.length - 1));
 
-  // Only factors that actually VARY across the sample can be fitted. Weather is
-  // the live risk here: the hinge is zero in most games by design, so if the
-  // sample happens to contain few windy or cold games there is nothing to
-  // regress, and a beta fitted on four games would be noise handed the heaviest
-  // weight in the model.
-  const active = FACTORS.filter((k) => {
-    const nz = samples.filter((s) => Math.abs(s.x[k]) > 1e-6).length;
+  // Only regressors that actually VARY across the sample can be fitted. Weather
+  // sub-terms are the live risk: each hinge is zero in most games by design, so a
+  // sample with few cold games gives nothing to regress on, and a beta fitted on
+  // four games would be noise handed a share of the heaviest weight.
+  const allKeys = [...new Set(samples.flatMap((sm) => Object.keys(sm.x)))].sort();
+  const nonZero = (k) => samples.filter((sm) => Math.abs(sm.x[k] || 0) > 1e-6).length;
+  const active = allKeys.filter((k) => {
+    const nz = nonZero(k);
     if (nz < cal.minNonZeroGamesPerFactor) {
       log.warn(`calibrate-totals: ${k} is non-zero in only ${nz} games ` +
-               `(needs ${cal.minNonZeroGamesPerFactor}) -- scale forced to 0, factor disabled`);
+               `(needs ${cal.minNonZeroGamesPerFactor}) -- scale forced to 0`);
       return false;
     }
     return true;
   });
 
-  const scale = Object.fromEntries(FACTORS.map((k) => [k, 0]));
+  const scale = Object.fromEntries(allKeys.map((k) => [k, 0]));
   let diagnostics = {};
   let r2 = 0;
 
   if (active.length) {
-    const X = samples.map((s) => [1, ...active.map((k) => s.x[k])]);
-    const res = wls(X, samples.map((s) => s.y), samples.map(() => 1), cal.ridge);
+    const X = samples.map((sm) => [1, ...active.map((k) => sm.x[k] || 0)]);
+    const res = wls(X, samples.map((sm) => sm.y), samples.map(() => 1), cal.ridge);
     r2 = res.r2;
     active.forEach((k, i) => {
       const beta = res.beta[i + 1];
       const t = res.t[i + 1];
-      // Clamped to [0, maxScale]. A NEGATIVE beta means the factor points the
+      // Clamped to [0, maxScale]. A NEGATIVE beta means the regressor points the
       // wrong way, and the only safe response is to stop trading it -- amplifying
-      // it in reverse would be fitting the sign off one season.
+      // it in reverse would be fitting a sign off one sample.
       const clamped = Math.max(0, Math.min(cal.maxScale, beta));
-      // Damped by reliability, the same t^2/(t^2+1) shrinkage the scheme fit uses.
-      // With ~300 games and a factor that fires rarely, most of these betas will
-      // be statistically indistinguishable from zero, and the honest response is
-      // to trade a fraction of them rather than all or none.
+      // Damped by reliability, t^2/(t^2+1), the same shrinkage the scheme fit
+      // uses. Most of these betas will not be distinguishable from zero, and the
+      // honest response is to trade a fraction rather than all or nothing.
       const keep = (t * t) / (t * t + 1);
       scale[k] = +(clamped * keep).toFixed(4);
       diagnostics[k] = {
         beta: +beta.toFixed(4), t: +t.toFixed(2), se: +res.se[i + 1].toFixed(4),
         clamped: +clamped.toFixed(4), reliability: +keep.toFixed(4),
-        scale: scale[k],
-        nonZeroGames: samples.filter((s) => Math.abs(s.x[k]) > 1e-6).length,
-        wrongSign: beta < 0,
+        scale: scale[k], nonZeroGames: nonZero(k), wrongSign: beta < 0,
       };
     });
   }
@@ -175,17 +194,18 @@ async function calibrateTotals({ write = true } = {}) {
     r2: +r2.toFixed(4),
     scale,
     diagnostics,
-    disabledFactors: FACTORS.filter((k) => !active.includes(k)),
+    regressors: allKeys,
+    disabledRegressors: allKeys.filter((k) => !active.includes(k)),
   };
 
   if (write) fs.writeFileSync(CALIB_PATH, JSON.stringify(out, null, 2) + "\n");
   log(`calibrate-totals: n=${out.n} sigma=${out.sigma} r2=${out.r2} ` +
       `meanLineError=${out.meanLineError}`);
-  for (const k of FACTORS) {
+  for (const k of allKeys) {
     const d = diagnostics[k];
-    if (!d) { log(`  ${k.padEnd(12)} DISABLED (insufficient variation)`); continue; }
-    log(`  ${k.padEnd(12)} beta ${String(d.beta).padStart(8)}  t ${String(d.t).padStart(6)}  ` +
-        `scale ${String(d.scale).padStart(7)}  nz ${d.nonZeroGames}` +
+    if (!d) { log(`  ${k.padEnd(20)} DISABLED (insufficient variation)`); continue; }
+    log(`  ${k.padEnd(20)} beta ${String(d.beta).padStart(8)}  t ${String(d.t).padStart(6)}  ` +
+        `scale ${String(d.scale).padStart(7)}  nz ${String(d.nonZeroGames).padStart(4)}` +
         (d.wrongSign ? "   <-- WRONG SIGN, zeroed" : ""));
   }
   return out;
