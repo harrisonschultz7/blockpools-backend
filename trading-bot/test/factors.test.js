@@ -70,6 +70,26 @@ t("indoor games are hard-zeroed, not damped", () => {
   }
 });
 
+t("an UNKNOWN roof is unknown, not a dome", () => {
+  // nfl_games.roof is null on 7.5% of 2025+ games. The old code treated every
+  // one as indoors and returned a CONFIDENT zero, so an open-air stadium with a
+  // missing roof value (Maracana in Rio, on the 2026 week-3 slate) was priced as
+  // though weather could not touch it.
+  for (const roof of [null, undefined, "", "unknown"]) {
+    const r = weatherPoints({ roof, wind: 40, temp: 20, precip: 90 });
+    assert.strictEqual(r.points, 0, "unknown roof must not invent a weather number");
+    assert.strictEqual(r.unknownRoof, true, `roof ${JSON.stringify(roof)} should flag unknown`);
+    assert.notStrictEqual(r.indoors, true, "unknown must not be reported as indoors");
+  }
+});
+
+t("known roof values are all recognised", () => {
+  for (const roof of ["outdoors", "open", "dome", "closed"]) {
+    const r = weatherPoints({ roof, wind: 5, temp: 60, precip: 0 });
+    assert.notStrictEqual(r.unknownRoof, true, `${roof} should be recognised`);
+  }
+});
+
 t("weather is one-directional: it can never favour the over", () => {
   for (const wind of [0, 10, 15, 25, 40, 60]) {
     for (const temp of [-20, 10, 32, 70, 95]) {

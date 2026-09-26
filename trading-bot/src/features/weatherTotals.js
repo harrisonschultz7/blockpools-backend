@@ -60,6 +60,18 @@ const hinge = (v, threshold, perUnit) =>
 function weatherPoints({ roof, wind, temp, precip }) {
   const w = cfg().model.weather;
   const r = String(roof || "").toLowerCase();
+  // UNKNOWN IS NOT INDOORS. nfl_games.roof is null on 37 of the 2025+ games
+  // (7.5%), and the old test treated every one of them as a dome -- returning
+  // zero weather with FULL confidence. That is right by luck for a retractable
+  // like Lucas Oil and flatly wrong for Maracana in Rio, an open-air stadium
+  // that was on the 2026 week-3 slate. An unknown roof has to read as unknown so
+  // the policy can decline the game instead of silently discarding the
+  // heaviest-weighted factor.
+  const known = ["outdoors", "open", "dome", "closed"].includes(r);
+  if (!known) {
+    return { points: 0, unknownRoof: true, indoors: false,
+             parts: { wind: 0, cold: 0, precip: 0 } };
+  }
   const outdoors = ["outdoors", "open"].includes(r);
   if (w.requireOutdoors && !outdoors) {
     return { points: 0, indoors: true, parts: { wind: 0, cold: 0, precip: 0 } };
@@ -92,6 +104,13 @@ async function weatherTotalsSignal(game, asOf) {
   const w = cfg().model.weather;
 
   const roof = String(game.roof || "").toLowerCase();
+  if (!["outdoors", "open", "dome", "closed"].includes(roof)) {
+    // Confidence 0, not 1. The difference matters: a confident zero lets the
+    // game trade with no weather input, which for a weather-led model is the
+    // worst of both worlds.
+    return { points: 0, confidence: 0,
+             detail: { roof: game.roof, reason: "unknown roof", stadium: game.stadium } };
+  }
   const outdoors = ["outdoors", "open"].includes(roof);
   if (w.requireOutdoors && !outdoors) {
     return { points: 0, confidence: 1, detail: { roof, indoors: true } };

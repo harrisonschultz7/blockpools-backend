@@ -87,8 +87,11 @@ function decideTotals(args) {
   // legitimately reports confidence 1 and no points for them.
   if (p.requireWeatherForecast) {
     const wx = forecast.inputs && forecast.inputs.detail && forecast.inputs.detail.weather;
-    if (wx && wx.reason === "no forecast recorded") {
-      return skip(SKIP.NO_WEATHER_FORECAST, { roof: wx.roof });
+    // Two distinct ways the weather input can be absent, and both must skip.
+    // "unknown roof" used to be invisible here because the old weather code
+    // returned a CONFIDENT zero for a null roof, so the game looked fully priced.
+    if (wx && (wx.reason === "no forecast recorded" || wx.reason === "unknown roof")) {
+      return skip(SKIP.NO_WEATHER_FORECAST, { roof: wx.roof, reason: wx.reason });
     }
   }
 
