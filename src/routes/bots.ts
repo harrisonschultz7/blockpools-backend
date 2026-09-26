@@ -127,21 +127,19 @@ botsRouter.get("/", async (_req, res) => {
 });
 
 /**
- * Trade-by-trade event log.
+ * Trade log -- ONE ROW PER POSITION, not per event.
  *
- * One bots.trades row is a POSITION, but the page needs EVENTS: a buy, then a
- * sell if it closed. So each row fans out into one or two events, and only the
- * closing event carries a return -- a buy has no return yet, by definition.
+ * An earlier version fanned each position into a BUY row and a SELL row. That
+ * gave one game two lines and split numbers that only mean something together:
+ * an entry price is not interesting on its own, it is interesting next to what
+ * the position closed at.
  *
- * A position closes one of two ways, and both are reported honestly:
- *   - exit_price set  -> the resting sell filled at fair value before kickoff
- *   - settled         -> the game decided it; the share paid 1.00 or 0.00
+ * A position closes one of two ways and both collapse into exitPrice:
+ *   - exit_price set -> the resting sell filled at fair value before kickoff
+ *   - settled        -> the game decided it; the share paid 1.00 or 0.00
  *
- * Every trade appears as soon as it is logged, including positions whose game
- * has not kicked off yet. That is a deliberate reversal: withholding them hid
- * the model's current hand, but it also meant the log looked empty for days at
- * a time and could not serve as a live performance record. An open position
- * simply has no closing event yet, so it shows a BUY with no return.
+ * Still open -> exitPrice, pnlUsd and returnPct are null rather than 0, so the
+ * UI shows a dash instead of implying a flat trade.
  */
 botsRouter.get("/:botId/trades", async (req, res) => {
   try {
@@ -149,7 +147,7 @@ botsRouter.get("/:botId/trades", async (req, res) => {
     const { rows } = await pg.query(
       `select t.id, t.game_id, t.side, t.settled, t.won, t.exited,
               t.fill_price, t.shares, t.notional_usd,
-              t.exit_price, t.exit_at, t.exit_shares, t.exit_reason,
+              t.exit_price, t.exit_at, t.exit_reason,
               t.pnl_usd, t.clv_bps, t.opened_at, t.closed_at,
               g.away_team, g.home_team, g.kickoff, g.week, g.season
          from bots.trades t
@@ -160,63 +158,48 @@ botsRouter.get("/:botId/trades", async (req, res) => {
       [req.params.botId, limit],
     );
 
-    const events: any[] = [];
-    for (const t of rows) {
-      const matchup = `${t.away_team} @ ${t.home_team}`;
-      const team = t.side === "home" ? t.home_team : t.away_team;
-      const base = {
-        tradeId: t.id, gameId: t.game_id, matchup, team, side: t.side,
-        week: t.week, season: t.season, kickoff: t.kickoff,
-      };
+    const trades = rows.map((t: any) => {
+      const entry = Number(t.fill_price);
+      const shares = Number(t.shares);
+      const cost = Number(t.notional_usd);
 
-      events.push({
-        ...base,
-        kind: "BUY",
-        ts: t.opened_at,
-        price: Number(t.fill_price),
-        shares: Number(t.shares),
-        usd: Number(t.notional_usd),
-        // A buy has no return yet. Explicit null so the UI never prints 0.00%.
-        returnUsd: null,
-        returnPct: null,
-        clvBps: t.clv_bps === null ? null : Number(t.clv_bps),
-      });
-
+      let exit: number | null = null;
+      let status = "open";
       if (t.exit_price !== null && t.exit_price !== undefined) {
-        const shares = Number(t.exit_shares || t.shares);
-        const px = Number(t.exit_price);
-        const cost = Number(t.fill_price);
-        events.push({
-          ...base,
-          kind: "SELL",
-          ts: t.exit_at,
-          price: px,
-          shares,
-          usd: shares * px,
-          returnUsd: shares * (px - cost),
-          returnPct: cost > 0 ? ((px - cost) / cost) * 100 : null,
-          reason: t.exit_reason || "sold",
-        });
+        exit = Number(t.exit_price);
+        status = "sold";
       } else if (t.settled) {
-        // Settlement is a sale at 1.00 (won) or 0.00 (lost).
-        const px = t.won ? 1 : 0;
-        const cost = Number(t.fill_price);
-        events.push({
-          ...base,
-          kind: "SELL",
-          ts: t.closed_at,
-          price: px,
-          shares: Number(t.shares),
-          usd: Number(t.shares) * px,
-          returnUsd: Number(t.pnl_usd),
-          returnPct: cost > 0 ? ((px - cost) / cost) * 100 : null,
-          reason: t.won ? "settled_win" : "settled_loss",
-        });
+        exit = t.won ? 1 : 0;
+        status = t.won ? "won" : "lost";
       }
-    }
 
-    events.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
-    res.json({ events });
+      const pnl = exit === null ? null : Number(t.pnl_usd ?? (exit - entry) * shares);
+      const returnPct = exit === null || !entry ? null : ((exit - entry) / entry) * 100;
+
+      return {
+        tradeId: t.id,
+        gameId: t.game_id,
+        matchup: `${t.away_team} @ ${t.home_team}`,
+        team: t.side === "home" ? t.home_team : t.away_team,
+        side: t.side,
+        week: t.week,
+        season: t.season,
+        kickoff: t.kickoff,
+        openedAt: t.opened_at,
+        closedAt: t.closed_at,
+        entryPrice: entry,
+        exitPrice: exit,
+        shares,
+        costUsd: cost,
+        pnlUsd: pnl,
+        returnPct,
+        status,
+        exitReason: t.exit_reason || null,
+        clvBps: t.clv_bps === null ? null : Number(t.clv_bps),
+      };
+    });
+
+    res.json({ trades });
   } catch (e: any) {
     console.error("[bots] trades failed:", e?.message || e);
     res.status(500).json({ error: "bots_trades_unavailable" });
