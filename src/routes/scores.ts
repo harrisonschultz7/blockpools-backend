@@ -603,7 +603,9 @@ async function mergeSoccerTimer(match: any, shape: MatchShape | null, isFinal: b
 
 const _revalidating = new Set<string>();
 
-async function revalidateScoreCache(
+// Exported for routes/scoresTicker.ts, so the ticker heals the cache through
+// exactly the same path a market-page view does.
+export async function revalidateScoreCache(
   league: string,
   teamAName: string,
   teamBName: string,

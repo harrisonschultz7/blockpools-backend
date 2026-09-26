@@ -29,6 +29,7 @@ import tradeAggRoutes from "./routes/tradeAggRoutes";
 
 // ✅ Live scores proxy (Goalserve)
 import scoresRouter from "./routes/scores";
+import scoresTickerRouter from "./routes/scoresTicker";
 
 // ✅ Settlement resolver for the CRE workflow (Goalserve fetch + match server-side,
 //    returns a tiny outcome so the DON never hits its HTTP response-buffer limit)
@@ -157,6 +158,9 @@ export function makeServer() {
 
   // ✅ Live scores proxy — Goalserve
   //   GET /api/scores/live?league=MLB&teamAName=...&teamBName=...&lockTime=...
+  // Slim feed for the home-page ticker. Mounted BEFORE /api/scores so the
+  // more specific path wins.
+  app.use("/api/scores/ticker", scoresTickerRouter);
   app.use("/api/scores", scoresRouter);
 
   // ✅ Standings proxy + background cron — Goalserve
