@@ -1,5 +1,5 @@
 {
-  "fittedAt": "2026-09-27T00:01:34.764Z",
+  "fittedAt": "2026-09-27T00:50:54.441Z",
   "n": 2248,
   "seasons": [
     2022,
@@ -13,31 +13,43 @@
     2026
   ],
   "coef": {
-    "intercept": 22.42548,
-    "myOffRating": 34.09609,
-    "oppDefRating": 22.76364
+    "intercept": 22.42656,
+    "myOffRating": 34.12078,
+    "oppDefRating": 22.51385,
+    "oppPressure": -0.47683,
+    "oppFrontWeight": 0.44324
   },
   "diagnostics": {
     "intercept": {
-      "beta": 22.42548,
-      "se": 0.20099,
-      "t": 111.58
+      "beta": 22.42656,
+      "se": 0.20083,
+      "t": 111.67
     },
     "myOffRating": {
-      "beta": 34.09609,
-      "se": 2.56022,
-      "t": 13.32
+      "beta": 34.12078,
+      "se": 2.56064,
+      "t": 13.33
     },
     "oppDefRating": {
-      "beta": 22.76364,
-      "se": 3.40333,
-      "t": 6.69
+      "beta": 22.51385,
+      "se": 3.40236,
+      "t": 6.62
+    },
+    "oppPressure": {
+      "beta": -0.47683,
+      "se": 0.23714,
+      "t": -2.01
+    },
+    "oppFrontWeight": {
+      "beta": 0.44324,
+      "se": 0.22777,
+      "t": 1.95
     }
   },
-  "r2InSample": 0.0862,
-  "r2OutOfSample": 0.0942,
-  "teamSigmaOutOfSample": 9.575,
-  "gameSigmaOutOfSample": 13.581,
+  "r2InSample": 0.0885,
+  "r2OutOfSample": 0.0969,
+  "teamSigmaOutOfSample": 9.561,
+  "gameSigmaOutOfSample": 13.513,
   "gamesInHoldout": 318,
-  "meanGameBias": 0.027
+  "meanGameBias": 0.033
 }

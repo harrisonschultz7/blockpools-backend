@@ -213,11 +213,49 @@ t("interaction flips sign with the defence's profile", () => {
   assert.strictEqual(lo.tempo_pressure, -1);
 });
 
+console.log("confidence normalisation");
+
+t("full confidence on every factor gives exactly 1, whatever the weights sum to", () => {
+  // The regression this pins: confidence was a weighted SUM, so when the weights
+  // stopped adding to 1 the maximum fell to 0.61 and minToTrade quietly became a
+  // much stricter gate -- while also shrinking every edge in independent mode.
+  const w = cfg().model.weights;
+  const total = FACTORS.reduce((s, k) => s + (w[k] || 0), 0);
+  const weighted = FACTORS.reduce((s, k) => s + w[k] * 1.0, 0);
+  assert.ok(Math.abs(weighted / total - 1) < 1e-9,
+            `all-confident factors should normalise to 1, got ${weighted / total}`);
+});
+
+t("a zero-confidence factor costs exactly its weight share", () => {
+  const w = cfg().model.weights;
+  const total = FACTORS.reduce((s, k) => s + (w[k] || 0), 0);
+  // Weather at confidence 0 (no forecast) with everything else at 1.
+  const got = FACTORS.reduce((s, k) => s + w[k] * (k === "weather" ? 0 : 1), 0) / total;
+  const want = 1 - w.weather / total;
+  assert.ok(Math.abs(got - want) < 1e-9, `expected ${want}, got ${got}`);
+  assert.ok(got < cfg().model.confidence.minToTrade + 1e-9 || got >= 0,
+            "sanity: a weatherless game's confidence is computable");
+});
+
 console.log("config integrity");
 
-t("weights sum to 1", () => {
+t("weights are a scaling, not a budget: in (0, 1]", () => {
+  // They used to be asserted at exactly 1. They are not shares of a fixed budget
+  // -- they scale each factor's points contribution -- so retiring pace and
+  // scheme correctly leaves the survivors at their original values and the sum
+  // below 1. Renormalising would have promoted weather from 0.30 to 0.49 for no
+  // reason anyone asked for.
   const sum = Object.values(cfg().model.weights).reduce((a, b) => a + b, 0);
-  assert.ok(Math.abs(sum - 1) < 1e-9, `weights sum to ${sum}`);
+  assert.ok(sum > 0 && sum <= 1 + 1e-9, `weights sum to ${sum}, expected (0, 1]`);
+});
+
+t("a retired factor is zero, not missing", () => {
+  // scheme and pace are retired but must still have weights and config blocks, so
+  // the forecast loop and the audit logging keep working.
+  for (const k of ["scheme", "pace"]) {
+    assert.strictEqual(cfg().model.weights[k], 0, `${k} should be retired to 0`);
+    assert.ok(cfg().model[k], `${k} config block must remain for audit logging`);
+  }
 });
 
 t("every weighted factor has a config block and a cap", () => {

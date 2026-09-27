@@ -38,6 +38,7 @@ const { q } = require("../db");
 const log = require("../log");
 const { wls } = require("./fitScheme");
 const { solveRatings } = require("../features/teamStrength");
+const { loadSchemeContext } = require("../features/scheme");
 
 const FIT_PATH = path.join(__dirname, "absolute-fit.json");
 // expPlays is GONE, and its removal is the most important line in this file.
@@ -62,7 +63,23 @@ const FIT_PATH = path.join(__dirname, "absolute-fit.json");
 // Snap tempo is not play volume. Total plays depend on drive count, turnovers,
 // penalties and clock management far more than on how fast a team snaps, which is
 // why sec_per_play predicts it no better than a constant does.
-const COLS = ["intercept", "myOffRating", "oppDefRating"];
+// Opponent DEFENSIVE STYLE is in; own offensive style is not. That split is
+// measured, not assumed. Fitting on 2022-24 and scoring on 2025-26:
+//
+//   quality only                     13.581 pts of game error
+//   + opponent defensive style       13.513   <- this variant
+//   + own offensive style as well    13.521   (worse: own style adds nothing)
+//   + the tempo x box interaction    13.527   (worse: interaction adds nothing)
+//   style ONLY, no quality           14.018   and OOS r2 is NEGATIVE
+//
+// The last line is the one to remember: scheme style alone predicts worse than
+// guessing the league average. It is a small correction to quality, never a
+// driver, which is why it belongs here as two terms in the base rather than as a
+// separately weighted factor resting on a noisy per-game EPA target.
+//
+// Pressure lowers the opposing offence's points; a heavier box raises them
+// (a light box means more defenders in coverage).
+const COLS = ["intercept", "myOffRating", "oppDefRating", "oppPressure", "oppFrontWeight"];
 
 /** One observation per (finished game, team). */
 async function buildSamples() {
@@ -85,23 +102,33 @@ async function buildSamples() {
   const samples = [];
   let key = null;
   let ratings = null;
+  let scheme = null;
   for (const r of rows) {
     const k = `${r.season}-${r.week}`;
     if (k !== key) {
-      ratings = await solveRatings(new Date(r.kickoff).toISOString(), { fromSeason: first });
+      [ratings, scheme] = await Promise.all([
+        solveRatings(new Date(r.kickoff).toISOString(), { fromSeason: first }),
+        loadSchemeContext(r.season, r.week, { fromSeason: first }),
+      ]);
       key = k;
     }
     const me = ratings.get(r.team);
     const opp = ratings.get(r.opponent);
     if (!me || !opp) continue;
     if (me.games < minGames || opp.games < minGames) continue;
+    // Style axes are z-scores, so an unrated opponent legitimately reads as
+    // league-average style (0) rather than being dropped -- unlike a missing
+    // QUALITY rating, which has no neutral value and must skip the row.
+    const oppStyle = scheme.traits.get(r.opponent);
+    const pressure = oppStyle ? oppStyle.axes.pressure : 0;
+    const frontWeight = oppStyle ? oppStyle.axes.frontWeight : 0;
     // Only forecastable inputs. See the COLS comment: the realised play count was
     // in here and had to come out, because a model may not be fitted on a variable
     // it will not have at prediction time.
     samples.push({
       season: r.season, week: r.week, game_id: r.game_id, team: r.team,
       y: Number(r.points_for),
-      x: [1, me.off, opp.def],
+      x: [1, me.off, opp.def, pressure, frontWeight],
     });
   }
   return samples;

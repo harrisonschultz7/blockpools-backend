@@ -20,12 +20,12 @@
     "leagueAvgTotal": 45,
     "expectedPlaysPerTeam": 64,
     "weights": {
-      "weather": 0.3333,
-      "scheme": 0.3222,
-      "rest": 0.1667,
+      "weather": 0.3,
+      "scheme": 0,
+      "rest": 0.15,
       "pace": 0,
-      "injury": 0.0889,
-      "situational": 0.0889
+      "injury": 0.08,
+      "situational": 0.08
     },
     "weather": {
       "_comment": "TOP WEIGHT, and a HINGE rather than a slope. A linear wind term is wrong because 8 mph and 3 mph are both no effect, so the term must be flat until the threshold and only then steepen -- which also means this factor contributes NOTHING in most games, and its 0.30 weight bites only on the handful where it matters. Indoor and closed-roof games are hard-zeroed. Forecasts come from sports.nfl_weather, recorded by ingest/weather.js at the time we saw them, never from the nflverse temp/wind columns, which are observed post-hoc and would be a look-ahead leak.",
@@ -160,7 +160,9 @@
       "fitStartSeason": 2022,
       "useFittedSigma": true
     },
-    "_comment_pace_removed": "PACE WEIGHT ZEROED on 2026-09-26, and the other five renormalised to sum to 1. Not because pace is unproven -- because it is conclusively empty. Measured over 318 games: the sec_per_play pace estimate predicts a game's play count with an error SD of 9.9 plays, and guessing the league average scores 9.9 as well. A team's own recent play-count history manages 9.23 against 9.33, which is a 1% improvement, i.e. nothing. Snap tempo is not play volume: total plays depend on drive count, turnovers, penalties and clock management far more than on how fast a team snaps. The same feed also fitted WRONG-SIGNED in the residual calibration (beta -0.21), which is the consistent story rather than a separate problem. Per the user's rule -- act on clean feeds, do not act on feeds producing errors or non-conclusions -- this one is removed rather than floored. The 0.10 was spread proportionally across the remaining five; reassign it deliberately if you would rather it went somewhere specific. Previous weights: {\"weather\":0.3,\"scheme\":0.29,\"rest\":0.15,\"pace\":0.1,\"injury\":0.08,\"situational\":0.08}"
+    "_comment_pace_removed": "PACE WEIGHT ZEROED on 2026-09-26, and the other five renormalised to sum to 1. Not because pace is unproven -- because it is conclusively empty. Measured over 318 games: the sec_per_play pace estimate predicts a game's play count with an error SD of 9.9 plays, and guessing the league average scores 9.9 as well. A team's own recent play-count history manages 9.23 against 9.33, which is a 1% improvement, i.e. nothing. Snap tempo is not play volume: total plays depend on drive count, turnovers, penalties and clock management far more than on how fast a team snaps. The same feed also fitted WRONG-SIGNED in the residual calibration (beta -0.21), which is the consistent story rather than a separate problem. Per the user's rule -- act on clean feeds, do not act on feeds producing errors or non-conclusions -- this one is removed rather than floored. The 0.10 was spread proportionally across the remaining five; reassign it deliberately if you would rather it went somewhere specific. Previous weights: {\"weather\":0.3,\"scheme\":0.29,\"rest\":0.15,\"pace\":0.1,\"injury\":0.08,\"situational\":0.08}",
+    "_comment_weights": "These are the user's ORIGINAL weights for every factor that survived, restored rather than renormalised. They sum to 0.61, not 1, and that is intentional -- the weights are a scaling on the factor adjustments, not shares of a fixed budget, so retiring two factors should make the adjustments smaller rather than promote the survivors. Weather stays at the 0.30 it was given instead of being inflated to 0.49 by arithmetic nobody asked for.",
+    "_comment_scheme_retired": "SCHEME WEIGHT IS 0 because the style effect MOVED INTO THE BASE MODEL, not because it was discarded. model.absolute now carries oppPressure and oppFrontWeight directly (t -2.01 and 1.95), which is measured to be worth 0.068 points of out-of-sample error: 13.581 -> 13.513. The reason it belongs in the base rather than as a weighted factor is the decisive test result -- fitted on 2022-24 and scored on 2025-26, style ALONE has NEGATIVE out-of-sample r2 (-0.006, error 14.018), i.e. worse than guessing the league average. Style is a small correction to quality and cannot drive a price. The old standalone factor also added nothing on top of the base once own-offence style (13.521) and the tempo x box interaction (13.527) were tested -- both worse than style on the defensive side alone. features/scheme.js is still called so its detail is logged for audit; it just contributes 0. Zone-vs-man coverage remains unavailable in any free source and is the only route to making scheme genuinely large."
   },
   "policy": {
     "_comment": "MEDIUM tier, same shape as Adam-7. Two deliberate differences.",

@@ -219,8 +219,20 @@ async function forecastTotal(game, market, books, asOf, ctx) {
     pointsDelta += weighted;
   }
 
-  // Weight-weighted average of the factors' own confidence.
-  const confidence = FACTORS.reduce((s, k) => s + m.weights[k] * raw[k].confidence, 0);
+  // Weight-weighted AVERAGE of the factors' own confidence -- divided by the
+  // weight total, which is the part that was missing.
+  //
+  // It used to be a weighted SUM, which is the same number only while the weights
+  // happen to add to 1. Retiring scheme and pace dropped the total to 0.61, so the
+  // maximum achievable confidence became 0.61 and minToTrade 0.45 silently turned
+  // into "require 74% of maximum" instead of 45%. Worse, in independent mode
+  // confidence also scales the opinion toward the market, so every edge in the
+  // book was being quietly shrunk by 39% as well. A tuning change to the weights
+  // must not move the confidence gate or the position sizes.
+  const weightTotal = FACTORS.reduce((s, k) => s + (m.weights[k] || 0), 0);
+  const confidence = weightTotal > 0
+    ? FACTORS.reduce((s, k) => s + m.weights[k] * raw[k].confidence, 0) / weightTotal
+    : 0;
 
   // The bot's total. In independent mode it starts from its OWN base; in residual
   // mode it starts from the market's implied total.

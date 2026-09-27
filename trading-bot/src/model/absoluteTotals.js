@@ -42,11 +42,18 @@ const { loadAbsoluteFit } = require("./fitAbsolute");
  * reported accuracy flattering because the holdout was scored with a play count the
  * live model never gets.
  */
-function expectedPoints(fit, myRating, oppRating) {
+function expectedPoints(fit, myRating, oppRating, oppStyle) {
   const c = fit.coef;
   return c.intercept
        + c.myOffRating * myRating.off
-       + c.oppDefRating * oppRating.def;
+       + c.oppDefRating * oppRating.def
+       // Opponent defensive STYLE. Two terms, and they are the whole of what the
+       // FTN charting feed contributes to the price. Measured worth: 0.068 points
+       // of out-of-sample error (13.581 -> 13.513). Real, and small -- the axes
+       // are z-scores, so a defence two SDs above average in pressure costs the
+       // offence it faces about a point.
+       + c.oppPressure * oppStyle.pressure
+       + c.oppFrontWeight * oppStyle.frontWeight;
 }
 
 /**
@@ -65,8 +72,20 @@ function baseTotal(game, ctx) {
     return { skip: "ratings_too_thin", homeGames: h.games, awayGames: a.games };
   }
 
-  const homePts = expectedPoints(fit, h, a);
-  const awayPts = expectedPoints(fit, a, h);
+  // Style axes are z-scores centred on the league, so a team with no charted
+  // games reads as average style rather than skipping the game. That is the right
+  // fallback here and the wrong one for a quality rating, which has no neutral
+  // value -- hence the skip above but the zero here.
+  const NEUTRAL = { pressure: 0, frontWeight: 0 };
+  const traits = ctx.scheme && ctx.scheme.traits ? ctx.scheme.traits : new Map();
+  const hStyle = traits.get(game.home_team);
+  const aStyle = traits.get(game.away_team);
+  const homeStyle = hStyle ? hStyle.axes : NEUTRAL;
+  const awayStyle = aStyle ? aStyle.axes : NEUTRAL;
+
+  // Each offence is priced against the OPPOSING defence's style.
+  const homePts = expectedPoints(fit, h, a, awayStyle);
+  const awayPts = expectedPoints(fit, a, h, homeStyle);
   const total = homePts + awayPts;
 
   // Confidence on the thinner rating. A team rated off three games is a guess
@@ -82,6 +101,12 @@ function baseTotal(game, ctx) {
       awayPoints: +awayPts.toFixed(2),
       homeRating: { off: +h.off.toFixed(4), def: +h.def.toFixed(4), games: h.games },
       awayRating: { off: +a.off.toFixed(4), def: +a.def.toFixed(4), games: a.games },
+      homeDefStyle: { pressure: +homeStyle.pressure.toFixed(3),
+                      frontWeight: +homeStyle.frontWeight.toFixed(3),
+                      charted: !!hStyle },
+      awayDefStyle: { pressure: +awayStyle.pressure.toFixed(3),
+                      frontWeight: +awayStyle.frontWeight.toFixed(3),
+                      charted: !!aStyle },
       fit: { r2OutOfSample: fit.r2OutOfSample, gameSigma: fit.gameSigmaOutOfSample },
     },
   };
