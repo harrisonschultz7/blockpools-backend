@@ -113,6 +113,139 @@ async function settleTrades() {
   return rows.length;
 }
 
+/**
+ * Book one exchange-resolved trade: settle it, retire its resting exit, and mark
+ * the market closed. Returns 1 if it settled, 0 if it was left alone.
+ */
+async function applyResolution(t, won) {
+  // CROSS-CHECK against the box score when we happen to have one. The two should
+  // never disagree; if they do, the safe move is to settle nothing and say so,
+  // because one of the two feeds is wrong and guessing which would be a coin flip
+  // applied to real ledger rows.
+  if (t.home_score !== null && t.away_score !== null && t.line !== null) {
+    const total = Number(t.home_score) + Number(t.away_score);
+    const byScore = t.side === "over" ? total > Number(t.line) : total < Number(t.line);
+    if (byScore !== won) {
+      log.err(
+        `SETTLEMENT MISMATCH ${t.game_id} ${t.side} ${t.line}: exchange says ` +
+        `${won ? "won" : "lost"}, box score (${total}) says ` +
+        `${byScore ? "won" : "lost"} -- left unsettled for review`);
+      return 0;
+    }
+  }
+
+  const { rows } = await q(
+    `update bots.trades
+        set settled = true, won = $2, closed_at = now(),
+            pnl_usd = case when $2 then shares - notional_usd
+                           else -notional_usd end
+      where id = $1 and settled = false
+      returning pnl_usd`,
+    [t.id, won],
+  );
+  if (!rows.length) return 0;   // something else settled it first
+
+  // The resting sell has nothing left to sell into.
+  await q(
+    `update bots.limit_orders
+        set status = 'cancelled', closed_reason = 'market_resolved', updated_at = now()
+      where trade_id = $1 and status = 'open'`,
+    [t.id],
+  );
+
+  // MARK THE MARKET CLOSED. Nothing else ever does: the markets ingest queries
+  // Gamma with closed=false, so a market that closes simply drops out of the feed
+  // and its row keeps closed=false forever. That left the recorder polling a dead
+  // token every 20s for 404s, and made the market_closed guard in manageExits
+  // unreachable. This only retires markets we actually held.
+  await q(
+    `update sports.pm_totals_markets set closed = true where condition_id = $1`,
+    [t.condition_id],
+  );
+
+  log(`    RESOLVED ${t.game_id} ${t.side} ${t.line} -> ` +
+      `${won ? "WON" : "LOST"} pnl ${Number(rows[0].pnl_usd).toFixed(2)}`);
+  return 1;
+}
+/** Resolution as the exchange itself reports it. null = not resolved yet. */
+async function marketResolution(conditionId) {
+  const res = await fetch(`https://clob.polymarket.com/markets/${conditionId}`);
+  if (!res.ok) return null;
+  const m = await res.json();
+  if (!m || !m.closed || !Array.isArray(m.tokens)) return null;
+  // `closed` alone is not resolution -- a market can close before the oracle
+  // reports. A winner must actually be named.
+  if (!m.tokens.some((t) => t.winner === true)) return null;
+  return m.tokens;
+}
+
+/**
+ * Settle from the EXCHANGE'S resolution rather than from a box score.
+ *
+ * settleTrades() waits on sports.nfl_games.home_score, which comes from nflverse
+ * and lags the final whistle by hours. Polymarket resolves far sooner, and once it
+ * has, the position is worth exactly 0 or 1 and nothing about it is open any more.
+ * CIN @ PIT sat showing as an open position with a live mark long after the market
+ * had paid out and the token had stopped existing -- the book 404s, so even the
+ * mark was stale. A resolved loss should read as a loss.
+ *
+ * Matched on token_id, never on the outcome string. Our token either won or it did
+ * not; parsing "Over"/"Under" back into a side would reintroduce exactly the kind
+ * of string-matching that mis-settled a shared-mascot market once already.
+ */
+async function settleFromMarkets() {
+  const { rows: pending } = await q(
+    `select t.id, t.bot_id, t.condition_id, t.token_id, t.shares, t.notional_usd,
+            t.game_id, t.side, t.line, g.kickoff, g.home_score, g.away_score
+       from bots.trades t
+       join sports.nfl_games g on g.game_id = t.game_id
+      where t.settled = false
+        and t.exited = false
+        and t.condition_id is not null
+        -- KICKOFF + 2h FLOOR. A market reporting a winner before the game can
+        -- plausibly have finished is a bad feed, not a result: a stale settler
+        -- once resolved four pre-kickoff markets against the previous day's
+        -- scores. Anything earlier than this is reported and left alone.
+        and g.kickoff < now() - interval '2 hours'`,
+  );
+  if (!pending.length) return 0;
+
+  // One fetch per market, not per trade.
+  const byCondition = new Map();
+  for (const t of pending) {
+    if (!byCondition.has(t.condition_id)) byCondition.set(t.condition_id, []);
+    byCondition.get(t.condition_id).push(t);
+  }
+
+  let settled = 0;
+  for (const [conditionId, trades] of byCondition) {
+    let tokens;
+    try { tokens = await marketResolution(conditionId); }
+    catch (e) { log.warn(`resolution fetch failed ${conditionId}: ${e.message}`); continue; }
+    if (!tokens) continue;
+
+    for (const t of trades) {
+      const tok = tokens.find((x) => String(x.token_id) === String(t.token_id));
+      if (!tok) {
+        log.warn(`resolved market ${conditionId} has no token ${t.token_id}; left open`);
+        continue;
+      }
+      const won = tok.winner === true;
+      settled += await applyResolution(t, won);
+    }
+  }
+
+  if (settled) {
+    await q(
+      `delete from bots.positions p
+        where not exists (
+          select 1 from bots.trades t
+           where t.bot_id = p.bot_id and t.token_id = p.token_id
+             and t.settled = false)`,
+    );
+  }
+  return settled;
+}
 /** Headline record for the homepage card, computed from NAV and CLV. */
 async function botSummary(botId) {
   const { rows } = await q(
@@ -141,4 +274,4 @@ async function botSummary(botId) {
   };
 }
 
-module.exports = { gradeClv, settleTrades, botSummary };
+module.exports = { gradeClv, settleTrades, settleFromMarkets, botSummary };

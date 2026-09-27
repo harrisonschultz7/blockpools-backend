@@ -17,7 +17,7 @@ const { selectConfig } = require("../src/config");
 const { ingestAll } = require("../src/ingest/nflverse");
 const { ingestWeather } = require("../src/ingest/weather");
 const { ingestFtnAll } = require("../src/ingest/ftn");
-const { gradeClv, settleTrades, botSummary } = require("../src/accounting/settle");
+const { gradeClv, settleTrades, settleFromMarkets, botSummary } = require("../src/accounting/settle");
 const { snapshotNav, pruneNavIntraday } = require("../src/accounting/nav");
 const { applyRiskTiers } = require("../src/accounting/riskTier");
 const { q, close } = require("../src/db");
@@ -48,6 +48,7 @@ async function main() {
 
   await gradeClv();       // freeze closing prices for kicked-off games
   await settleTrades();   // pay out finished games
+  await settleFromMarkets();  // and any the exchange resolved before the box score landed
 
   const { rows: bots } = await q(`select id, name from bots.bot where enabled order by id`);
   if (!bots.length) { log("daily: no enabled bots registered yet"); return; }

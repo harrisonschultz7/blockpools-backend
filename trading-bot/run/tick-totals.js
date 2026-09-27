@@ -26,7 +26,7 @@ const { decideTotals } = require("../src/policy/totals");
 const { executePaper } = require("../src/exec/paper");
 const { manageExits, createExitOrder } = require("../src/exec/limits");
 const { currentNav, snapshotNav, snapshotNavIntraday } = require("../src/accounting/nav");
-const { gradeClv, settleTrades } = require("../src/accounting/settle");
+const { gradeClv, settleTrades, settleFromMarkets } = require("../src/accounting/settle");
 
 const DRY = process.argv.includes("--dry");
 // --window-hours widens the window for a DRY run only, so a full slate can be
@@ -254,6 +254,12 @@ async function main() {
     try {
       await gradeClv();
       await settleTrades();
+      // Box score first, exchange second: when nflverse has posted a final,
+      // settleTrades() has already booked it and this finds nothing. It exists
+      // for the hours in between, where the market has paid out but the score
+      // feed has not caught up and the position would otherwise still read as
+      // open with a mark against a token that no longer trades.
+      await settleFromMarkets();
       await snapshotNav(c.botId);
       // And an intraday point, so the chart has shape between daily closes
       // rather than stepping once at midnight.
