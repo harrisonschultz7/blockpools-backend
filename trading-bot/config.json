@@ -1,27 +1,24 @@
 {
   "_comment": "NFL trading bot v1. ONE bot, medium risk, PRE-GAME ONLY, PAPER fills. Every tuned number lives here; feature code reads it and hardcodes nothing. Edits apply on the next tick (config is re-read each loop).",
-
   "botId": "adam-7",
   "botName": "Adam-7",
   "league": "NFL",
   "riskTier": "medium",
   "mode": "paper",
   "modelVersion": "delta-v1",
-
   "data": {
     "_comment": "startSeason gates EVERY historical read. 2025 = user decision: game-to-game matchups older than that are considered stale. NOTE this leaves ~317 games to fit 4 factor weights, so CLV error bars will be wide -- treat early results as directional. replacementBaselineStartSeason is split out because what a backup QB costs you is stable across eras; widen it alone if the injury factor looks noisy.",
     "startSeason": 2025,
     "replacementBaselineStartSeason": 2025
   },
-
   "model": {
     "_comment": "RESIDUAL model. The market price is the ANCHOR, not a weighted factor -- blending p_market as a factor alongside team strength would double-count, because the market price already contains team strength. The model forecasts only the DEVIATION from the market. deltaCap is therefore the real 'how much may the bot disagree with the public' knob.",
     "deltaCap": 0.12,
     "weights": {
-      "momentum": 0.30,
+      "momentum": 0.3,
       "matchup": 0.25,
       "injury": 0.25,
-      "situational": 0.20
+      "situational": 0.2
     },
     "momentum": {
       "_comment": "Opponent-adjusted EPA/play, exponentially recency-weighted. halfLifeGames=4 means a game 4 weeks ago counts half as much as last week. shrinkGames damps teams with few games on record (week 1-3 of a season).",
@@ -40,31 +37,31 @@
       "_comment": "BASELINED, not raw player value. Penalty = player marginal value x (1 - demonstrated replacement quality). The Rams played exactly ONE 2025 game without Nacua, so 'they cope fine' rests on a single game -- shrinkGamesWithout forces that estimate back toward league-average positional replacement until the sample earns its way out. Without this the bot chases noise every week.",
       "shrinkGamesWithout": 4,
       "defaultReplacementQuality": 0.5,
-      "replacementScaleEpa": 0.20,
+      "replacementScaleEpa": 0.2,
       "positionValue": {
-        "QB": 1.00,
+        "QB": 1,
         "WR": 0.22,
         "RB": 0.12,
         "TE": 0.14,
         "OT": 0.18,
-        "OG": 0.10,
+        "OG": 0.1,
         "C": 0.12,
-        "EDGE": 0.20,
-        "DE": 0.20,
+        "EDGE": 0.2,
+        "DE": 0.2,
         "DT": 0.14,
-        "LB": 0.10,
+        "LB": 0.1,
         "CB": 0.18,
         "S": 0.12,
         "K": 0.04,
         "default": 0.08
       },
       "statusMultiplier": {
-        "Out": 1.0,
+        "Out": 1,
         "Doubtful": 0.75,
         "Questionable": 0.25,
-        "inactive": 1.0
+        "inactive": 1
       },
-      "maxProbSwing": 0.10
+      "maxProbSwing": 0.1
     },
     "situational": {
       "_comment": "Slowest factors for casual money to price. Values are probability points applied to the HOME side. Weather only applies when roof is outdoors/open.",
@@ -82,9 +79,15 @@
       "_comment": "Scales delta down when inputs are thin (early season, missing injury report, stale book). A low-confidence game is skipped rather than traded small.",
       "minToTrade": 0.45,
       "staleBookSeconds": 900
+    },
+    "risk": {
+      "_comment": "Inputs to the DERIVED risk tier (src/accounting/riskTier.js). The tier itself is not set here -- a bot that could name its own tier could label itself anything, so the bands live in the module.",
+      "_comment_correlation": "concurrentCorrelation is the correlation between positions held AT THE SAME TIME. Measured at -0.007 for NFL totals within a week over 2022-2026, i.e. none: games do not share a scoring environment in any detectable way, which was the opposite of what was expected. Clamped to 0 here. A PROPS bot must raise this -- same-game legs key off one game script, and at rho 0.6 with 5 legs the volatility is 1.86x the independent case, so leaving it at 0 would badly understate one.",
+      "concurrentCorrelation": 0,
+      "observedLookbackDays": 90,
+      "minDaysForObservedBasis": 28
     }
   },
-
   "policy": {
     "_comment_slippage": "maxSlippageCents, not bps, on purpose: these books tick in whole cents, so at a 0.30 price ONE tick is already 333bps. A percentage cap silently prevents the filler from ever walking past the top level, which looks like a tight risk control and is actually a broken one. Cents are the natural unit of an absolute-tick market.",
     "_comment_window": "evaluationMode=week evaluates the whole upcoming NFL week as one slate, rather than a rolling 72h window. The window version could only see 1 of Week 3s 16 games at a time, which also made the weekly exposure cap meaningless -- it cannot ration capital across a slate it cannot see. openWindowHoursBeforeKickoff still acts as an outer bound.",
@@ -110,14 +113,12 @@
     "openWindowHoursBeforeKickoff": 192,
     "closeWindowMinutesBeforeKickoff": 10
   },
-
   "paper": {
     "_comment": "Paper fills walk the recorded book: consume ask levels until the order is filled, average the price, and record any unfilled remainder honestly. Polymarket's ~$1 minimum order is why cent-sized real orders are not an option -- size here is notional, and the same sizing math carries over unchanged when mode flips to live.",
     "startingNavUsd": 10000,
     "walkRealDepth": true,
     "assumeTakerFeeBps": 0
   },
-
   "ingest": {
     "_comment": "bookPollSeconds is the depth recorder cadence. Historical book depth cannot be backfilled from anywhere, so this job must run continuously from day one. recordWindowHours is deliberately MUCH wider than policy.openWindowHoursBeforeKickoff: we record every book we can reach, but only trade inside the tighter window. Recording is free and unrepeatable; trading early is neither.",
     "pmNflTagId": 450,
@@ -128,5 +129,6 @@
     "nflverseRefreshHours": 6,
     "weatherRefreshHours": 6,
     "bookLevelsStored": 10
-  }
+  },
+  "_comment_riskTier": "riskTier below is a SEED only. run/risk-tier.js derives the live value from the sizing policy and the prices actually traded, and writes bots.bot.risk_tier. Editing it here does not change what users see."
 }

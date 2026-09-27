@@ -506,3 +506,62 @@ MIN@TB went from being cut for budget to the top trade.
 predictive of points scored and both available before kickoff: opponent-adjusted
 offensive rating (t 13.3) and opponent defensive rating (t 6.7). Mean game bias is
 0.027 points, so there is no standing over or under tilt.
+
+## Risk tier is derived, not declared
+
+`bots.bot.risk_tier` is computed by `run/risk-tier.js`, not typed into a config.
+The `riskTier` string still in each config is a seed for the first insert and
+nothing reads it afterwards.
+
+The audience is a copy-trader deciding how much of their own money to put behind
+a bot, so the tier describes **how much of the portfolio is exposed** — never the
+bot's record or its claimed edge. A bot cannot improve its tier by asserting
+skill, and the tier does not move when a few bets land.
+
+```
+risk-adjusted capital at risk = basis × mean sqrt((1-p)/p) × sqrt(1 + ρ(n-1))
+```
+
+| tier | risk-adjusted capital at risk |
+|---|---|
+| Low | < 10% |
+| Medium | 10 – 20% |
+| High | ≥ 20% |
+
+**Basis** is the 90th percentile of daily exposure once there are 28 days of
+`nav_history` — the p90 rather than the mean, so a bot that is usually light and
+occasionally heavy is rated on its heavy weeks. Until then it falls back to the
+configured cap, which is the conservative reading: a bot sitting at 2% under a
+25% cap can reach 25% at any time. Both are always reported.
+
+**The price term** exists because capital at risk is the *maximum* loss, which is
+genuinely price-independent, but the *frequency* of losing it is not. Simulated
+at a constant 25% of NAV per week over 13 weeks at zero edge, the 95th-percentile
+drawdown runs from 91% at a price of 0.10 to 25% at 0.90 — a 3.6× spread at
+identical "capital at risk". `sqrt((1-p)/p)` is 1.0 at a coin flip, so it changes
+nothing for a bot trading near 0.50 and correctly penalises a longshot book.
+Checked against the simulation rather than assumed: p 0.25 at 25%/wk matches
+p 0.50 at 40%/wk (formula 1.73×, observed 1.6×), and p 0.75 at 25%/wk matches
+p 0.50 at 15%/wk (formula 0.58×, observed 0.60×).
+
+**The correlation term** only ever penalises. It does *not* divide by √n, which
+would credit a bot for diversification — spreading the same 25% over more games
+does reduce variance, but the 25% is still the money at risk, and a tier that got
+friendlier the more bets a bot placed would reward churn. Measured at **−0.007**
+for NFL totals within a week (2022–2026): games do not share a scoring
+environment in any detectable way, which was the opposite of what was expected.
+**A props bot must set `model.risk.concurrentCorrelation`** — same-game legs key
+off one game script, and at ρ=0.6 with 5 legs the volatility is 1.86× the
+independent case (formula predicted 1.84×).
+
+### Both bots currently read HIGH, and Adam-7's is worth a look
+
+Argo-7 is unambiguous: it has 25% of NAV open right now against a 25% cap.
+
+Adam-7 reads HIGH on its **cap**, but its observed p90 exposure is **1.9%** — the
+cap is set about 13× above anything the bot has ever used. That is a config
+honesty problem rather than a formula problem, and it resolves one of two ways:
+lower `maxWeeklyExposurePctNav` to match what the policy actually does (it would
+then read Low), or leave it and accept HIGH, because a bot permitted to deploy
+25% genuinely can. It will switch to the observed basis automatically once it has
+28 days of `nav_history`.
