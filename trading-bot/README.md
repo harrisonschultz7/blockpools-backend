@@ -514,54 +514,72 @@ The `riskTier` string still in each config is a seed for the first insert and
 nothing reads it afterwards.
 
 The audience is a copy-trader deciding how much of their own money to put behind
-a bot, so the tier describes **how much of the portfolio is exposed** — never the
-bot's record or its claimed edge. A bot cannot improve its tier by asserting
-skill, and the tier does not move when a few bets land.
+a bot, so the tier describes **exposure** — never the bot's record or its claimed
+edge. A bot cannot improve its tier by asserting skill, and the tier does not
+move when a few bets land.
 
 ```
-risk-adjusted capital at risk = basis × mean sqrt((1-p)/p) × sqrt(1 + ρ(n-1))
+risk score = weeklyTurnover × priceFactor × exitFactor × corrFactor
 ```
 
-| tier | risk-adjusted capital at risk |
+| tier | risk score |
 |---|---|
 | Low | < 10% |
 | Medium | 10 – 20% |
 | High | ≥ 20% |
 
-**Basis** is the 90th percentile of daily exposure once there are 28 days of
-`nav_history` — the p90 rather than the mean, so a bot that is usually light and
-occasionally heavy is rated on its heavy weeks. Until then it falls back to the
-configured cap, which is the conservative reading: a bot sitting at 2% under a
-25% cap can reach 25% at any time. Both are always reported.
+**1. weeklyTurnover — cumulative notional opened per 7 days, over NAV.** Not
+concurrent exposure, which flatters a fast sport: an NFL position is held for a
+week so the two coincide, while an NBA bot recycling the same 25% every day
+carries 125% through the week at an identical concurrent reading. Measured as the
+p90 across weeks once there are 4 weeks of history; until then it falls back to
+`cap × roundsPerWeek`. **A daily-sport bot must set `model.risk.roundsPerWeek`**
+or it will be rated as though it traded once a week.
 
-**The price term** exists because capital at risk is the *maximum* loss, which is
-genuinely price-independent, but the *frequency* of losing it is not. Simulated
-at a constant 25% of NAV per week over 13 weeks at zero edge, the 95th-percentile
-drawdown runs from 91% at a price of 0.10 to 25% at 0.90 — a 3.6× spread at
-identical "capital at risk". `sqrt((1-p)/p)` is 1.0 at a coin flip, so it changes
-nothing for a bot trading near 0.50 and correctly penalises a longshot book.
-Checked against the simulation rather than assumed: p 0.25 at 25%/wk matches
-p 0.50 at 40%/wk (formula 1.73×, observed 1.6×), and p 0.75 at 25%/wk matches
-p 0.50 at 15%/wk (formula 0.58×, observed 0.60×).
+**2. exitFactor — how far a position must travel to be realised.** A resting sell
+at T on a position bought at p has
 
-**The correlation term** only ever penalises. It does *not* divide by √n, which
-would credit a bot for diversification — spreading the same 25% over more games
-does reduce variance, but the 25% is still the money at risk, and a tier that got
-friendlier the more bets a bot placed would reward churn. Measured at **−0.007**
-for NFL totals within a week (2022–2026): games do not share a scoring
-environment in any detectable way, which was the opposite of what was expected.
-**A props bot must set `model.risk.concurrentCorrelation`** — same-game legs key
-off one game script, and at ρ=0.6 with 5 legs the volatility is 1.86× the
-independent case (formula predicted 1.84×).
+```
+Var(exit) / Var(hold to settlement) = (T − p) / (1 − p)
+```
 
-### Both bots currently read HIGH, and Adam-7's is worth a look
+which is exactly *volatility premium over full upside*. It is exact, not an
+approximation: a binary can only resolve at $1 by passing **through** T, so never
+touching T means it settles at 0. Confirmed by simulating the price path —
+formula 0.220 against 0.221 simulated at p 0.50, T 0.61. A bot selling 11c above
+entry therefore carries **22% of the variance** of the same bot holding to
+settlement. Measured from the bot's own resting sells, because the configured
+alpha is a target and the fills are what happened. **No resting exits gives 1.0**
+— holding to settlement really is the riskiest way to run the same position.
 
-Argo-7 is unambiguous: it has 25% of NAV open right now against a 25% cap.
+**3. priceFactor — sqrt((1−p)/p).** Capital at risk is the *maximum* loss and that
+is genuinely price-independent, but the *frequency* of losing it is not: at a
+constant 25% of NAV per week over 13 weeks at zero edge, the 95th-percentile
+drawdown runs 91% at a price of 0.10 to 25% at 0.90. It is 1.0 at a coin flip.
 
-Adam-7 reads HIGH on its **cap**, but its observed p90 exposure is **1.9%** — the
-cap is set about 13× above anything the bot has ever used. That is a config
-honesty problem rather than a formula problem, and it resolves one of two ways:
-lower `maxWeeklyExposurePctNav` to match what the policy actually does (it would
-then read Low), or leave it and accept HIGH, because a bot permitted to deploy
-25% genuinely can. It will switch to the observed basis automatically once it has
-28 days of `nav_history`.
+**4. corrFactor — sqrt(1 + ρ(n−1)), and it only ever penalises.** It does not
+divide by √n, which would credit diversification: the money at risk is the money
+at risk, and a tier that got friendlier the more bets a bot placed would reward
+churn. Measured at **−0.007** for NFL totals within a week (2022–2026) — games do
+not share a scoring environment in any detectable way, the opposite of what was
+expected. **A props bot must set `model.risk.concurrentCorrelation`**; same-game
+legs key off one game script, and ρ=0.6 with 5 legs is 1.86× the independent
+volatility.
+
+### Where the bots land, and whether the scale has room
+
+| scenario | turnover | price | exit | corr | score | tier |
+|---|---|---|---|---|---|---|
+| Adam-7, NFL moneyline, tight exits | 25% | 1.08 | 0.33 | 1.00 | 8.9% | **Low** |
+| Argo-7, NFL totals, limit exits | 25% | 1.01 | 0.61 | 1.00 | 15.4% | **Medium** |
+| the same NFL bot holding to settlement | 25% | 1.01 | 1.00 | 1.00 | 25.3% | High |
+| NBA totals, 4 rounds/wk, limit exits | 100% | 1.01 | 0.61 | 1.00 | 61.6% | High |
+| NFL props, 5 legs at ρ 0.6 | 25% | 1.20 | 0.61 | 1.84 | 33.7% | High |
+| NBA longshot book, holds, 4 rounds | 100% | 2.00 | 1.00 | 1.00 | 200% | High |
+
+**Known limitation: the High band is very wide.** An NBA bot at 62% and a longshot
+book at 200% both read "High", which is true but not useful to someone choosing
+between them. Once the multi-sport bots exist this probably wants a fourth band —
+something like High 20–50% and Very High above — but splitting it now would be
+guessing at where those bots actually land.
+

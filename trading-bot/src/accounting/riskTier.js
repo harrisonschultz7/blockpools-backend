@@ -9,7 +9,10 @@
 // A bot cannot improve its tier by claiming an edge, and the tier does not flap
 // around when a few bets land.
 //
-//   risk-adjusted capital at risk = weeklyCap x meanSqrtOdds x corrFactor
+//   risk score = weeklyTurnover x priceFactor x exitFactor x corrFactor
+//
+// TWO PRIMARY DRIVERS, per the user: how much of the portfolio is put at risk,
+// and how far a position has to travel before it is realised.
 //
 // THE BANDS (set by the user, 2026-09-27):
 //   Low     < 10%
@@ -19,27 +22,43 @@
 // Bands live HERE, not in each bot's config. A bot that could define its own
 // bands could label itself anything.
 //
-// WHY THE PRICE TERM. Capital at risk is the MAXIMUM loss, and that part really
-// is price-independent -- you can only lose the stake. But the FREQUENCY of
-// losing it is not. Simulated at a constant 25% of NAV per week over 13 weeks,
-// zero edge, the 95th-percentile drawdown runs from 91% at a price of 0.10 to
-// 25% at 0.90: a 3.6x spread at identical "capital at risk". sqrt((1-p)/p)
-// normalises that, and it is 1.0 at a coin flip, so it changes nothing for a bot
-// trading near 0.50 and correctly penalises a longshot book.
+// 1. weeklyTurnover -- CUMULATIVE notional opened per 7 days, over NAV. Not
+//    concurrent exposure, which is what this used to measure and which quietly
+//    flatters a fast sport: an NFL position is held for a week, so concurrent and
+//    weekly are the same number, while an NBA bot recycling the same 25% every
+//    day carries 125% of NAV through the week at an identical concurrent
+//    reading. Turnover captures frequency and size in one figure and is
+//    comparable across sports, which is the point.
 //
-// Checked against simulation rather than assumed:
-//   p 0.25 at 25%/wk  ~  p 0.50 at 40%/wk   (formula 1.73x, observed 1.6x)
-//   p 0.75 at 25%/wk  ~  p 0.50 at 15%/wk   (formula 0.58x, observed 0.60x)
+// 2. exitFactor -- how far the position must travel to be realised. A resting
+//    sell at T on a position bought at p has
 //
-// WHY THE CORRELATION TERM, and why it only ever penalises. Concurrent positions
-// that share an outcome driver are one bet wearing several hats -- five props on
-// one game key off a single game script. sqrt(1 + rho(n-1)) predicted 1.84x the
-// volatility at rho 0.6 with 5 legs; simulation gave 1.86x.
+//      Var(exit) / Var(hold to settlement) = (T - p) / (1 - p)
 //
-// It does NOT divide by sqrt(n), which would credit a bot for diversification.
-// That is deliberate and it is the user's call: spreading the same 25% over more
-// games does reduce variance, but the 25% is still the money at risk, and a tier
-// that got friendlier the more bets a bot placed would reward churn.
+//    which is exactly "volatility premium over full upside". It is exact rather
+//    than an approximation: a binary can only resolve at 1 by passing THROUGH T,
+//    so never touching T means it settles at 0. Confirmed by simulating the price
+//    path -- formula 0.220 against 0.221 simulated at p 0.50, T 0.61.
+//
+//    So a bot that sells 11c above entry carries 22% of the variance of the same
+//    bot holding to settlement. A bot with no resting exits gets 1.0 and is rated
+//    as the full binary it is.
+//
+// 3. priceFactor -- sqrt((1-p)/p). Capital at risk is the MAXIMUM loss and that
+//    really is price-independent, but the FREQUENCY of losing it is not. At a
+//    constant 25% of NAV per week over 13 weeks at zero edge, the 95th-percentile
+//    drawdown runs from 91% at a price of 0.10 to 25% at 0.90. This is 1.0 at a
+//    coin flip, so it changes nothing for a bot trading near 0.50.
+//
+// 4. corrFactor -- sqrt(1 + rho(n-1)), and it ONLY ever penalises. It does not
+//    divide by sqrt(n), which would credit diversification: the money at risk is
+//    the money at risk, and a tier that got friendlier the more bets a bot placed
+//    would reward churn. Measured at -0.007 for NFL totals within a week, i.e.
+//    none. A PROPS bot must set it -- same-game legs share one game script.
+//
+// The tier never reads the bot's record or its claimed edge. A bot cannot
+// improve its tier by asserting skill, and the tier does not move when a few
+// bets land.
 
 const { q } = require("../db");
 const log = require("../log");
@@ -96,25 +115,95 @@ async function priceProfile(botId, marketType) {
   return { prices: [0.5], source: "DEFAULT 0.50 -- no price data", n: 0 };
 }
 
-/** Daily exposure the bot has actually carried, from bots.nav_history. */
-async function observedExposure(botId, lookbackDays) {
+/**
+ * CUMULATIVE notional opened per 7 days, as a fraction of NAV.
+ *
+ * Deliberately not concurrent exposure. An NFL position is held for a week, so
+ * the two coincide; a daily sport recycling the same 25% every day carries far
+ * more through the week at the same concurrent reading. Returned as the p90
+ * rather than the mean, so a bot that is usually light and occasionally heavy is
+ * rated on its heavy weeks.
+ */
+async function weeklyTurnover(botId, lookbackDays) {
   const { rows } = await q(
-    `select (position_value_usd / nullif(nav_usd, 0))::float8 AS e
-       from bots.nav_history
-      where bot_id = $1 and d > current_date - $2::int
-        and nav_usd > 0
-      order by d`,
-    [botId, lookbackDays],
+    `with weeks as (
+       select date_trunc('week', opened_at) AS wk,
+              sum(notional_usd)             AS deployed
+         from bots.trades
+        where bot_id = $1 and opened_at > now() - ($2 || ' days')::interval
+        group by 1
+     )
+     select w.wk, w.deployed,
+            (select n.nav_usd from bots.nav_history n
+              where n.bot_id = $1 and n.d <= w.wk::date
+              order by n.d desc limit 1) AS nav
+       from weeks w order by w.wk`,
+    [botId, String(lookbackDays)],
   );
-  const xs = rows.map((r) => Number(r.e)).filter(Number.isFinite);
-  if (!xs.length) return { days: 0, p90: null, max: null, mean: null };
+  const { rows: startRows } = await q(
+    `select starting_nav from bots.bot where id = $1`, [botId]);
+  const startNav = startRows.length ? Number(startRows[0].starting_nav) : 0;
+
+  const xs = rows
+    .map((r) => {
+      const nav = Number(r.nav) || startNav;
+      return nav > 0 ? Number(r.deployed) / nav : null;
+    })
+    .filter((x) => x !== null && Number.isFinite(x));
+  if (!xs.length) return { weeks: 0, p90: null, mean: null, max: null };
   const sorted = [...xs].sort((a, b) => a - b);
   return {
-    days: xs.length,
+    weeks: xs.length,
     p90: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))],
-    max: sorted[sorted.length - 1],
     mean: xs.reduce((a, b) => a + b, 0) / xs.length,
+    max: sorted[sorted.length - 1],
   };
+}
+
+/**
+ * How far a position has to travel before it is realised, as an SD multiplier.
+ *
+ *   sqrt((T - p) / (1 - p))
+ *
+ * 1.0 means hold-to-settlement -- the full binary. Measured from the bot's own
+ * resting sells where it has them, because the configured alpha is a target and
+ * the fills are what happened.
+ *
+ * A bot with NO resting exits gets 1.0 and is rated as the full binary it is.
+ * That is the honest default: holding to settlement really is the riskiest way
+ * to run the same position.
+ */
+async function exitFactor(botId, cfg) {
+  const { rows } = await q(
+    `select t.fill_price AS entry, o.limit_price AS target
+       from bots.limit_orders o
+       join bots.trades t on t.id = o.trade_id
+      where o.bot_id = $1 and o.action = 'SELL'
+        and t.fill_price is not null and o.limit_price is not null`,
+    [botId],
+  );
+  if (!rows.length) {
+    const restsExits = cfg?.policy?.exitAtFairValue === true;
+    return {
+      factor: 1,
+      source: restsExits
+        ? "no resting sells recorded yet -- rated as hold-to-settlement"
+        : "holds to settlement (policy.exitAtFairValue is off)",
+      n: 0,
+    };
+  }
+  const ratios = rows
+    .map((r) => {
+      const entry = Number(r.entry);
+      const target = Math.min(0.999, Number(r.target));
+      if (!(entry > 0) || target <= entry) return null;
+      return Math.sqrt((target - entry) / (1 - entry));
+    })
+    .filter((x) => x !== null && Number.isFinite(x));
+  if (!ratios.length) return { factor: 1, source: "no usable exit prices", n: 0 };
+  const f = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+  // Cannot exceed 1: selling at or above $1 is holding to settlement.
+  return { factor: Math.min(1, f), source: `${ratios.length} resting sells`, n: ratios.length };
 }
 
 /**
@@ -147,13 +236,24 @@ async function computeRiskTier(botId) {
   const legs = Math.max(1, Math.round(weeklyCap / perPosition));
 
   const obsWindow = Number(cfg?.model?.risk?.observedLookbackDays) || 90;
-  const minDays = Number(cfg?.model?.risk?.minDaysForObservedBasis) || 28;
-  const observed = await observedExposure(botId, obsWindow);
-  const useObserved = observed.days >= minDays && observed.p90 !== null;
-  const basisPct = useObserved ? observed.p90 : weeklyCap;
+  const minWeeks = Number(cfg?.model?.risk?.minWeeksForObservedBasis) || 4;
+
+  const turn = await weeklyTurnover(botId, obsWindow);
+  const useObserved = turn.weeks >= minWeeks && turn.p90 !== null;
+
+  // FALLBACK when a bot is too new to measure. The cap is CONCURRENT exposure, so
+  // for a sport that settles more than once a week it understates the weekly
+  // turnover -- roundsPerWeek is how many times the book realistically recycles.
+  // NFL is 1. A daily sport must say so, or it will be rated as though it traded
+  // once a week.
+  const roundsPerWeek = Math.max(1, Number(cfg?.model?.risk?.roundsPerWeek) || 1);
+  const basisPct = useObserved ? turn.p90 : weeklyCap * roundsPerWeek;
   const basis = useObserved
-    ? `observed p90 over ${observed.days} days`
-    : `configured cap (only ${observed.days} days of history, need ${minDays})`;
+    ? `observed p90 weekly turnover over ${turn.weeks} weeks`
+    : `cap ${(100 * weeklyCap).toFixed(0)}% x ${roundsPerWeek} round(s)/wk ` +
+      `(only ${turn.weeks} weeks of history, need ${minWeeks})`;
+
+  const exit = await exitFactor(botId, cfg);
 
   const prof = await priceProfile(botId, marketType);
   const meanSqrtOdds = prof.prices.reduce((s, p) => s + sqrtOdds(p), 0) / prof.prices.length;
@@ -166,8 +266,8 @@ async function computeRiskTier(botId) {
   const rho = Math.max(0, Number(cfg?.model?.risk?.concurrentCorrelation) || 0);
   const corrFactor = rho > 0 ? Math.sqrt(1 + rho * (legs - 1)) : 1;
 
-  const rcar = basisPct * meanSqrtOdds * corrFactor;
-  const tier = tierFor(rcar);
+  const score = basisPct * meanSqrtOdds * exit.factor * corrFactor;
+  const tier = tierFor(score);
 
   // What the bot has actually had at stake, for comparison with the permission.
   const { rows: obs } = await q(
@@ -180,24 +280,26 @@ async function computeRiskTier(botId) {
 
   return {
     botId, name: b.name, tier,
-    riskAdjustedCapitalAtRisk: +rcar.toFixed(4),
+    riskScore: +score.toFixed(4),
     basis,
     basisPctNav: +basisPct.toFixed(4),
-    observedDays: observed.days,
-    observedP90PctNav: observed.p90 === null ? null : +observed.p90.toFixed(4),
-    observedMeanPctNav: observed.mean === null ? null : +observed.mean.toFixed(4),
+    observedWeeks: turn.weeks,
+    observedP90Turnover: turn.p90 === null ? null : +turn.p90.toFixed(4),
+    observedMeanTurnover: turn.mean === null ? null : +turn.mean.toFixed(4),
     weeklyCapPctNav: weeklyCap,
+    roundsPerWeek,
     maxPositionPctNav: perPosition,
     concurrentLegs: legs,
-    meanSqrtOdds: +meanSqrtOdds.toFixed(4),
+    priceFactor: +meanSqrtOdds.toFixed(4),
     priceSource: prof.source,
-    priceSampleN: prof.n,
+    exitFactor: +exit.factor.toFixed(4),
+    exitSource: exit.source,
     assumedCorrelation: rho,
     correlationFactor: +corrFactor.toFixed(4),
-    observedOpenPctNav: +observedPct.toFixed(4),
     bands: BANDS.map((x) => ({ tier: x.tier, max: x.max })),
   };
 }
+
 
 /** Compute and persist for every enabled bot. */
 async function applyRiskTiers({ write = true } = {}) {
@@ -216,4 +318,7 @@ async function applyRiskTiers({ write = true } = {}) {
   return out;
 }
 
-module.exports = { computeRiskTier, applyRiskTiers, tierFor, sqrtOdds, BANDS };
+module.exports = {
+  computeRiskTier, applyRiskTiers, tierFor, sqrtOdds,
+  weeklyTurnover, exitFactor, BANDS,
+};

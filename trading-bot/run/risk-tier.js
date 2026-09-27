@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // trading-bot/run/risk-tier.js
 //
-// Recomputes every enabled bot's risk tier from its sizing policy and the prices
-// it trades, and writes it to bots.bot.risk_tier.
+// Recomputes every enabled bot's risk tier and writes bots.bot.risk_tier.
 //
 // The tier used to be a string typed into each config, which could drift from
 // what the bot actually does and could not be compared across bots. It is now
-// derived -- see src/accounting/riskTier.js for the formula and the simulations
-// the price and correlation terms were checked against.
+// derived from two primary drivers -- how much of the portfolio is put at risk
+// per week, and how far a position must travel before it is realised. See
+// src/accounting/riskTier.js for the formula and the simulations each term was
+// checked against.
 //
 //   node trading-bot/run/risk-tier.js [--dry]
 
@@ -19,19 +20,18 @@ const DRY = process.argv.includes("--dry");
 
 applyRiskTiers({ write: !DRY })
   .then((rows) => {
-    log(`risk tiers${DRY ? " (DRY RUN)" : ""}:`);
+    log(`risk tiers${DRY ? " (DRY RUN)" : ""}   [low <10% | medium 10-20% | high 20%+]`);
     for (const r of rows) {
-      log(`  ${r.name.padEnd(8)} ${r.tier.toUpperCase().padEnd(7)} ` +
-          `risk-adj capital at risk ${(100 * r.riskAdjustedCapitalAtRisk).toFixed(1)}%` +
-          `  = ${(100 * r.basisPctNav).toFixed(1)}%` +
-          ` x price ${r.meanSqrtOdds.toFixed(2)}` +
+      log(`  ${r.name.padEnd(8)} ${r.tier.toUpperCase().padEnd(7)} score ` +
+          `${(100 * r.riskScore).toFixed(1)}%  =  turnover ${(100 * r.basisPctNav).toFixed(1)}%` +
+          ` x price ${r.priceFactor.toFixed(2)}` +
+          ` x exit ${r.exitFactor.toFixed(2)}` +
           ` x corr ${r.correlationFactor.toFixed(2)}` +
           (r.changed ? `   [was ${r.previousTier}]` : ""));
-      log(`           basis: ${r.basis}`);
-      log(`           cap ${(100 * r.weeklyCapPctNav).toFixed(0)}% | observed p90 ` +
-          `${r.observedP90PctNav === null ? "n/a" : (100 * r.observedP90PctNav).toFixed(1) + "%"}` +
-          ` | open right now ${(100 * r.observedOpenPctNav).toFixed(1)}%` +
-          ` | prices from ${r.priceSource}`);
+      log(`           turnover basis: ${r.basis}`);
+      log(`           exit factor from ${r.exitSource}` +
+          ` (1.00 would mean holding to settlement)`);
+      log(`           prices from ${r.priceSource}`);
     }
     return close();
   })

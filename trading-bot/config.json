@@ -85,7 +85,9 @@
       "_comment_correlation": "concurrentCorrelation is the correlation between positions held AT THE SAME TIME. Measured at -0.007 for NFL totals within a week over 2022-2026, i.e. none: games do not share a scoring environment in any detectable way, which was the opposite of what was expected. Clamped to 0 here. A PROPS bot must raise this -- same-game legs key off one game script, and at rho 0.6 with 5 legs the volatility is 1.86x the independent case, so leaving it at 0 would badly understate one.",
       "concurrentCorrelation": 0,
       "observedLookbackDays": 90,
-      "minDaysForObservedBasis": 28
+      "roundsPerWeek": 1,
+      "_comment_rounds": "How many times the book realistically recycles in a week. Used ONLY in the fallback, before there is enough history to measure turnover directly. NFL is 1 -- one slate, positions held through it. An NBA/NHL/EPL bot MUST raise this (4-6): the weekly cap is CONCURRENT exposure, so a bot recycling the same 25% daily carries far more through the week and would otherwise be rated as though it traded once.",
+      "minWeeksForObservedBasis": 4
     }
   },
   "policy": {
