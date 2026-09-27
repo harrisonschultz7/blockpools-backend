@@ -146,6 +146,7 @@ botsRouter.get("/:botId/trades", async (req, res) => {
     const limit = Math.min(200, Number(req.query.limit) || 50);
     const { rows } = await pg.query(
       `select t.id, t.game_id, t.side, t.settled, t.won, t.exited,
+              t.market_type, t.line,
               t.fill_price, t.shares, t.notional_usd,
               t.exit_price, t.exit_at, t.exit_reason,
               t.pnl_usd, t.clv_bps, t.opened_at, t.closed_at,
@@ -176,11 +177,30 @@ botsRouter.get("/:botId/trades", async (req, res) => {
       const pnl = exit === null ? null : Number(t.pnl_usd ?? (exit - entry) * shares);
       const returnPct = exit === null || !entry ? null : ((exit - entry) / entry) * 100;
 
+      // WHAT THE POSITION ACTUALLY IS, per market type.
+      //
+      // `team` used to be the only description, computed as
+      // `side === "home" ? home_team : away_team`. For a totals trade side is
+      // "over" or "under", so it fell through to the AWAY team -- an Argo-7 bet
+      // on Over 46.5 in NE @ JAX rendered as "NE", which does not merely read as
+      // unclear, it reads as a moneyline bet on New England.
+      const isTotals = t.market_type === "totals";
+      const line = t.line === null || t.line === undefined ? null : Number(t.line);
+      const position = isTotals
+        ? `${t.side === "over" ? "Over" : "Under"}${line === null ? "" : " " + line}`
+        : (t.side === "home" ? t.home_team : t.away_team);
+
       return {
         tradeId: t.id,
         gameId: t.game_id,
         matchup: `${t.away_team} @ ${t.home_team}`,
-        team: t.side === "home" ? t.home_team : t.away_team,
+        marketType: t.market_type || "moneyline",
+        line,
+        // The label to show. Never a team code for a totals position.
+        position,
+        // Kept for the moneyline bots, and deliberately NULL for totals so that
+        // nothing downstream can render a team code for an over/under position.
+        team: isTotals ? null : (t.side === "home" ? t.home_team : t.away_team),
         side: t.side,
         week: t.week,
         season: t.season,
