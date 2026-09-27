@@ -161,7 +161,9 @@ async function main() {
       log(`  SKIP  ${label.padEnd(20)} ${why}`);
       continue;
     }
-    forecasts.set(game.game_id, forecast);
+    // Keyed by the MARKET this forecast is for. A forecast for Over-41.5 must
+    // never be used to reprice a resting order on Over-42.5.
+    forecasts.set(game.condition_id, forecast);
 
     const existing = await q(
       `select 1 from bots.positions

@@ -240,7 +240,16 @@ async function manageExits(botId, forecasts, now) {
     // signal, and moving the order on it would mostly be chasing the price.
     // The bot sets its price before kickoff and then lets it ride.
     if (!inPlay) {
-      const f = forecasts.get(o.game_id);
+      // KEYED BY MARKET FIRST. A game has one moneyline but dozens of totals
+      // lines, and which line is "deepest" MOVES as liquidity shifts -- observed
+      // live on deploy day, where PHI@CHI's deepest line went from 42.5 to 41.5
+      // between two ticks 20 minutes apart. Looking the forecast up by game_id
+      // then repriced a resting sell on the Over-42.5 token using p_fair for
+      // Over-41.5, which is a strictly higher probability: the exit target would
+      // be set too high and the position would sit unfilled when it should have
+      // sold. The game_id fallback keeps Adam-7 working, where one market per
+      // game makes game_id unambiguous and condition_id is null on its orders.
+      const f = forecasts.get(o.condition_id) || forecasts.get(o.game_id);
       if (f) {
         const target = exitPriceFor(f, o.side);
         // 1c deadband so a stable fair causes no churn.
