@@ -10,6 +10,7 @@
 const { cfg, ENV } = require("../config");
 const { getJson } = require("../http");
 const { q, bulkInsert } = require("../db");
+const { writeBooks } = require("./bookWriter");
 const log = require("../log");
 
 const GAME_SLUG = /^nfl-([a-z]{2,4})-([a-z]{2,4})-(\d{4})-(\d{2})-(\d{2})$/;
@@ -259,16 +260,10 @@ async function recordBooks() {
     }
   }
 
-  if (out.length) {
-    await bulkInsert(
-      "sports.odds_history",
-      ["condition_id", "token_id", "game_id", "side", "mid", "best_bid",
-       "best_ask", "spread", "bid_depth_usd", "ask_depth_usd", "bids", "asks"],
-      out,
-    );
-  }
-  log(`books: ${out.length} snapshots across ${markets.length} markets`);
-  return out.length;
+  // writeBooks skips a snapshot identical to the one already stored -- see
+  // ingest/bookWriter.js. Polling is unchanged; only the writing is conditional.
+  const res = await writeBooks(out, `books (${markets.length} markets)`);
+  return res.written;
 }
 
 /** Latest recorded book for one game side -- what the bot prices against. */

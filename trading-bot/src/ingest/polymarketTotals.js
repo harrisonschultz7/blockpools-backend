@@ -29,6 +29,7 @@
 const { cfg, ENV } = require("../config");
 const { getJson } = require("../http");
 const { q, bulkInsert } = require("../db");
+const { writeBooks } = require("./bookWriter");
 const log = require("../log");
 const { toNflverse, parsePmTime, parseJsonField, normaliseBook, fetchBook } = require("./polymarket");
 
@@ -223,17 +224,9 @@ async function recordTotalsBooks() {
     }
   }
 
-  if (out.length) {
-    await bulkInsert(
-      "sports.odds_history",
-      ["condition_id", "token_id", "game_id", "side", "mid", "best_bid",
-       "best_ask", "spread", "bid_depth_usd", "ask_depth_usd", "bids", "asks"],
-      out,
-    );
-  }
   const games = new Set(markets.map((m) => m.game_id)).size;
-  log(`totals books: ${out.length} snapshots across ${markets.length} lines / ${games} games`);
-  return out.length;
+  const res = await writeBooks(out, `totals books (${markets.length} lines / ${games} games)`);
+  return res.written;
 }
 
 /**

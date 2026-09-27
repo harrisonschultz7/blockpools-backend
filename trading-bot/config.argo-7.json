@@ -213,13 +213,15 @@
     "_comment_recorder": "totalsLinesRecordedPerGame is the single most important number in this block. There are 2028 open NFL totals markets, so recording every one would be 4056 book calls per poll. Only the top few lines per game by liquidity are recorded -- the bot trades the deepest, and the neighbours are kept so a later version can compare lines without having lost the history. Historical depth cannot be backfilled from anywhere at any price, so an unrecorded line is gone for good.",
     "_comment_ftn_lag": "FTN charting lags the schedule. On 2026-09-26 the 2026 file held weeks 1-2 complete and one week-3 game. The scheme factor must therefore lean on the prior season for most of the first half of the year, which is what data.schemePriorSeason is for.",
     "pmNflTagId": 450,
-    "totalsLinesRecordedPerGame": 3,
+    "totalsLinesRecordedPerGame": 1,
     "recordWindowHours": 120,
     "bookPollSeconds": 60,
     "bookPollSecondsNearKickoff": 20,
     "nearKickoffHours": 6,
     "ftnRefreshHours": 12,
-    "bookLevelsStored": 10
+    "bookLevelsStored": 5,
+    "bookHeartbeatSeconds": 600,
+    "_comment_footprint": "STORAGE. Measured 2026-09-27: sports.odds_history had reached 448 MB of a 782 MB database, 57% of everything, on a 500 MB plan -- 195,662 rows and 129 MB in a single day once the totals recorder joined the moneyline one, against 34 rows the day before. Three changes, none of which reduce what the bot can see: bookHeartbeatSeconds makes an unchanged book cost one row per 10 minutes instead of ten (42% of consecutive snapshots were byte-identical); bookLevelsStored 10 -> 5 roughly halves the row, and 5 levels is far more than a $500 position can walk; totalsLinesRecordedPerGame 3 -> 1 records only the line actually traded. The neighbouring lines were kept for a future version that does not exist yet, at triple the cost of the one that does."
   },
   "marketScopeLabel": "Game totals",
   "description": "A proprietary BlockPools prediction model focused on NFL game totals at medium risk. It builds its own expected total from each offence and defence, then trades only where the market disagrees enough to be worth acting on.",
