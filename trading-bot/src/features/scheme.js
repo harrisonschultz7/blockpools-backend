@@ -80,6 +80,15 @@ function coachingChanges(season) {
 // denominator, so a team with 40 neutral snaps on the season is pulled most of
 // the way to average instead of being read as a strong tendency.
 
+// Which keys in the counts payload belong to the DEFENSIVE side. Everything else
+// describes what the team did with the ball. Kept as an explicit set rather than a
+// prefix test because rushers_sum / box_sum / heavy_box_n are defensive without
+// carrying a def_ prefix, and a prefix test would silently misfile them.
+const DEF_COUNT_KEYS = new Set([
+  "def_plays", "def_dropbacks", "blitz_n",
+  "rushers_sum", "rushers_n", "box_sum", "box_n", "heavy_box_n",
+]);
+
 const RATE_SPECS = {
   // key              numerator      denominator
   motion:    ["motion_n",    "off_plays"],
@@ -134,16 +143,33 @@ async function loadSchemeProfiles(season, week, opts) {
   for (const r of rows) {
     const isPrior = r.season < season;
     const change = changes.teams[r.team];
-    // A team that changed its staff has no usable prior-season scheme. Dropping
-    // the rows sends it to the league average via shrinkage, which is the
-    // honest position: we do not know what they run yet.
-    if (isPrior && change && sc.coachingChangeResetToLeagueAvg) continue;
+
+    // PER SIDE, not per team. A team that changed its staff has no usable
+    // prior-season scheme -- but the two sides of the ball change independently,
+    // and dropping both when only one turned over throws away good data. Buffalo
+    // 2026 is the case that forced this: McDermott was fired but Joe Brady was
+    // promoted from offensive coordinator, so the offence carries over and the
+    // defence does not. Since variant B only the DEFENSIVE terms reach the price,
+    // so resetting Buffalo's offence too would have cost sample for nothing.
+    //
+    // A truthy value with no off/def keys means "both", which keeps any older,
+    // simpler file working.
+    const reset = isPrior && change && sc.coachingChangeResetToLeagueAvg
+      ? (typeof change === "object" && (("off" in change) || ("def" in change))
+          ? { off: !!change.off, def: !!change.def }
+          : { off: true, def: true })
+      : { off: false, def: false };
+    if (reset.off && reset.def) continue;
 
     const w = isPrior ? sc.priorSeasonWeight : 1;
     const c = typeof r.counts === "string" ? JSON.parse(r.counts) : r.counts;
     if (!pooled.has(r.team)) pooled.set(r.team, { games: 0, priorGames: 0 });
     const p = pooled.get(r.team);
     for (const [k, v] of Object.entries(c)) {
+      // Counts are named off_* / def_* (plus the shared offensive ones). Skip the
+      // side whose scheme discontinued so it shrinks to the league average.
+      if (reset.def && DEF_COUNT_KEYS.has(k)) continue;
+      if (reset.off && !DEF_COUNT_KEYS.has(k)) continue;
       p[k] = (p[k] || 0) + (Number(v) || 0) * w;
     }
     p.games += w;
@@ -355,5 +381,5 @@ function schemeSignal(game, ctx) {
 module.exports = {
   loadSchemeContext, loadSchemeProfiles, schemeSignal, interactionTerms,
   leagueRates, leagueSpread, shrunkRates, traitAxes, loadFit, coachingChanges,
-  RATE_SPECS, MEAN_SPECS, FIT_PATH,
+  RATE_SPECS, MEAN_SPECS, DEF_COUNT_KEYS, FIT_PATH,
 };
