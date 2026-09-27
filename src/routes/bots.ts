@@ -152,8 +152,9 @@ botsRouter.get("/", async (_req, res) => {
         },
         // Today's point is replaced with the live NAV below, so the curve does
         // not flatten between daily runs.
-        navSeries: buildNavSeries(navRows, intraRows, nav).map((r: any) => ({
+        navSeries: buildNavSeries(navRows, intraRows, nav).map((r) => ({
           d: r.d,
+          nav: r.nav_usd,
         })),
         createdAt: b.created_at,
       });
@@ -197,7 +198,13 @@ botsRouter.get("/", async (_req, res) => {
  * last recorded point to the right edge while the ROI beside it reads something
  * else, which is what made this page look frozen in the first place.
  */
-function buildNavSeries(navRows: any[], intraRows: any[], liveNav: number) {
+type NavPoint = { d: string; nav_usd: number; open_positions: number };
+
+function buildNavSeries(
+  navRows: any[],
+  intraRows: any[],
+  liveNav: number,
+): NavPoint[] {
   const iso = (v: any) =>
     v instanceof Date ? v.toISOString() : new Date(v).toISOString();
   const day = (v: any) =>
