@@ -34,17 +34,19 @@ const { loadAbsoluteFit } = require("./fitAbsolute");
 /**
  * Expected points for one team, from the fitted base model.
  *
- * playsPerTeam comes from the PACE estimate, because the realised play count is
- * not knowable before kickoff. The fit used realised plays, so this is the one
- * place the forecast is working with a noisier input than the fit had -- which is
- * a reason the coefficient is modest and not a reason to drop the term.
+ * NO PLAY-COUNT TERM. It used to be here and it had to go: the fit used realised
+ * plays (t 11.1) while the forecast could only supply a pace estimate, and that
+ * estimate was measured against 318 games at an error SD of 9.9 plays versus 9.9
+ * for guessing the league average -- no information at all. It was contributing
+ * 24% of the bot's disagreement with the market out of pure noise, and it made the
+ * reported accuracy flattering because the holdout was scored with a play count the
+ * live model never gets.
  */
-function expectedPoints(fit, myRating, oppRating, playsPerTeam) {
+function expectedPoints(fit, myRating, oppRating) {
   const c = fit.coef;
   return c.intercept
        + c.myOffRating * myRating.off
-       + c.oppDefRating * oppRating.def
-       + c.expPlays * playsPerTeam;
+       + c.oppDefRating * oppRating.def;
 }
 
 /**
@@ -63,16 +65,8 @@ function baseTotal(game, ctx) {
     return { skip: "ratings_too_thin", homeGames: h.games, awayGames: a.games };
   }
 
-  // Expected plays from pace. paceSignal already computes the game total; the base
-  // model is per team, so it is halved.
-  const pace = ctx.pace && ctx.paceDetail ? ctx.paceDetail : null;
-  const totalPlays = pace && Number.isFinite(pace.expectedPlays)
-    ? pace.expectedPlays
-    : cfg().model.expectedPlaysPerTeam * 2;
-  const playsPerTeam = totalPlays / 2;
-
-  const homePts = expectedPoints(fit, h, a, playsPerTeam);
-  const awayPts = expectedPoints(fit, a, h, playsPerTeam);
+  const homePts = expectedPoints(fit, h, a);
+  const awayPts = expectedPoints(fit, a, h);
   const total = homePts + awayPts;
 
   // Confidence on the thinner rating. A team rated off three games is a guess
@@ -86,7 +80,6 @@ function baseTotal(game, ctx) {
     detail: {
       homePoints: +homePts.toFixed(2),
       awayPoints: +awayPts.toFixed(2),
-      playsPerTeam: +playsPerTeam.toFixed(1),
       homeRating: { off: +h.off.toFixed(4), def: +h.def.toFixed(4), games: h.games },
       awayRating: { off: +a.off.toFixed(4), def: +a.def.toFixed(4), games: a.games },
       fit: { r2OutOfSample: fit.r2OutOfSample, gameSigma: fit.gameSigmaOutOfSample },

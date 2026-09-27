@@ -40,7 +40,29 @@ const { wls } = require("./fitScheme");
 const { solveRatings } = require("../features/teamStrength");
 
 const FIT_PATH = path.join(__dirname, "absolute-fit.json");
-const COLS = ["intercept", "myOffRating", "oppDefRating", "expPlays"];
+// expPlays is GONE, and its removal is the most important line in this file.
+//
+// It fitted beautifully -- t 11.1 against points scored -- because a game with
+// more snaps mechanically produces more points. But the fit used the REALISED
+// play count, which the live bot does not have. At forecast time it has to be
+// substituted with a pace estimate, and that estimate was measured against 318
+// games: error SD 9.9 plays, versus 9.9 plays for simply guessing the league
+// average. It carries no information whatsoever. A team's own recent play-count
+// history is no better (9.23 vs 9.33).
+//
+// Two consequences, both bad, both now fixed by removal:
+//  1. The term injected 0.464 pts of total per play of estimate error, which on
+//     the 2026 week-3 slate was 24% of the average disagreement with the market
+//     -- a quarter of the bot's apparent edge was noise it had manufactured.
+//  2. It made the reported accuracy a LIE. The holdout sigma of 13.075 pts was
+//     computed using realised plays, i.e. with knowledge the live model cannot
+//     have, so it flattered the model against a closing line that had no such
+//     help. Fitting only on what is forecastable makes the number honest.
+//
+// Snap tempo is not play volume. Total plays depend on drive count, turnovers,
+// penalties and clock management far more than on how fast a team snaps, which is
+// why sec_per_play predicts it no better than a constant does.
+const COLS = ["intercept", "myOffRating", "oppDefRating"];
 
 /** One observation per (finished game, team). */
 async function buildSamples() {
@@ -50,7 +72,7 @@ async function buildSamples() {
 
   const { rows } = await q(
     `select g.game_id, g.season, g.week, g.kickoff,
-            s.team, s.opponent, s.points_for, s.plays_total
+            s.team, s.opponent, s.points_for
        from sports.nfl_games g
        join sports.nfl_team_game_stats s on s.game_id = g.game_id
       where g.season >= $1
@@ -73,16 +95,13 @@ async function buildSamples() {
     const opp = ratings.get(r.opponent);
     if (!me || !opp) continue;
     if (me.games < minGames || opp.games < minGames) continue;
-    // Plays are known only after the fact, so the FIT uses the realised count and
-    // the FORECAST uses the pace estimate. That asymmetry is deliberate and is the
-    // reason b_plays is small: it keeps the coefficient honest rather than letting
-    // the model lean on a number it will have to guess at prediction time.
-    const plays = Number(r.plays_total);
-    if (!Number.isFinite(plays) || plays <= 0) continue;
+    // Only forecastable inputs. See the COLS comment: the realised play count was
+    // in here and had to come out, because a model may not be fitted on a variable
+    // it will not have at prediction time.
     samples.push({
       season: r.season, week: r.week, game_id: r.game_id, team: r.team,
       y: Number(r.points_for),
-      x: [1, me.off, opp.def, plays / 2],
+      x: [1, me.off, opp.def],
     });
   }
   return samples;

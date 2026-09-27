@@ -459,3 +459,50 @@ zero in residual mode, so a factor you believe in still moves the price when the
 regression cannot confirm it. It is deliberately not applied to a wrong-signed
 factor — flooring one of those is betting against the only evidence available,
 which is a different thing from taking risk where there is no evidence.
+
+## The pace feed was empty, and it was removed
+
+Worth reading before trusting any factor here, because it is the template for how
+to check one.
+
+`expPlays` fitted beautifully in the base model — t 11.1 against points scored,
+because a game with more snaps mechanically produces more points. It was still
+wrong to include, for a reason that has nothing to do with its t-statistic: **the
+fit used the realised play count, and the live bot has to guess it.**
+
+Measured over 318 games:
+
+| predictor of a game's play count | error (SD) |
+|---|---|
+| our `sec_per_play` pace estimate | **9.9 plays** |
+| guessing the league average | **9.9 plays** |
+| a team's own recent play-count history | 9.23 vs 9.33 — a 1% gain |
+
+No information at all. Snap tempo is not play volume: total plays depend on drive
+count, turnovers, penalties and clock management far more than on how fast a team
+snaps. The same feed also calibrated **wrong-signed** in residual mode (beta −0.21),
+which is the consistent story rather than a second problem.
+
+Two things it was doing, both bad:
+
+1. At 0.464 points of total per play of estimate error, it contributed **24% of the
+   bot's average disagreement with the market** out of pure noise — a quarter of the
+   apparent edge was manufactured.
+2. It made the reported accuracy flattering. The holdout sigma was scored using
+   realised plays, i.e. with knowledge the live model never has. Removing it moved
+   the honest figure from 13.075 to **13.581 points**, against the closing line's
+   13.069. The model is about 4% less precise than the market, not level with it.
+
+So `model.weights.pace` is **0** and the other five are renormalised. Not because
+pace is unproven — because it is conclusively empty, which is a different thing.
+An unproven factor gets the `minScale` floor and takes risk; an empty one gets
+removed, because acting on it is acting on noise.
+
+Removing it changed which games trade, which is the clearest evidence it mattered:
+SEA@WAS went from the single largest edge (16.4c) to hitting the gap rail, and
+MIN@TB went from being cut for budget to the top trade.
+
+**What is left is clean.** The base total now rests on two inputs, both strongly
+predictive of points scored and both available before kickoff: opponent-adjusted
+offensive rating (t 13.3) and opponent defensive rating (t 6.7). Mean game bias is
+0.027 points, so there is no standing over or under tilt.

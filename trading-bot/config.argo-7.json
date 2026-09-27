@@ -20,12 +20,12 @@
     "leagueAvgTotal": 45,
     "expectedPlaysPerTeam": 64,
     "weights": {
-      "weather": 0.3,
-      "scheme": 0.29,
-      "rest": 0.15,
-      "pace": 0.1,
-      "injury": 0.08,
-      "situational": 0.08
+      "weather": 0.3333,
+      "scheme": 0.3222,
+      "rest": 0.1667,
+      "pace": 0,
+      "injury": 0.0889,
+      "situational": 0.0889
     },
     "weather": {
       "_comment": "TOP WEIGHT, and a HINGE rather than a slope. A linear wind term is wrong because 8 mph and 3 mph are both no effect, so the term must be flat until the threshold and only then steepen -- which also means this factor contributes NOTHING in most games, and its 0.30 weight bites only on the handful where it matters. Indoor and closed-roof games are hard-zeroed. Forecasts come from sports.nfl_weather, recorded by ingest/weather.js at the time we saw them, never from the nflverse temp/wind columns, which are observed post-hoc and would be a look-ahead leak.",
@@ -159,7 +159,8 @@
       "minGamesToPrice": 3,
       "fitStartSeason": 2022,
       "useFittedSigma": true
-    }
+    },
+    "_comment_pace_removed": "PACE WEIGHT ZEROED on 2026-09-26, and the other five renormalised to sum to 1. Not because pace is unproven -- because it is conclusively empty. Measured over 318 games: the sec_per_play pace estimate predicts a game's play count with an error SD of 9.9 plays, and guessing the league average scores 9.9 as well. A team's own recent play-count history manages 9.23 against 9.33, which is a 1% improvement, i.e. nothing. Snap tempo is not play volume: total plays depend on drive count, turnovers, penalties and clock management far more than on how fast a team snaps. The same feed also fitted WRONG-SIGNED in the residual calibration (beta -0.21), which is the consistent story rather than a separate problem. Per the user's rule -- act on clean feeds, do not act on feeds producing errors or non-conclusions -- this one is removed rather than floored. The 0.10 was spread proportionally across the remaining five; reassign it deliberately if you would rather it went somewhere specific. Previous weights: {\"weather\":0.3,\"scheme\":0.29,\"rest\":0.15,\"pace\":0.1,\"injury\":0.08,\"situational\":0.08}"
   },
   "policy": {
     "_comment": "MEDIUM tier, same shape as Adam-7. Two deliberate differences.",
