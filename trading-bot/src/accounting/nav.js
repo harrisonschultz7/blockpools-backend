@@ -122,5 +122,68 @@ async function currentNav(botId) {
   return bot.rows[0] ? Number(bot.rows[0].starting_nav) : cfg().paper.startingNavUsd;
 }
 
+/**
+ * Write one intraday NAV point.
+ *
+ * Same arithmetic as snapshotNav -- there is exactly one definition of what this
+ * bot is worth -- but keyed on the timestamp rather than the day, so the curve
+ * gains shape between daily closes instead of stepping once at midnight.
+ *
+ * Rounded to the minute so a tick that runs twice in the same minute updates the
+ * point rather than laying down two, and so the series lines up on a grid
+ * regardless of when the timer actually fired.
+ */
+async function snapshotNavIntraday(botId, at) {
+  const c = cfg();
+  const bot = await q(`select starting_nav from bots.bot where id = $1`, [botId]);
+  const startingNav = bot.rows[0]
+    ? Number(bot.rows[0].starting_nav)
+    : c.paper.startingNavUsd;
+
+  const spent = await q(
+    `select coalesce(sum(cost_usd), 0) v from bots.positions where bot_id = $1 and shares > 0`,
+    [botId]);
+  const realized = await q(
+    `select coalesce(sum(pnl_usd), 0) v from bots.trades where bot_id = $1 and settled = true`,
+    [botId]);
+
+  const { positionValue, openPositions } = await markPositions(botId);
+  const cash = startingNav - Number(spent.rows[0].v) + Number(realized.rows[0].v);
+  const nav = cash + positionValue;
+
+  const ts = at || new Date();
+  ts.setSeconds(0, 0);
+
+  await q(
+    `insert into bots.nav_intraday
+       (bot_id, ts, nav_usd, cash_usd, position_value_usd, open_positions)
+     values ($1,$2,$3,$4,$5,$6)
+     on conflict (bot_id, ts) do update set
+       nav_usd = excluded.nav_usd,
+       cash_usd = excluded.cash_usd,
+       position_value_usd = excluded.position_value_usd,
+       open_positions = excluded.open_positions`,
+    [botId, ts.toISOString(), nav, cash, positionValue, openPositions],
+  );
+  return { nav, cash, positionValue, openPositions, ts };
+}
+
+/**
+ * Drop intraday points the daily series already covers.
+ *
+ * Not for the bytes -- the whole table is fractions of a megabyte. An unbounded
+ * intraday series would make the chart query scan years of points to draw two
+ * weeks, which is the cost that actually bites.
+ */
+async function pruneNavIntraday(days) {
+  const keep = Number(days) || 14;
+  const res = await q(
+    `delete from bots.nav_intraday where ts < now() - ($1 || ' days')::interval`,
+    [String(keep)]);
+  if (res.rowCount) log(`nav: pruned ${res.rowCount} intraday points older than ${keep}d`);
+  return res.rowCount;
+}
+
 module.exports = {
+  snapshotNavIntraday, pruneNavIntraday,
   ensureLaunchRow, snapshotNav, currentNav, markPositions };

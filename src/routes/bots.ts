@@ -63,6 +63,17 @@ botsRouter.get("/", async (_req, res) => {
         [b.id],
       );
 
+      // Intraday points for the recent window. The daily series carries the long
+      // run; these give the last fortnight shape, so a position moving all
+      // afternoon is visible instead of appearing as one step at midnight.
+      const { rows: intraRows } = await pg.query(
+        `select ts, nav_usd, open_positions
+           from bots.nav_intraday
+          where bot_id = $1 and ts > now() - interval '14 days'
+          order by ts`,
+        [b.id],
+      );
+
       // Selectivity is part of the story: this bot is meant to pass on most
       // games, so "traded 2 of 16" belongs on the card.
       //
@@ -141,9 +152,8 @@ botsRouter.get("/", async (_req, res) => {
         },
         // Today's point is replaced with the live NAV below, so the curve does
         // not flatten between daily runs.
-        navSeries: withLiveToday(navRows, nav).map((r: any) => ({
-          d: r.d instanceof Date ? r.d.toISOString().slice(0, 10) : String(r.d).slice(0, 10),
-          nav: Number(r.nav_usd),
+        navSeries: buildNavSeries(navRows, intraRows, nav).map((r: any) => ({
+          d: r.d,
         })),
         createdAt: b.created_at,
       });
@@ -174,25 +184,52 @@ botsRouter.get("/", async (_req, res) => {
  * UI shows a dash instead of implying a flat trade.
  */
 /**
- * Daily NAV history with today's point set to the LIVE figure.
+ * One series for the chart: daily points for the long run, intraday for the
+ * recent window, and the live NAV as the final point.
  *
- * Without this the chart draws a flat line from the last daily snapshot to the
- * right edge while the headline ROI beside it shows a different number -- the
- * exact mismatch that made Adam-7's page look frozen after its second trade
- * settled. Appends a point for today when the daily job has not run yet.
+ * WHY BOTH. bots.nav_history is keyed by day and is what the track record and
+ * "best day" read -- one authoritative close per day is right for that. It is
+ * wrong for a chart someone is watching, where a position moving all afternoon
+ * would appear as a single step at midnight. So the daily series is truncated
+ * where the intraday one begins and they are concatenated.
+ *
+ * The live point matters independently: without it the curve flatlines from the
+ * last recorded point to the right edge while the ROI beside it reads something
+ * else, which is what made this page look frozen in the first place.
  */
-function withLiveToday(navRows: any[], liveNav: number) {
-  const today = new Date().toISOString().slice(0, 10);
-  const asDay = (d: any) =>
-    d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
+function buildNavSeries(navRows: any[], intraRows: any[], liveNav: number) {
+  const iso = (v: any) =>
+    v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+  const day = (v: any) =>
+    v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
 
-  const out = navRows.map((r) => ({ ...r }));
+  const intra = intraRows.map((r) => ({
+    d: iso(r.ts),
+    nav_usd: Number(r.nav_usd),
+    open_positions: r.open_positions,
+  }));
+
+  // Daily points only up to where the intraday window starts, so the two do not
+  // both describe the same afternoon.
+  const cutoff = intra.length ? day(intraRows[0].ts) : null;
+  const daily = navRows
+    .filter((r) => !cutoff || day(r.d) < cutoff)
+    .map((r) => ({
+      d: `${day(r.d)}T00:00:00.000Z`,
+      nav_usd: Number(r.nav_usd),
+      open_positions: r.open_positions,
+    }));
+
+  const out = [...daily, ...intra];
+
+  // The live figure, as the last point. Replaces the newest point when that is
+  // already within a tick, rather than stacking a near-duplicate on top of it.
+  const nowIso = new Date().toISOString();
   const last = out[out.length - 1];
-  if (last && asDay(last.d) === today) {
-    last.nav_usd = liveNav;
-    return out;
-  }
-  out.push({ d: today, nav_usd: liveNav, open_positions: 0 });
+  const lastAgeMs = last ? Date.now() - new Date(last.d).getTime() : Infinity;
+  if (last && lastAgeMs < 60_000) last.nav_usd = liveNav;
+  else out.push({ d: nowIso, nav_usd: liveNav, open_positions: 0 });
+
   return out;
 }
 

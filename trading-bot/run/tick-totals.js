@@ -25,7 +25,7 @@ const { forecastTotal, saveForecastTotal, loadCalibration } = require("../src/mo
 const { decideTotals } = require("../src/policy/totals");
 const { executePaper } = require("../src/exec/paper");
 const { manageExits, createExitOrder } = require("../src/exec/limits");
-const { currentNav, snapshotNav } = require("../src/accounting/nav");
+const { currentNav, snapshotNav, snapshotNavIntraday } = require("../src/accounting/nav");
 const { gradeClv, settleTrades } = require("../src/accounting/settle");
 
 const DRY = process.argv.includes("--dry");
@@ -255,6 +255,9 @@ async function main() {
       await gradeClv();
       await settleTrades();
       await snapshotNav(c.botId);
+      // And an intraday point, so the chart has shape between daily closes
+      // rather than stepping once at midnight.
+      await snapshotNavIntraday(c.botId);
     } catch (e) {
       // A reconcile failure must not lose the trading work already done above.
       log.warn(`reconcile failed (will retry next tick): ${e.message}`);

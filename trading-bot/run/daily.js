@@ -18,7 +18,7 @@ const { ingestAll } = require("../src/ingest/nflverse");
 const { ingestWeather } = require("../src/ingest/weather");
 const { ingestFtnAll } = require("../src/ingest/ftn");
 const { gradeClv, settleTrades, botSummary } = require("../src/accounting/settle");
-const { snapshotNav } = require("../src/accounting/nav");
+const { snapshotNav, pruneNavIntraday } = require("../src/accounting/nav");
 const { applyRiskTiers } = require("../src/accounting/riskTier");
 const { q, close } = require("../src/db");
 const log = require("../src/log");
@@ -51,6 +51,11 @@ async function main() {
 
   const { rows: bots } = await q(`select id, name from bots.bot where enabled order by id`);
   if (!bots.length) { log("daily: no enabled bots registered yet"); return; }
+
+  // Intraday points older than the retention window; the daily series below
+  // already covers that history at the grain the track record needs.
+  try { await pruneNavIntraday(14); }
+  catch (e) { log.warn(`nav_intraday prune failed: ${e.message}`); }
 
   for (const b of bots) {
     await snapshotNav(b.id);
