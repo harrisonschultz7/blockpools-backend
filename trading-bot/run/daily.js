@@ -19,6 +19,7 @@ const { ingestWeather } = require("../src/ingest/weather");
 const { ingestFtnAll } = require("../src/ingest/ftn");
 const { gradeClv, settleTrades, botSummary } = require("../src/accounting/settle");
 const { snapshotNav } = require("../src/accounting/nav");
+const { applyRiskTiers } = require("../src/accounting/riskTier");
 const { q, close } = require("../src/db");
 const log = require("../src/log");
 
@@ -54,10 +55,28 @@ async function main() {
   for (const b of bots) {
     await snapshotNav(b.id);
     const s = await botSummary(b.id);
-    log(`${b.name}: ${s.wins}W-${s.losses}L  nav $${Number(s.nav).toFixed(2)} ` +
+    log(`${b.name}: ${s.wins}W-${s.losses}L  nav ${Number(s.nav).toFixed(2)} ` +
         `(${Number(s.roi_pct).toFixed(2)}%)  mean CLV ` +
         `${s.mean_clv_bps === null ? "n/a" : Number(s.mean_clv_bps).toFixed(0) + "bps"} ` +
         `over ${s.clv_graded} graded`);
+  }
+
+  // Risk tiers LAST, after NAV is marked -- the turnover basis divides by NAV, so
+  // running it first would price today's trades against yesterday's portfolio.
+  //
+  // Here rather than on its own timer because the tier is derived: a bot that
+  // starts trading more often, or widens its exit targets, has genuinely become
+  // riskier, and a label left to go stale is worse than no label at all.
+  try {
+    const tiers = await applyRiskTiers({ write: true });
+    for (const t of tiers) {
+      if (t.changed) {
+        log(`risk tier: ${t.name} ${t.previousTier} -> ${t.tier} ` +
+            `(score ${(100 * t.riskScore).toFixed(1)}%)`);
+      }
+    }
+  } catch (e) {
+    log.warn(`risk tier refresh failed (tiers left as they were): ${e.message}`);
   }
 }
 
