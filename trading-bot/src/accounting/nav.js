@@ -37,10 +37,45 @@ async function markPositions(botId) {
   return { positionValue: value, positionCost: cost, openPositions: rows.length };
 }
 
+/**
+ * Seed the curve's first point: the bot's LAUNCH.
+ *
+ * nav_history only gains a row when the daily job runs, so a bot registered
+ * between runs has exactly one point and the chart correctly refuses to draw a
+ * line through it -- which is what "Not enough history to chart yet" was on
+ * Argo-7's page while it held seven live positions.
+ *
+ * The launch row is not a placeholder: the bot really did start at starting_nav
+ * with nothing open, on the day it was created. Writing it means the curve
+ * starts where the money started rather than at whenever the first snapshot
+ * happened to land.
+ *
+ * ON CONFLICT DO NOTHING so a bot created and first snapshotted on the same day
+ * keeps the real snapshot, not a synthetic flat one.
+ */
+async function ensureLaunchRow(botId) {
+  const { rowCount } = await q(
+    `insert into bots.nav_history
+       (bot_id, d, nav_usd, cash_usd, position_value_usd,
+        realized_pnl_usd, unrealized_pnl_usd, open_positions)
+     select b.id, b.created_at::date, b.starting_nav, b.starting_nav, 0, 0, 0, 0
+       from bots.bot b
+      where b.id = $1
+     on conflict (bot_id, d) do nothing`,
+    [botId],
+  );
+  if (rowCount) log(`nav: seeded launch row for ${botId}`);
+  return rowCount;
+}
+
 /** Write today's NAV row. Idempotent -- re-running the same day overwrites. */
 async function snapshotNav(botId, day) {
   const c = cfg();
   const d = day || new Date().toISOString().slice(0, 10);
+
+  // Before anything else, so a brand-new bot has two points the first time this
+  // runs rather than one.
+  await ensureLaunchRow(botId);
 
   const bot = await q(`select starting_nav from bots.bot where id = $1`, [botId]);
   const startingNav = bot.rows[0] ? Number(bot.rows[0].starting_nav) : c.paper.startingNavUsd;
@@ -87,4 +122,5 @@ async function currentNav(botId) {
   return bot.rows[0] ? Number(bot.rows[0].starting_nav) : cfg().paper.startingNavUsd;
 }
 
-module.exports = { snapshotNav, currentNav, markPositions };
+module.exports = {
+  ensureLaunchRow, snapshotNav, currentNav, markPositions };

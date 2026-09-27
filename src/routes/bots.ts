@@ -150,9 +150,19 @@ botsRouter.get("/:botId/trades", async (req, res) => {
               t.fill_price, t.shares, t.notional_usd,
               t.exit_price, t.exit_at, t.exit_reason,
               t.pnl_usd, t.clv_bps, t.opened_at, t.closed_at,
-              g.away_team, g.home_team, g.kickoff, g.week, g.season
+              g.away_team, g.home_team, g.kickoff, g.week, g.season,
+              -- Live mark for an OPEN position: the last price the depth
+              -- recorder saw for this exact token. Lateral rather than a join on
+              -- max(ts), which would fan out across every snapshot ever taken of
+              -- the token -- one row per minute, per market, forever.
+              mk.mid AS mark_price, mk.ts AS mark_ts
          from bots.trades t
          join sports.nfl_games g on g.game_id = t.game_id
+         left join lateral (
+           select o.mid, o.ts from sports.odds_history o
+            where o.token_id = t.token_id and o.mid is not null
+            order by o.ts desc limit 1
+         ) mk on t.settled = false
         where t.bot_id = $1
         order by t.opened_at desc
         limit $2`,
@@ -176,6 +186,19 @@ botsRouter.get("/:botId/trades", async (req, res) => {
 
       const pnl = exit === null ? null : Number(t.pnl_usd ?? (exit - entry) * shares);
       const returnPct = exit === null || !entry ? null : ((exit - entry) / entry) * 100;
+
+      // UNREALISED, for positions still open. Marked to the last recorded book,
+      // the same source bots.nav_history marks NAV to, so the trade log and the
+      // portfolio figure cannot tell different stories about the same position.
+      // Null once a position is closed -- it has a realised number by then, and
+      // showing both invites reading the stale one.
+      const mark = t.mark_price === null || t.mark_price === undefined
+        ? null : Number(t.mark_price);
+      const isOpen = status === "open";
+      const markValueUsd = isOpen && mark !== null ? mark * shares : null;
+      const unrealizedPnlUsd = isOpen && mark !== null ? (mark - entry) * shares : null;
+      const unrealizedPct = isOpen && mark !== null && entry
+        ? ((mark - entry) / entry) * 100 : null;
 
       // WHAT THE POSITION ACTUALLY IS, per market type.
       //
@@ -213,6 +236,13 @@ botsRouter.get("/:botId/trades", async (req, res) => {
         costUsd: cost,
         pnlUsd: pnl,
         returnPct,
+        /** Last recorded book mid. Null unless the position is still open. */
+        markPrice: mark !== null && isOpen ? mark : null,
+        markAt: isOpen && t.mark_ts ? t.mark_ts : null,
+        /** What the open position is worth right now. */
+        markValueUsd,
+        unrealizedPnlUsd,
+        unrealizedPct,
         status,
         exitReason: t.exit_reason || null,
         clvBps: t.clv_bps === null ? null : Number(t.clv_bps),
