@@ -29,7 +29,7 @@
 const { cfg, ENV } = require("../config");
 const { getJson } = require("../http");
 const { q, bulkInsert } = require("../db");
-const { writeBooks } = require("./bookWriter");
+const { writeBooks, dueMarkets } = require("./bookWriter");
 const log = require("../log");
 const { toNflverse, parsePmTime, parseJsonField, normaliseBook, fetchBook } = require("./polymarket");
 
@@ -208,8 +208,13 @@ async function recordTotalsBooks() {
   const { bookLevelsStored } = cfg().ingest;
   const markets = await linesToRecord();
 
+  // Far-out games are sampled far less often -- see dueMarkets(). Skipping the
+  // FETCH as well as the write is the point: it saves the HTTP call too.
+  const { due, deferred } = dueMarkets(markets);
+  if (deferred) log(`  ${deferred} market(s) not due for a poll yet`);
+
   const out = [];
-  for (const m of markets) {
+  for (const m of due) {
     for (const side of ["over", "under"]) {
       const tokenId = side === "over" ? m.over_token_id : m.under_token_id;
       if (!tokenId) continue;

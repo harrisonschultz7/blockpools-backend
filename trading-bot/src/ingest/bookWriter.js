@@ -70,26 +70,53 @@ const sameNum = (a, b) => {
 };
 
 /**
- * Compare two ladders by VALUE, never as strings.
+ * Are two ladders the same AS FAR AS A FILL IS CONCERNED?
  *
- * The stored side comes back from Postgres as jsonb canonical text -- "[[0.5,
- * 100], [0.49, 200]]", with spaces -- while a fresh snapshot is JSON.stringify
- * output with none. A string compare therefore never matches and the dedup
- * silently does nothing: the first run of this suppressed 0 of 32 snapshots that
- * had not moved in ten seconds, which is what gave it away.
+ * Not a byte comparison, and the difference is the whole point. Measured in
+ * production: top-of-book was unchanged on 98.1% of polls while the FULL ladder
+ * matched on only 10.5% -- market makers shuffle size at depth on 87.6% of polls
+ * without the price moving at all. A strict comparison is defeated by that noise
+ * and writes a row for every wobble, which is what left the daily volume
+ * unchanged after the first attempt at this.
+ *
+ * So the comparison is DECISION-LOSSLESS rather than byte-lossless:
+ *
+ *   - prices must match exactly, at every compared level
+ *   - sizes may differ by up to sizeTolerancePct
+ *   - only the first compareLevels are considered
+ *
+ * The justification for each: a price change is always real information. A size
+ * change of a few percent at depth cannot alter what a $500 order fills at --
+ * exec/paper.js walks levels until the order is filled and stops at
+ * maxSlippageCents, which at these sizes is satisfied inside the top few levels.
+ * And a level the order can never reach cannot affect it at all.
+ *
+ * What this gives up, stated plainly: the stored deep levels can lag reality
+ * between writes. They are still a real snapshot of a real moment, just not
+ * refreshed for changes that no decision depends on.
  */
-function sameLadder(a, b) {
+function sameLadder(a, b, { compareLevels = 4, sizeTolerancePct = 0.1 } = {}) {
   const parse = (v) => {
     if (Array.isArray(v)) return v;
     try { return JSON.parse(v || "[]"); } catch { return null; }
   };
   const x = parse(a);
   const y = parse(b);
-  if (!x || !y || x.length !== y.length) return false;
-  for (let i = 0; i < x.length; i++) {
+  if (!x || !y) return false;
+
+  const n = Math.min(compareLevels, Math.max(x.length, y.length));
+  for (let i = 0; i < n; i++) {
     const [px, sx] = x[i] || [];
     const [py, sy] = y[i] || [];
-    if (!sameNum(px, py) || !sameNum(sx, sy)) return false;
+    // A level present on one side and missing on the other is a real change.
+    if ((x[i] === undefined) !== (y[i] === undefined)) return false;
+    if (x[i] === undefined) continue;
+    if (!sameNum(px, py)) return false;
+    const a1 = Number(sx);
+    const b1 = Number(sy);
+    if (!Number.isFinite(a1) || !Number.isFinite(b1)) return false;
+    const denom = Math.max(Math.abs(a1), Math.abs(b1), 1);
+    if (Math.abs(a1 - b1) / denom > sizeTolerancePct) return false;
   }
   return true;
 }
@@ -102,7 +129,7 @@ function sameLadder(a, b) {
  * order is filled -- treating it as unchanged would quietly degrade fill
  * fidelity, which is the one thing this whole table exists to protect.
  */
-function selectChanged(snapshots, previous, heartbeatSeconds, now = Date.now()) {
+function selectChanged(snapshots, previous, heartbeatSeconds, now = Date.now(), ladderOpts = {}) {
   const keep = [];
   let unchanged = 0;
   let heartbeat = 0;
@@ -117,8 +144,8 @@ function selectChanged(snapshots, previous, heartbeatSeconds, now = Date.now()) 
       sameNum(s.best_ask, p.best_ask) &&
       sameNum(s.bid_depth_usd, p.bid_depth_usd) &&
       sameNum(s.ask_depth_usd, p.ask_depth_usd) &&
-      sameLadder(s.bids, p.bids) &&
-      sameLadder(s.asks, p.asks);
+      sameLadder(s.bids, p.bids, ladderOpts) &&
+      sameLadder(s.asks, p.asks, ladderOpts);
 
     if (!same) { keep.push(s); continue; }
 
@@ -139,7 +166,11 @@ async function writeBooks(snapshots, label = "books") {
 
   const heartbeatSeconds = cfg().ingest.bookHeartbeatSeconds ?? 600;
   const previous = await latestByToken([...new Set(snapshots.map((s) => s.token_id))]);
-  const { keep, unchanged, heartbeat } = selectChanged(snapshots, previous, heartbeatSeconds);
+  const ing = cfg().ingest;
+  const { keep, unchanged, heartbeat } = selectChanged(
+    snapshots, previous, heartbeatSeconds, Date.now(),
+    { compareLevels: ing.bookCompareLevels ?? 4,
+      sizeTolerancePct: ing.bookSizeTolerancePct ?? 0.1 });
 
   if (keep.length) await bulkInsert("sports.odds_history", COLS, keep);
 
@@ -149,4 +180,51 @@ async function writeBooks(snapshots, label = "books") {
   return { written: keep.length, skipped: unchanged };
 }
 
-module.exports = { writeBooks, selectChanged, latestByToken, sameLadder, COLS };
+// == Poll cadence by time to kickoff =========================================
+// A game ten days out does not need its book sampled every minute. Measured on
+// the live recorder: 38 of 158 tracked tokens were for games more than 48 hours
+// away, and they were polled at the same rate as a game kicking off in an hour.
+//
+// Tiers are held in memory because the recorder is a long-running process --
+// persisting a last-polled timestamp per token would cost a write per poll,
+// which is the exact thing being economised.
+const lastPolled = new Map();
+
+/**
+ * Is this market due for a poll?
+ *
+ * Anything at or past kickoff is always due: that is when the exits ride and the
+ * closing line is struck, and it is the one window where a missed book costs
+ * something that cannot be recovered.
+ */
+function isDueForPoll(kickoff, now = Date.now(), key = null) {
+  const c = cfg().ingest;
+  const hoursOut = (new Date(kickoff).getTime() - now) / 3600000;
+
+  let intervalSec;
+  if (hoursOut <= (c.nearKickoffHours ?? 6)) intervalSec = 0;         // always
+  else if (hoursOut <= (c.midWindowHours ?? 48)) intervalSec = c.bookPollSeconds ?? 60;
+  else intervalSec = c.farPollSeconds ?? 600;
+
+  if (!intervalSec || !key) return true;
+  const last = lastPolled.get(key) || 0;
+  if (now - last < intervalSec * 1000) return false;
+  lastPolled.set(key, now);
+  return true;
+}
+
+/** Split a market list into the ones due now and a count of those deferred. */
+function dueMarkets(markets, now = Date.now()) {
+  const due = [];
+  let deferred = 0;
+  for (const m of markets) {
+    if (isDueForPoll(m.kickoff, now, m.condition_id)) due.push(m);
+    else deferred++;
+  }
+  return { due, deferred };
+}
+
+module.exports = {
+  writeBooks, selectChanged, latestByToken, sameLadder,
+  isDueForPoll, dueMarkets, COLS,
+};

@@ -132,7 +132,13 @@
     "weatherRefreshHours": 6,
     "bookLevelsStored": 5,
     "bookHeartbeatSeconds": 600,
-    "_comment_footprint": "STORAGE. Measured 2026-09-27: sports.odds_history had reached 448 MB of a 782 MB database, 57% of everything, on a 500 MB plan -- 195,662 rows and 129 MB in a single day once the totals recorder joined the moneyline one, against 34 rows the day before. Three changes, none of which reduce what the bot can see: bookHeartbeatSeconds makes an unchanged book cost one row per 10 minutes instead of ten (42% of consecutive snapshots were byte-identical); bookLevelsStored 10 -> 5 roughly halves the row, and 5 levels is far more than a $500 position can walk; totalsLinesRecordedPerGame 3 -> 1 records only the line actually traded. The neighbouring lines were kept for a future version that does not exist yet, at triple the cost of the one that does."
+    "_comment_footprint": "STORAGE. Measured 2026-09-27: sports.odds_history had reached 448 MB of a 782 MB database, 57% of everything, on a 500 MB plan -- 195,662 rows and 129 MB in a single day once the totals recorder joined the moneyline one, against 34 rows the day before. Three changes, none of which reduce what the bot can see: bookHeartbeatSeconds makes an unchanged book cost one row per 10 minutes instead of ten (42% of consecutive snapshots were byte-identical); bookLevelsStored 10 -> 5 roughly halves the row, and 5 levels is far more than a $500 position can walk; totalsLinesRecordedPerGame 3 -> 1 records only the line actually traded. The neighbouring lines were kept for a future version that does not exist yet, at triple the cost of the one that does.",
+    "bookCompareLevels": 4,
+    "bookSizeTolerancePct": 0.1,
+    "midWindowHours": 48,
+    "farPollSeconds": 600,
+    "_comment_dedup": "bookCompareLevels/bookSizeTolerancePct make the change test DECISION-lossless rather than byte-lossless. Measured live: top-of-book was unchanged on 98.1% of polls while the full ladder matched on only 10.5% -- market makers shuffle size at depth on 87.6% of polls without the price moving. A byte compare writes a row for every wobble, which is why the first attempt at this left the daily volume unchanged. Prices must match exactly; sizes may drift 10%; only the top 4 levels count, because exec/paper.js stops at maxSlippageCents and a level a 00 order can never reach cannot change its fill.",
+    "_comment_cadence": "farPollSeconds samples a game more than midWindowHours away every 10 minutes instead of every 60s. 38 of 158 tracked tokens were for games over 48h out and were polled as often as one kicking off within the hour. Anything at or past kickoff is always polled: that is when the exits ride and the closing line is struck."
   },
   "_comment_riskTier": "riskTier below is a SEED only. run/risk-tier.js derives the live value from the sizing policy and the prices actually traded, and writes bots.bot.risk_tier. Editing it here does not change what users see."
 }

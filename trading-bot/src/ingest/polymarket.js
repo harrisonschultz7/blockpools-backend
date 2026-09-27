@@ -10,7 +10,7 @@
 const { cfg, ENV } = require("../config");
 const { getJson } = require("../http");
 const { q, bulkInsert } = require("../db");
-const { writeBooks } = require("./bookWriter");
+const { writeBooks, dueMarkets } = require("./bookWriter");
 const log = require("../log");
 
 const GAME_SLUG = /^nfl-([a-z]{2,4})-([a-z]{2,4})-(\d{4})-(\d{2})-(\d{2})$/;
@@ -244,8 +244,13 @@ async function recordBooks() {
     [String(hoursBefore)],
   );
 
+  // Far-out games are sampled far less often -- see dueMarkets(). Skipping the
+  // FETCH as well as the write is the point: it saves the HTTP call too.
+  const { due, deferred } = dueMarkets(markets);
+  if (deferred) log(`  ${deferred} market(s) not due for a poll yet`);
+
   const out = [];
-  for (const m of markets) {
+  for (const m of due) {
     for (const side of ["home", "away"]) {
       const tokenId = side === "home" ? m.home_token_id : m.away_token_id;
       if (!tokenId) continue;
