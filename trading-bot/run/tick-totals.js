@@ -41,12 +41,19 @@ const WINDOW_ARG = (() => {
 /** Register the bot on first run so trades always have a parent row. */
 async function ensureBot(c) {
   await q(
-    `insert into bots.bot (id, name, league, risk_tier, mode, config, starting_nav)
-     values ($1,$2,$3,$4,$5,$6,$7)
+    // market_scope and description are written here, not by hand. Adam-7's were
+    // set with a manual UPDATE against the live database, which is why Argo-7
+    // first appeared on the leaderboard with a blank subtitle and no description.
+    `insert into bots.bot
+       (id, name, league, risk_tier, mode, config, starting_nav, market_scope, description)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      on conflict (id) do update set
-       name = excluded.name, mode = excluded.mode, config = excluded.config`,
+       name = excluded.name, mode = excluded.mode, config = excluded.config,
+       market_scope = coalesce(excluded.market_scope, bots.bot.market_scope),
+       description  = coalesce(excluded.description,  bots.bot.description)`,
     [c.botId, c.botName, c.league, c.riskTier, c.mode,
-     JSON.stringify(c), c.paper.startingNavUsd],
+     JSON.stringify(c), c.paper.startingNavUsd,
+     c.marketScopeLabel || null, c.description || null],
   );
 }
 

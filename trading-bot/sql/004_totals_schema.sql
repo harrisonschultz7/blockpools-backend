@@ -210,3 +210,13 @@ alter table bots.limit_orders add column if not exists market_type text not null
 alter table bots.limit_orders add column if not exists line numeric;
 
 revoke all on bots.limit_orders from anon, authenticated;
+
+-- == bots.bot display columns -- third latent gap in the committed schema =====
+-- src/routes/bots.ts has selected market_scope and description since the
+-- endpoint was written, and 002 never declared either: both were added to the
+-- live database by hand and backfilled for Adam-7 with a manual UPDATE. Declared
+-- here so a fresh database serves the same API, and run/tick-totals.js now writes
+-- them from config on every tick so a NEW bot never needs hand-written SQL to
+-- appear correctly on the leaderboard.
+alter table bots.bot add column if not exists market_scope text;
+alter table bots.bot add column if not exists description  text;

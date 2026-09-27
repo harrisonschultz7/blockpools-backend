@@ -211,5 +211,8 @@
     "nearKickoffHours": 6,
     "ftnRefreshHours": 12,
     "bookLevelsStored": 10
-  }
+  },
+  "marketScopeLabel": "Game totals",
+  "description": "A proprietary BlockPools prediction model focused on NFL game totals at medium risk. It builds its own expected total from each offence and defence, then trades only where the market disagrees enough to be worth acting on.",
+  "_comment_display": "marketScopeLabel and description are written to bots.bot by ensureBot and are what the leaderboard card shows. marketScope (totals) stays the machine value the policy reads; this is the human label, matching the Game markets wording already used for Adam-7."
 }
