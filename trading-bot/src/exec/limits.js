@@ -78,7 +78,23 @@ function touchProbability(fair, target) {
   return Math.max(0, Math.min(1, fair / target));
 }
 
-/** Walk the recorded BID ladder -- the mirror of the entry's ask walk. */
+/**
+ * Walk the recorded BID ladder to size a fill on our RESTING sell.
+ *
+ * The ladder decides HOW MANY shares fill; the limit decides at WHAT PRICE. Our
+ * exit is a maker order sitting on the ask at `limitPrice`, so a buyer who crosses
+ * it pays exactly `limitPrice` -- never more, however far above the bid has run.
+ * Averaging the consumed bid levels instead would be the TAKER model (a market
+ * sell walking down the book), and applying it here pays the bot for price action
+ * it never actually captured: NE @ JAX's 0.670 sell sat through a gap in the
+ * recorder while the bid ran to 0.740, and the bid-average convention would have
+ * booked the exit at 0.740 -- a free 7c, or +$23 on 327 shares, manufactured out
+ * of a missed poll. Every recorder gap would become a paper profit, which is
+ * exactly the bias that makes a track record worthless.
+ *
+ * `consumed` still reports the real levels, because how much depth was standing
+ * above the limit is worth seeing even though we are not paid for it.
+ */
 function walkBids(bids, sharesWanted, limitPrice) {
   const levels = Array.isArray(bids) ? bids : JSON.parse(bids || "[]");
   let remaining = sharesWanted;
@@ -92,7 +108,9 @@ function walkBids(bids, sharesWanted, limitPrice) {
     // Only bids at or above our limit can fill a sell.
     if (price < limitPrice - 1e-9) break;
     const take = Math.min(remaining, size);
-    proceeds += take * price;
+    // limitPrice, not price -- see the note above. A resting sell is paid its own
+    // limit no matter how generous the bid that lifts it.
+    proceeds += take * limitPrice;
     filled += take;
     remaining -= take;
     consumed.push([price, +take.toFixed(4)]);

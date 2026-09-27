@@ -159,37 +159,64 @@ async function mapTotalsToGames(markets) {
 }
 
 /**
- * The lines to record for each game inside the window: the top N by liquidity.
+ * The lines to record for each game: the top N by liquidity, PLUS every line a
+ * bot actually holds.
  *
- * Also the query the policy uses to pick what to trade, with limit 1.
+ * The held-line union is not a nicety. Recording only the deepest line is fine
+ * for forming a view -- that is the line the policy trades -- but depth MOVES,
+ * and it moves most violently once a game is in play. NE @ JAX was opened on the
+ * 46.5 because 46.5 was the deepest book; ninety minutes into the game the flow
+ * had rotated to the 44.5 and our line was fourth by liquidity, so the top-1
+ * lateral quietly stopped polling the one token with money riding on it. The
+ * resting sell then sat unfillable against a book frozen at kickoff while the
+ * real bid ran from 0.65 clean through our 0.67 limit to 0.74.
+ *
+ * So liquidity rank decides what we WATCH; an open position decides what we must
+ * keep watching regardless of rank. Recorder-only -- the policy picks its line
+ * through deepestLineForGame(), which is unaffected by this union.
  */
 async function linesToRecord() {
   const c = cfg();
   const perGame = c.ingest.totalsLinesRecordedPerGame;
   const hours = c.ingest.recordWindowHours || c.policy.openWindowHoursBeforeKickoff;
 
-  // A lateral join keeps this to one round trip: rank each game's lines by
-  // liquidity and take the top N, rather than fetching 2000 rows and slicing in
-  // JavaScript.
+  // Two sources unioned in one round trip: `ranked` is the liquidity view of the
+  // games in the window, `held` is every line with shares against it. distinct on
+  // (condition_id) collapses the overlap -- normally the held line IS the deepest,
+  // and then this query returns exactly what it did before.
   const { rows } = await q(
-    `select t.* , g.kickoff
-       from sports.nfl_games g
-       join lateral (
-         select * from sports.pm_totals_markets m
-          where m.game_id = g.game_id
-            and m.closed = false
-            and m.over_token_id is not null
-          order by m.liquidity_num desc nulls last
-          limit $1
-       ) t on true
-      where g.kickoff between now() - interval '6 hours'
-                          and now() + ($2 || ' hours')::interval
-         or (g.home_score is null
-             and g.kickoff > now() - interval '12 hours'
-             and exists (select 1 from bots.positions p
-                          where p.game_id = g.game_id and p.shares > 0
-                            and p.market_type = 'totals'))
-      order by g.kickoff, t.liquidity_num desc`,
+    `with ranked as (
+       select t.*, g.kickoff
+         from sports.nfl_games g
+         join lateral (
+           select * from sports.pm_totals_markets m
+            where m.game_id = g.game_id
+              and m.closed = false
+              and m.over_token_id is not null
+            order by m.liquidity_num desc nulls last
+            limit $1
+         ) t on true
+        where g.kickoff between now() - interval '6 hours'
+                            and now() + ($2 || ' hours')::interval
+     ), held as (
+       select m.*, g.kickoff
+         from bots.positions p
+         join sports.pm_totals_markets m
+           on m.game_id = p.game_id
+          and p.token_id in (m.over_token_id, m.under_token_id)
+         join sports.nfl_games g on g.game_id = m.game_id
+        where p.shares > 0
+          and p.market_type = 'totals'
+          and m.closed = false
+          and m.over_token_id is not null
+          and g.home_score is null
+          and g.kickoff > now() - interval '12 hours'
+     ), merged as (
+       select distinct on (condition_id) *
+         from (select * from ranked union all select * from held) u
+        order by condition_id, liquidity_num desc nulls last
+     )
+     select * from merged order by kickoff, liquidity_num desc nulls last`,
     [perGame, String(hours)],
   );
   return rows;
