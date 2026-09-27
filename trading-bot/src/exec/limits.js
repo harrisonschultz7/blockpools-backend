@@ -28,7 +28,7 @@
 // assuming the full size fills at the touch keeps the exit as honest as entry.
 
 const { cfg } = require("../config");
-const { q } = require("../db");
+const { q, pool } = require("../db");
 const log = require("../log");
 
 /** Probability <-> log-odds. */
@@ -146,10 +146,13 @@ async function createExitOrder(args) {
 }
 
 /** Book the sale: close the order, credit the trade, reduce the position. */
-async function settleExit(botId, order, hit, bookTs) {
+async function settleExit(botId, order, hit, bookTs, exec) {
+  // Defaults to the pool. tryFill() passes a client so the claim and the four
+  // writes below land in ONE transaction -- see the note there.
+  const run = exec ? (text, params) => exec.query(text, params) : q;
   const partial = hit.unfilledShares > 0;
 
-  await q(
+  await run(
     `update bots.limit_orders
         set status = $2, filled_at = now(), fill_price = $3,
             fill_detail = $4, closed_reason = $5, shares = $6, updated_at = now()
@@ -163,7 +166,7 @@ async function settleExit(botId, order, hit, bookTs) {
   // P&L on the sold shares only. `exited` is what stops settleTrades() ALSO
   // paying out a position that was already closed -- double-counting it would
   // be exactly the realised-only inflation this project exists to avoid.
-  const { rows } = await q(
+  const { rows } = await run(
     `update bots.trades t
         set exit_price  = $2,
             exit_at     = now(),
@@ -178,7 +181,7 @@ async function settleExit(botId, order, hit, bookTs) {
     [order.trade_id, hit.avgPrice, hit.filledShares],
   );
 
-  await q(
+  await run(
     `update bots.positions
         set shares   = greatest(0, shares - $3),
             cost_usd = greatest(0, cost_usd - ($3 * avg_price)),
@@ -186,7 +189,7 @@ async function settleExit(botId, order, hit, bookTs) {
       where bot_id = $1 and token_id = $2`,
     [botId, order.token_id, hit.filledShares],
   );
-  await q(`delete from bots.positions where bot_id = $1 and shares <= 1e-6`, [botId]);
+  await run(`delete from bots.positions where bot_id = $1 and shares <= 1e-6`, [botId]);
 
   const pnl = rows[0] ? Number(rows[0].pnl_usd) : 0;
   log(`    EXIT ${rows[0] ? rows[0].game_id : order.game_id} sold ` +
@@ -194,6 +197,102 @@ async function settleExit(botId, order, hit, bookTs) {
       `-> pnl $${pnl.toFixed(2)}${partial ? " (partial)" : ""}`);
 }
 
+/**
+ * Claim one order and fill it, atomically.
+ *
+ * Two processes now look for fills -- the 15-minute tick and the recorder's
+ * 20-second sweep -- and a fill is read-then-write: read the order's shares, walk
+ * the ladder, write the sale. Interleave those and the same shares sell twice and
+ * the profit books twice.
+ *
+ * The obvious guard, a session-scoped pg_advisory_lock, DOES NOT WORK HERE and
+ * fails silently. This database is reached through a transaction pooler: two
+ * clients checked out of the pool report the same pg_backend_pid, so both acquire
+ * the 'same' session lock and both believe they hold it exclusively. Verified
+ * directly rather than assumed. A transaction is pinned to one server connection,
+ * though, so a row lock taken inside one is genuinely exclusive.
+ *
+ * Hence: open a transaction, SELECT ... FOR UPDATE the order, re-check it is still
+ * open with the shares we walked the ladder for, and only then settle -- with the
+ * settlement writes passed the SAME client so they are inside the transaction and
+ * roll back together. If the order moved under us, the ladder we walked is stale,
+ * so we drop the fill rather than apply it to different shares; the next poll is
+ * 20 seconds away.
+ */
+async function tryFill(botId, order, hit, bookTs) {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const { rows } = await client.query(
+      `select shares, status from bots.limit_orders where id = $1 for update`,
+      [order.id],
+    );
+    const cur = rows[0];
+    const unchanged = cur && cur.status === "open" &&
+      Math.abs(Number(cur.shares) - Number(order.shares)) < 1e-6;
+    if (!unchanged) { await client.query("rollback"); return false; }
+
+    await settleExit(botId, order, hit, bookTs, client);
+    await client.query("commit");
+    return true;
+  } catch (e) {
+    await client.query("rollback").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+/**
+ * FILL ONLY. Walk every open exit against the freshest recorded book and sell
+ * whatever the ladder will take. No repricing, no cancelling.
+ *
+ * The fill check used to ride inside the 15-minute tick while the recorder writes
+ * a book every ~20 seconds -- so roughly one snapshot in 45 was ever examined, and
+ * a resting sell filled only if the bid happened to be above the limit at the
+ * instant the tick looked. MIN @ TB crossed its 0.761 limit at 23:00:11 with
+ * thousands of shares bid, fell back before the 23:04 tick, and sat unfilled on a
+ * $245 exit. A real resting order is lifted the moment the book crosses it, so the
+ * fill check belongs next to the book rather than next to the model.
+ *
+ * Deliberately CHEAP: one query, no network. The recorder has already paid for the
+ * book; this re-reads what it just wrote, which is why running it every poll costs
+ * nothing measurable against the writes already happening.
+ *
+ * Repricing stays in the tick. It needs a forecast, the model is blind in-play
+ * anyway, and moving a resting order 45 times an hour on no new information would
+ * be churn dressed up as responsiveness.
+ */
+async function sweepFills(botId) {
+  const { rows: orders } = await q(
+    `select o.id, o.trade_id, o.token_id, o.shares, o.limit_price, o.game_id,
+            bk.bids, bk.ts as book_ts
+       from bots.limit_orders o
+       join sports.nfl_games g on g.game_id = o.game_id
+       left join sports.pm_markets        ml on ml.condition_id = o.condition_id
+       left join sports.pm_totals_markets tm on tm.condition_id = o.condition_id
+       left join lateral (
+         select h.bids, h.ts from sports.odds_history h
+          where h.token_id = o.token_id and h.bids is not null
+          order by h.ts desc limit 1
+       ) bk on true
+      where o.bot_id = $1 and o.status = 'open' and o.action = 'SELL'
+        -- The same guards manageExits applies before filling. A finished game or a
+        -- closed market has nothing left to trade against; the tick owns CANCELLING
+        -- those, this sweep merely declines to fill them.
+        and not (g.home_score is not null and g.away_score is not null)
+        and coalesce(ml.closed, tm.closed, false) = false`,
+    [botId],
+  );
+
+  let filled = 0;
+  for (const o of orders) {
+    if (!o.bids) continue;
+    const hit = walkBids(o.bids, Number(o.shares), Number(o.limit_price));
+    if (!hit.filledShares) continue;
+    if (await tryFill(botId, o, hit, o.book_ts)) filled++;
+  }
+  return { filled, checked: orders.length };
+}
 /**
  * Re-price every open exit to current fair, then try to fill it against the
  * latest recorded book. `forecasts` is Map<game_id, forecast>.
@@ -292,8 +391,9 @@ async function manageExits(botId, forecasts, now) {
 
     const hit = walkBids(books[0].bids, Number(o.shares), limit);
     if (!hit.filledShares) continue;
-    await settleExit(botId, o, hit, books[0].ts);
-    filled++;
+    // Through tryFill so the tick and the recorder's sweep cannot sell the same
+    // shares twice. A false return means the sweep got there first.
+    if (await tryFill(botId, o, hit, books[0].ts)) filled++;
   }
 
   if (repriced || filled || cancelled) {
@@ -302,4 +402,7 @@ async function manageExits(botId, forecasts, now) {
   return { filled, repriced, cancelled };
 }
 
-module.exports = { manageExits, createExitOrder, walkBids, exitPriceFor, settleExit };
+
+module.exports = {
+  manageExits, sweepFills, createExitOrder, walkBids, exitPriceFor, settleExit,
+};

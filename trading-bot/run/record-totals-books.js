@@ -15,6 +15,7 @@ selectConfig("config.argo-7.json");
 const { q, close } = require("../src/db");
 const log = require("../src/log");
 const { recordTotalsBooks } = require("../src/ingest/polymarketTotals");
+const { sweepFills } = require("../src/exec/limits");
 
 let stopping = false;
 process.on("SIGTERM", () => { stopping = true; });
@@ -52,6 +53,22 @@ async function intervalMs() {
   while (!stopping) {
     try { await recordTotalsBooks(); }
     catch (e) { log.err(`totals recorder tick: ${e.message}`); }
+
+    // FILL AGAINST THE BOOK WE JUST WROTE.
+    //
+    // The fill check used to live only in the 15-minute tick, which examined one
+    // snapshot in roughly 45 and so missed any crossing that opened and closed
+    // between ticks -- MIN @ TB sat unfilled on a $245 exit for that reason. Here
+    // it runs on every poll, which is what a resting order actually does.
+    //
+    // Costs one query and no network: the book is already fetched and stored by the
+    // line above. Failures are logged and swallowed -- a fill problem must never
+    // stop the recorder, because an unrecorded hour of depth cannot be backfilled
+    // from any source at any price, while a missed fill is retried 20 seconds later.
+    try {
+      const res = await sweepFills(cfg().botId);
+      if (res && res.filled) log(`  sweep: ${res.filled} exit(s) filled`);
+    } catch (e) { log.err(`exit sweep: ${e.message}`); }
     const ms = await intervalMs().catch(() => 60000);
     for (let waited = 0; waited < ms && !stopping; waited += 1000) await sleep(1000);
   }
