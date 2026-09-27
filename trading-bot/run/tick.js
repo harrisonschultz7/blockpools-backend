@@ -21,7 +21,8 @@ const { forecastGame, saveForecast } = require("../src/model/forecast");
 const { decide } = require("../src/policy/medium");
 const { executePaper } = require("../src/exec/paper");
 const { manageExits, createExitOrder } = require("../src/exec/limits");
-const { currentNav } = require("../src/accounting/nav");
+const { currentNav, snapshotNav } = require("../src/accounting/nav");
+const { gradeClv, settleTrades } = require("../src/accounting/settle");
 
 const DRY = process.argv.includes("--dry");
 // --window-hours widens the trading window for a dry run only. Useful to see
@@ -154,6 +155,30 @@ async function main() {
   }
 
   if (!DRY) await manageExits(c.botId, forecasts, now);
+
+  // RECONCILE EVERY TICK, not once a day.
+  //
+  // Settlement used to live only in run/daily.js, so a game finishing at 16:00
+  // was not marked won or lost until the 05:00 run: the record, the realised
+  // P&L and the NAV curve all sat eighteen hours behind the scoreboard. Adam-7's
+  // page showed +2.17% ROI beside +$303.53 of realised P&L with nothing open,
+  // which is not a rounding disagreement -- it is two numbers from different
+  // days on the same card.
+  //
+  // All three calls are idempotent and only touch rows that have changed, so
+  // running them every 15 minutes costs a few cheap queries and keeps the page
+  // within a tick of the truth.
+  if (!DRY) {
+    try {
+      await gradeClv();
+      await settleTrades();
+      await snapshotNav(c.botId);
+    } catch (e) {
+      // A reconcile failure must not lose the trading work already done above.
+      log.warn(`reconcile failed (will retry next tick): ${e.message}`);
+    }
+  }
+
 
   log(`tick: looked at ${games.length} games, traded ${traded}` + (DRY ? " (DRY RUN)" : ""));
 }

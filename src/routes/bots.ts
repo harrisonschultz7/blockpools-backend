@@ -80,7 +80,37 @@ botsRouter.get("/", async (_req, res) => {
       );
 
       const startNav = Number(b.starting_nav);
-      const nav = navRows.length ? Number(navRows[navRows.length - 1].nav_usd) : startNav;
+
+      // NAV IS COMPUTED HERE, NOT READ FROM THE LAST SNAPSHOT.
+      //
+      // bots.nav_history gains a row when run/daily.js runs, once a day. Reading
+      // the latest row meant every settlement, exit and price move after that run
+      // was invisible until the next one: Adam-7 showed $10,217.47 and +2.17% ROI
+      // while its own realised P&L said +$303.53 and it held nothing -- the two
+      // figures on the same card disagreed by $86, because one was live and the
+      // other was eighteen hours old.
+      //
+      // Same arithmetic as accounting/nav.js snapshotNav, evaluated now: starting
+      // capital, minus what open positions cost, plus realised P&L, plus open
+      // positions marked to the last recorded book.
+      const { rows: liveRows } = await pg.query(
+        `select
+           coalesce((select sum(p.cost_usd) from bots.positions p
+                      where p.bot_id = $1 and p.shares > 0), 0) AS open_cost,
+           coalesce((select sum(t.pnl_usd) from bots.trades t
+                      where t.bot_id = $1 and t.settled), 0) AS realized,
+           coalesce((select sum(p.shares * coalesce(
+                        (select o.mid from sports.odds_history o
+                          where o.token_id = p.token_id and o.mid is not null
+                          order by o.ts desc limit 1),
+                        p.avg_price))
+                       from bots.positions p
+                      where p.bot_id = $1 and p.shares > 0), 0) AS open_value`,
+        [b.id],
+      );
+      const live = liveRows[0];
+      const nav =
+        startNav - Number(live.open_cost) + Number(live.realized) + Number(live.open_value);
 
       out.push({
         id: b.id,
@@ -109,7 +139,9 @@ botsRouter.get("/", async (_req, res) => {
           looks: Number(selRows[0].looks),
           acted: Number(selRows[0].acted),
         },
-        navSeries: navRows.map((r: any) => ({
+        // Today's point is replaced with the live NAV below, so the curve does
+        // not flatten between daily runs.
+        navSeries: withLiveToday(navRows, nav).map((r: any) => ({
           d: r.d instanceof Date ? r.d.toISOString().slice(0, 10) : String(r.d).slice(0, 10),
           nav: Number(r.nav_usd),
         })),
@@ -141,6 +173,29 @@ botsRouter.get("/", async (_req, res) => {
  * Still open -> exitPrice, pnlUsd and returnPct are null rather than 0, so the
  * UI shows a dash instead of implying a flat trade.
  */
+/**
+ * Daily NAV history with today's point set to the LIVE figure.
+ *
+ * Without this the chart draws a flat line from the last daily snapshot to the
+ * right edge while the headline ROI beside it shows a different number -- the
+ * exact mismatch that made Adam-7's page look frozen after its second trade
+ * settled. Appends a point for today when the daily job has not run yet.
+ */
+function withLiveToday(navRows: any[], liveNav: number) {
+  const today = new Date().toISOString().slice(0, 10);
+  const asDay = (d: any) =>
+    d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
+
+  const out = navRows.map((r) => ({ ...r }));
+  const last = out[out.length - 1];
+  if (last && asDay(last.d) === today) {
+    last.nav_usd = liveNav;
+    return out;
+  }
+  out.push({ d: today, nav_usd: liveNav, open_positions: 0 });
+  return out;
+}
+
 botsRouter.get("/:botId/trades", async (req, res) => {
   try {
     const limit = Math.min(200, Number(req.query.limit) || 50);
