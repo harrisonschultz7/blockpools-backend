@@ -82,6 +82,22 @@ botsRouter.get("/", async (_req, res) => {
       // runs over 16 games already read as 49. Under the 15-minute timer it
       // would reach ~1,536/day and the tile would show "2/1536", which looks
       // like extraordinary selectivity but is just the tick rate.
+      // WHEN THIS BOT WAS ACTUALLY EXPOSED. One window per game it traded,
+      // opening two hours before kickoff -- roughly when it takes positions -- and
+      // closing when the last of that game's trades closed, or four hours after
+      // kickoff if none has. Used to strip dead time out of the equity curve; see
+      // buildNavSeries().
+      const { rows: windowRows } = await pg.query(
+        `select min(g.kickoff) - interval '2 hours' as w_start,
+                coalesce(max(t.closed_at), max(t.exit_at),
+                         min(g.kickoff) + interval '4 hours') as w_end
+           from bots.trades t
+           join sports.nfl_games g on g.game_id = t.game_id
+          where t.bot_id = $1
+          group by g.game_id
+          order by 1`,
+        [b.id],
+      );
       const { rows: selRows } = await pg.query(
         `select count(distinct game_id) as looks,
                 count(distinct game_id) filter (where acted) as acted
@@ -152,9 +168,10 @@ botsRouter.get("/", async (_req, res) => {
         },
         // Today's point is replaced with the live NAV below, so the curve does
         // not flatten between daily runs.
-        navSeries: buildNavSeries(navRows, intraRows, nav).map((r) => ({
+        navSeries: buildNavSeries(navRows, intraRows, nav, windowRows).map((r) => ({
           d: r.d,
           nav: r.nav_usd,
+          idle: r.idle === true,
         })),
         createdAt: b.created_at,
       });
@@ -198,12 +215,99 @@ botsRouter.get("/", async (_req, res) => {
  * last recorded point to the right edge while the ROI beside it reads something
  * else, which is what made this page look frozen in the first place.
  */
-type NavPoint = { d: string; nav_usd: number; open_positions: number };
+type NavPoint = {
+  d: string;
+  nav_usd: number;
+  open_positions: number;
+  /** A bridging point standing in for a stretch when the bot held nothing. */
+  idle?: boolean;
+  /** A daily close rather than an intraday sample; judged by day, not instant. */
+  daily?: boolean;
+};
 
+/** Merge overlapping windows so a Sunday slate reads as one session, not twelve. */
+function mergeWindows(rows: any[]): { start: number; end: number }[] {
+  const ws = rows
+    .map((r) => ({
+      start: new Date(r.w_start).getTime(),
+      end: new Date(r.w_end).getTime(),
+    }))
+    .filter((w) => Number.isFinite(w.start) && Number.isFinite(w.end))
+    .sort((x, y) => x.start - y.start);
+
+  const out: { start: number; end: number }[] = [];
+  for (const w of ws) {
+    const last = out[out.length - 1];
+    if (last && w.start <= last.end) last.end = Math.max(last.end, w.end);
+    else out.push({ ...w });
+  }
+  return out;
+}
+
+/**
+ * Collapse the dead time between games.
+ *
+ * Both charts place points by INDEX -- x = i / (n - 1) -- so every sample costs
+ * the same horizontal space whether anything happened or not. This bot is exposed
+ * for a few hours on a Sunday and flat for the rest of the week, so a straight
+ * time series spends most of its width drawing a ruler and compresses the part
+ * worth looking at into a sliver.
+ *
+ * So: keep every point inside an active window, and collapse each idle stretch to
+ * a SINGLE bridging point carrying the level it ended at. The line stays continuous
+ * and honest about the value -- NAV never jumps -- but a four-day gap costs one
+ * index step instead of four hundred. Same idea as an equity chart skipping
+ * overnights and weekends.
+ *
+ * Bridging points are flagged `idle` so the frontend can draw them differently
+ * later; nothing reads it yet, and the compression alone fixes the shape.
+ *
+ * With no windows at all -- a bot that has never traded -- this returns the series
+ * untouched rather than emptying the chart.
+ */
+function compressIdle(points: NavPoint[], windows: { start: number; end: number }[]): NavPoint[] {
+  if (!windows.length || points.length < 3) return points;
+
+  const DAY_MS = 86_400_000;
+  // A daily close is stamped at midnight, and midnight is never inside a game --
+  // so judging it by instant would mark every pre-intraday point idle and collapse
+  // a bot's whole history to a couple of points. Judge those by whether their DAY
+  // overlaps a window; judge intraday samples by the instant, which is the whole
+  // point of having them.
+  const active = (p: NavPoint) => {
+    const ms = new Date(p.d).getTime();
+    if (!p.daily) return windows.some((w) => ms >= w.start && ms <= w.end);
+    return windows.some((w) => ms < w.end && ms + DAY_MS > w.start);
+  };
+
+  const out: NavPoint[] = [];
+  let pendingIdle: NavPoint | null = null;
+
+  for (const p of points) {
+    if (active(p)) {
+      // Flush the idle stretch that led into this window, so the line enters it
+      // from the level it actually sat at rather than jumping.
+      if (pendingIdle) { out.push({ ...pendingIdle, idle: true }); pendingIdle = null; }
+      out.push(p);
+    } else {
+      pendingIdle = p;   // keep only the most recent; earlier ones are the same line
+    }
+  }
+  // A trailing idle stretch is the present -- always worth showing.
+  if (pendingIdle) out.push({ ...pendingIdle, idle: true });
+
+  // Guarded on the RESULT, not on how much was active. A young bot legitimately
+  // compresses to very few points -- Adam-7's whole history is a launch level and
+  // two step-ups -- and that is a better chart than the same information stretched
+  // over a 26-sample flat line. Only bail out if there would be too little left to
+  // draw a curve at all.
+  return out.length >= 3 ? out : points;
+}
 function buildNavSeries(
   navRows: any[],
   intraRows: any[],
   liveNav: number,
+  windowRows: any[] = [],
 ): NavPoint[] {
   const iso = (v: any) =>
     v instanceof Date ? v.toISOString() : new Date(v).toISOString();
@@ -225,6 +329,7 @@ function buildNavSeries(
       d: `${day(r.d)}T00:00:00.000Z`,
       nav_usd: Number(r.nav_usd),
       open_positions: r.open_positions,
+      daily: true,
     }));
 
   const out = [...daily, ...intra];
@@ -237,7 +342,7 @@ function buildNavSeries(
   if (last && lastAgeMs < 60_000) last.nav_usd = liveNav;
   else out.push({ d: nowIso, nav_usd: liveNav, open_positions: 0 });
 
-  return out;
+  return compressIdle(out, mergeWindows(windowRows));
 }
 
 botsRouter.get("/:botId/trades", async (req, res) => {
