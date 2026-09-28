@@ -230,7 +230,7 @@
     "_comment_cadence": "farPollSeconds samples a game more than midWindowHours away every 10 minutes instead of every 60s. 38 of 158 tracked tokens were for games over 48h out and were polled as often as one kicking off within the hour. Anything at or past kickoff is always polled: that is when the exits ride and the closing line is struck."
   },
   "marketScopeLabel": "Game totals",
-  "description": "A proprietary BlockPools prediction model focused on NFL game totals at medium risk. It builds its own expected total from each offence and defence, then trades only where the market disagrees enough to be worth acting on.",
+  "description": "A proprietary BlockPools prediction model focused on NFL game totals (over/unders) at medium risk. It builds its own expected total from each offence and defence, then trades only where the market disagrees enough to be worth acting on.",
   "_comment_display": "marketScopeLabel and description are written to bots.bot by ensureBot and are what the leaderboard card shows. marketScope (totals) stays the machine value the policy reads; this is the human label, matching the Game markets wording already used for Adam-7.",
   "_comment_riskTier": "riskTier below is a SEED only. run/risk-tier.js derives the live value from the sizing policy and the prices actually traded, and writes bots.bot.risk_tier. Editing it here does not change what users see."
 }
