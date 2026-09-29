@@ -139,7 +139,7 @@
       "ridge": 0.001,
       "maxScale": 1.5,
       "startSeason": 2022,
-      "_comment_window": "startSeason (2022, FTNs first charted season) is the CALIBRATION window and is deliberately wider than data.startSeason (2025). The 2025 cutoff exists because game-to-game team matchups go stale; the calibration measures how much of each factor the closing LINE already contains, which is a property of the market rather than of this years rosters. At 318 games every beta had a standard error about its own size (scheme -1.26, t -1.24, 95% range roughly -3.3 to +0.7), so nothing could be concluded either way. Run run/backfill-history.js to populate it. Forecasting is unaffected: features still gate on data.startSeason.",
+      "_comment_window": "48h. Was 72, chosen as roughly where wind forecasts start to carry information -- 48 is strictly better on that argument, since WEATHER CARRIES THE TOP WEIGHT and a forecast two days out beats one three days out. It also matches Adam-7, so neither bot can open a position on a game whose injury report has not been filed.",
       "minScale": 0.3,
       "_comment_floor": "minScale lifts a weak but CORRECTLY SIGNED factor off zero so it still moves the price when the regression cannot confirm it -- the bot is meant to take risk rather than wait for statistical permission. Not applied to a wrong-signed factor, which would be betting against the only evidence there is. Residual mode only; independent mode applies no scales at all."
     },
@@ -197,7 +197,7 @@
     "maxPrice": 0.95,
     "minBookDepthUsd": 250,
     "maxSlippageCents": 0.02,
-    "openWindowHoursBeforeKickoff": 72,
+    "openWindowHoursBeforeKickoff": 48,
     "closeWindowMinutesBeforeKickoff": 10,
     "requireWeatherForecast": true,
     "_comment_weather_gate": "requireWeatherForecast skips an outdoor game whose forecast was never recorded, rather than trading it as though the weather were known to be benign. Without the gate the heaviest factor contributes 0 while the other five still clear minToTrade, so the bot would trade a weather thesis with no weather in it."
