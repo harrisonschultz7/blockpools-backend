@@ -88,7 +88,7 @@ async function main() {
   const weekRow = await q(
     `select coalesce(sum(notional_usd), 0) v from bots.trades
       where bot_id = $1 and settled = false`, [c.botId]);
-  let weekExposure = Number(weekRow.rows[0].v);
+  let openExposure = Number(weekRow.rows[0].v);
 
   let traded = 0;
   const forecasts = new Map();
@@ -117,7 +117,7 @@ async function main() {
       forecast, game, books: bySide, nav,
       windowOverrideHours: WINDOW_ARG,
       existingPosition: existing.rows.length > 0,
-      weekExposureUsd: weekExposure, now,
+      openExposureUsd: openExposure, now,
     });
 
     const label = `${game.away_team} @ ${game.home_team}`;
@@ -150,7 +150,7 @@ async function main() {
         fill: { ...fill, tokenId: bySide[decision.side].token_id },
       });
     }
-    weekExposure += Number(fill.costUsd);
+    openExposure += Number(fill.costUsd);
     traded++;
   }
 

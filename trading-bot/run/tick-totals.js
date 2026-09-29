@@ -131,7 +131,7 @@ async function main() {
   const weekRow = await q(
     `select coalesce(sum(notional_usd), 0) v from bots.trades
       where bot_id = $1 and settled = false`, [c.botId]);
-  let weekExposure = Number(weekRow.rows[0].v);
+  let openExposure = Number(weekRow.rows[0].v);
 
   let traded = 0;
   let dryNotional = 0;
@@ -182,7 +182,7 @@ async function main() {
       forecast, game, market, books: bySide, nav,
       windowOverrideHours: WINDOW_ARG,
       existingPosition: existing.rows.length > 0,
-      weekExposureUsd: weekExposure, now,
+      openExposureUsd: openExposure, now,
     });
 
     if (!decision.acted) {
@@ -198,22 +198,25 @@ async function main() {
   }
 
   // ---- allocation: best edge first ---------------------------------------
-  // The weekly cap is a real constraint -- on the 2026 week-3 slate the slate
+  // NOTE: this budget is OPEN exposure, not cumulative weekly spend. It is summed
+  // over trades with settled = false, so a position that closes -- sold or settled --
+  // returns its notional to the budget and frees it for a later game the same day.
+  // The open-exposure cap is a real constraint -- on the 2026 week-3 slate the slate
   // wanted 37% of NAV against a 25% cap. Funding in kickoff order means an early
   // 4-cent edge crowds out a late 16-cent one, which is allocation by accident.
   // evaluationMode "week" exists precisely so capital can be rationed across a
   // slate the bot can see all of; this is the part that actually does it.
   candidates.sort((x, y) => y.decision.edge - x.decision.edge);
 
-  const weekBudget = nav * c.policy.maxWeeklyExposurePctNav;
+  const openBudget = nav * c.policy.maxOpenExposurePctNav;
   for (const cand of candidates) {
-    const room = Math.max(0, weekBudget - weekExposure);
+    const room = Math.max(0, openBudget - openExposure);
     const minOrder = Number(cand.market.min_order_usd) || 0;
     if (room < Math.max(minOrder, 1)) {
       await logDecision(c.botId, cand.game, cand.market, cand.forecast,
                         { acted: false, skip_reason: "exposure_cap", edge: cand.decision.edge }, null);
       log(`  CUT   ${(cand.game.away_team + "@" + cand.game.home_team).padEnd(20)} ` +
-          `edge ${(cand.decision.edge * 100).toFixed(1)}c -- weekly budget exhausted`);
+          `edge ${(cand.decision.edge * 100).toFixed(1)}c -- open-exposure budget exhausted`);
       continue;
     }
     // Trim the last funded position to the remaining room rather than dropping it.
@@ -230,10 +233,10 @@ async function main() {
 
     traded++;
     dryNotional += decision.notionalUsd;
-    weekExposure += decision.notionalUsd;
+    openExposure += decision.notionalUsd;
     if (DRY) continue;
     await openPosition(c, cand.game, cand.market, cand.bySide, decision, cand.forecast,
-                       () => weekExposure, (v) => { weekExposure = v; }, () => {});
+                       () => openExposure, (v) => { openExposure = v; }, () => {});
   }
 
   if (!DRY) await manageExits(c.botId, forecasts, now);
@@ -271,13 +274,13 @@ async function main() {
   }
 
   // Exposure is reported alongside the count because the count alone hides the
-  // thing that matters: nine trades at the 5%-of-NAV cap is most of the weekly
+  // thing that matters: nine trades at the 5%-of-NAV cap is most of the open
   // budget, and a bot that is meant to be selective should not be quietly
   // spending it.
   const pctNav = nav > 0 ? (100 * dryNotional / nav).toFixed(1) : "n/a";
   log(`tick-totals: looked at ${games.length} games, traded ${traded}` +
       ` (${dryNotional.toFixed(0)} = ${pctNav}% of ${nav.toFixed(0)} NAV,` +
-      ` weekly cap ${(100 * c.policy.maxWeeklyExposurePctNav).toFixed(0)}%)` +
+      ` open cap ${(100 * c.policy.maxOpenExposurePctNav).toFixed(0)}%)` +
       (DRY ? " (DRY RUN)" : ""));
 }
 

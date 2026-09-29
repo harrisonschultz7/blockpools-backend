@@ -45,7 +45,7 @@ const SKIP = {
 const skip = (reason, extra) => ({ acted: false, skip_reason: reason, ...(extra || {}) });
 
 function decideTotals(args) {
-  const { forecast, game, market, books, nav, existingPosition, weekExposureUsd,
+  const { forecast, game, market, books, nav, existingPosition, openExposureUsd,
           now, windowOverrideHours } = args;
   const p = cfg().policy;
   const mc = cfg().model.confidence;
@@ -116,14 +116,27 @@ function decideTotals(args) {
   if (depth < p.minBookDepthUsd) return skip(SKIP.THIN_BOOK, { depth });
 
   // -- sizing --------------------------------------------------------------
-  // Kelly for a binary at price c paying 1: f* = (p - c) / (1 - c).
+  //
+  // FLAT or KELLY, per policy.sizingMode.
+  //
+  // Kelly deliberately puts the most money where the edge estimate is largest.
+  // That is optimal when the estimate is CALIBRATED and actively harmful when it
+  // is not: it converts estimation error directly into position size. Week 3 said
+  // it is not -- edge magnitude did not order outcomes -- and the factor fitting
+  // had already said the same thing. Flat sizing throws away the ranking rather
+  // than betting on it.
+  //
+  // kellyFraction and the Kelly branch are kept, not deleted: this is a setting to
+  // be reverted once the edge estimate earns it back, not a decision to relitigate.
   const kellyFull = edge / (1 - price);
   const kelly = Math.max(0, kellyFull * p.kellyFraction);
-
+  const sized = p.sizingMode === "flat"
+    ? nav * p.flatPositionPctNav
+    : kelly * nav;
   const capPerMarket = nav * p.maxPositionPctNav;
-  const weekRoom = Math.max(0, nav * p.maxWeeklyExposurePctNav - weekExposureUsd);
-  const notional = Math.min(kelly * nav, capPerMarket, weekRoom);
-  if (notional <= 0) return skip(SKIP.EXPOSURE_CAP, { weekRoom, capPerMarket });
+  const openRoom = Math.max(0, nav * p.maxOpenExposurePctNav - openExposureUsd);
+  const notional = Math.min(sized, capPerMarket, openRoom);
+  if (notional <= 0) return skip(SKIP.EXPOSURE_CAP, { openRoom, capPerMarket });
 
   // Polymarket enforces a per-market minimum order (5 on these books, read from
   // Gamma rather than assumed). Refuse rather than round up: rounding would size

@@ -227,13 +227,13 @@ async function computeRiskTier(botId) {
   const b = botRows[0];
   const cfg = typeof b.config === "string" ? JSON.parse(b.config) : b.config;
 
-  const weeklyCap = Number(cfg?.policy?.maxWeeklyExposurePctNav);
-  if (!Number.isFinite(weeklyCap)) throw new Error(`${botId}: no policy.maxWeeklyExposurePctNav`);
-  const perPosition = Number(cfg?.policy?.maxPositionPctNav) || weeklyCap;
+  const openCap = Number(cfg?.policy?.maxOpenExposurePctNav);
+  if (!Number.isFinite(openCap)) throw new Error(`${botId}: no policy.maxOpenExposurePctNav`);
+  const perPosition = Number(cfg?.policy?.maxPositionPctNav) || openCap;
   const marketType = cfg?.marketScope === "totals" ? "totals" : "moneyline";
 
   // Concurrent legs the cap allows. Drives the correlation penalty only.
-  const legs = Math.max(1, Math.round(weeklyCap / perPosition));
+  const legs = Math.max(1, Math.round(openCap / perPosition));
 
   const obsWindow = Number(cfg?.model?.risk?.observedLookbackDays) || 90;
   const minWeeks = Number(cfg?.model?.risk?.minWeeksForObservedBasis) || 4;
@@ -247,10 +247,10 @@ async function computeRiskTier(botId) {
   // NFL is 1. A daily sport must say so, or it will be rated as though it traded
   // once a week.
   const roundsPerWeek = Math.max(1, Number(cfg?.model?.risk?.roundsPerWeek) || 1);
-  const basisPct = useObserved ? turn.p90 : weeklyCap * roundsPerWeek;
+  const basisPct = useObserved ? turn.p90 : openCap * roundsPerWeek;
   const basis = useObserved
     ? `observed p90 weekly turnover over ${turn.weeks} weeks`
-    : `cap ${(100 * weeklyCap).toFixed(0)}% x ${roundsPerWeek} round(s)/wk ` +
+    : `cap ${(100 * openCap).toFixed(0)}% x ${roundsPerWeek} round(s)/wk ` +
       `(only ${turn.weeks} weeks of history, need ${minWeeks})`;
 
   const exit = await exitFactor(botId, cfg);
@@ -286,7 +286,7 @@ async function computeRiskTier(botId) {
     observedWeeks: turn.weeks,
     observedP90Turnover: turn.p90 === null ? null : +turn.p90.toFixed(4),
     observedMeanTurnover: turn.mean === null ? null : +turn.mean.toFixed(4),
-    weeklyCapPctNav: weeklyCap,
+    openCapPctNav: openCap,
     roundsPerWeek,
     maxPositionPctNav: perPosition,
     concurrentLegs: legs,
