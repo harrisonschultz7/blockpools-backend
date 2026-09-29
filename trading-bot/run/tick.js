@@ -138,6 +138,9 @@ async function main() {
     const fill = await executePaper({
       botId: c.botId, game, decision, forecast,
       book: bySide[decision.side], featureId,
+      // For the copy-trading intent only: the position as a fraction of NAV is
+      // what a subscriber sizes against, and only the caller knows NAV.
+      nav,
     });
     if (!fill.filled) {
       await logDecision(c.botId, game, forecast, { acted: false, skip_reason: fill.reason }, null);

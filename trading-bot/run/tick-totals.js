@@ -236,7 +236,7 @@ async function main() {
     openExposure += decision.notionalUsd;
     if (DRY) continue;
     await openPosition(c, cand.game, cand.market, cand.bySide, decision, cand.forecast,
-                       () => openExposure, (v) => { openExposure = v; }, () => {});
+                       () => openExposure, (v) => { openExposure = v; }, () => {}, nav);
   }
 
   if (!DRY) await manageExits(c.botId, forecasts, now);
@@ -293,7 +293,7 @@ async function main() {
  * with Adam-7, so the totals columns have to be applied here rather than inside it.
  */
 async function openPosition(c, game, market, bySide, decision, forecast,
-                            getExposure, setExposure, onTraded) {
+                            getExposure, setExposure, onTraded, nav) {
   const featureId = await saveForecastTotal(forecast);
   const book = bySide[decision.side];
 
@@ -302,6 +302,8 @@ async function openPosition(c, game, market, bySide, decision, forecast,
     // feature_id points at sports.features (the moneyline table) and must stay
     // null for a totals trade; feature_totals_id carries the reference instead.
     book: { ...book, condition_id: game.condition_id }, featureId: null,
+    // For the copy-trading intent only -- see executePaper.
+    nav,
   });
   if (!fill.filled) {
     await logDecision(c.botId, game, market, forecast,

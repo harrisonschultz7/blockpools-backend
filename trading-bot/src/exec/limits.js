@@ -29,6 +29,7 @@
 
 const { cfg } = require("../config");
 const { q, pool } = require("../db");
+const { emitExit } = require("./intents");
 const log = require("../log");
 
 /** Probability <-> log-odds. */
@@ -141,6 +142,18 @@ async function createExitOrder(args) {
      fill.conditionId || null, decision.marketType || "moneyline",
      decision.line ?? null],
   );
+  // Copy-trading signal. Emitted with the order's own fields rather than the
+  // decision's, so a subscriber places against the same token and price the bot
+  // is actually resting at.
+  await emitExit({
+    botId, kind: "exit", limitPrice: price,
+    order: {
+      trade_id: tradeId, game_id: game.game_id, token_id: fill.tokenId,
+      side: decision.side, condition_id: fill.conditionId || null,
+      market_type: decision.marketType || "moneyline", line: decision.line ?? null,
+    },
+  });
+
   log(`    exit: rest SELL ${fill.filledShares.toFixed(0)} @ ${price.toFixed(3)} (fair)`);
   return rows[0].id;
 }
@@ -377,6 +390,9 @@ async function manageExits(botId, forecasts, now) {
                reprice_count=reprice_count+1, updated_at=now() where id=$1`,
             [o.id, limit],
           );
+          // A reprice is a cancel-and-replace for anyone mirroring this order,
+          // which is why it is its own kind rather than another 'exit'.
+          await emitExit({ botId, kind: "reprice", order: o, limitPrice: limit });
           repriced++;
         }
       }

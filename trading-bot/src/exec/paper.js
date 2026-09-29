@@ -16,6 +16,7 @@
 
 const { cfg } = require("../config");
 const { q } = require("../db");
+const { emitEnter } = require("./intents");
 
 /**
  * Walk a recorded ask ladder.
@@ -57,7 +58,7 @@ function walkDepth(asks, sharesWanted, maxSlippageCents, intendedPrice) {
 
 /** Record a paper trade against the book snapshot the decision was made on. */
 async function executePaper(args) {
-  const { botId, game, decision, forecast, book, featureId } = args;
+  const { botId, game, decision, forecast, book, featureId, nav } = args;
   const c = cfg();
   const fill = walkDepth(book.asks, decision.shares, c.policy.maxSlippageCents, decision.price);
   if (!fill.filledShares) return { filled: false, reason: "no_fillable_depth" };
@@ -92,6 +93,12 @@ async function executePaper(args) {
     [botId, game.game_id, book.token_id, decision.side,
      fill.filledShares, fill.avgPrice, fill.costUsd],
   );
+
+  // The copy-trading signal, emitted once the trade and position are durable.
+  // After, not before: an intent for a fill that then failed to record would have
+  // subscribers holding a position the bot does not.
+  await emitEnter({ botId, tradeId: rows[0].id, game, decision, book, fill,
+                    nav: Number(nav) || 0 });
 
   return { filled: true, tradeId: rows[0].id, slippageBps, ...fill };
 }
