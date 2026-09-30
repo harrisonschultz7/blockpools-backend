@@ -86,10 +86,23 @@ router.get("/status", authPrivy, async (req: AuthedRequest, res: Response) => {
       [did],
     );
 
+    // ONE WALLET FUNDS EVERY SLEEVE. Allocating to a second model does not
+    // find new money, so what is already committed elsewhere has to be visible
+    // wherever an allocation is set -- otherwise two sleeves add up to more
+    // than the balance and the second model silently skips every trade on
+    // insufficient funds.
+    //
+    // Summed here rather than in each caller so the modal and the profile
+    // cannot disagree about it.
+    const committedUsd = rows
+      .filter((r) => r.status !== "revoked")
+      .reduce((sum, r) => sum + Number(r.basis_usd), 0);
+
     res.json({
       termsVersion: TERMS_VERSION,
       minBasisUsd: MIN_BASIS_USD,
       maxBasisUsd: MAX_BASIS_USD,
+      committedUsd,
       delegated: Boolean(delegated),
       delegatedWallet: delegated,
       subscriptions: rows.map((r) => ({
