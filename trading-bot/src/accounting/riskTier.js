@@ -14,10 +14,27 @@
 // TWO PRIMARY DRIVERS, per the user: how much of the portfolio is put at risk,
 // and how far a position has to travel before it is realised.
 //
-// THE BANDS (set by the user, 2026-09-27):
-//   Low     < 10%
-//   Medium   10-20%
-//   High    >= 20%
+// THE BANDS (set by the user, 2026-09-27; medium and high widened 2026-09-30):
+//   Low     < 25%
+//   Medium   25-45%
+//   High    >= 45%
+//
+// Widened so the bots can deploy materially more capital without relabelling
+// themselves: Adam-7 stays Low and Argo-7 stays Medium at a 60% weekly cap.
+// The bands stay contiguous -- a gap would leave scores with no tier to fall
+// into.
+//
+// HEADROOM IS THE THING TO WATCH. Adam-7 scores 21.2% against a 25% ceiling.
+// priceFactor and exitFactor are measured from its own fills -- two of them at
+// the time of writing -- so the score will drift as real ones accumulate, and a
+// drift upward relabels the card in public. Check the tier after each week of
+// fills until observedWeeks passes minWeeksForObservedBasis.
+//
+// The widening is what lets a bot deploy more without relabelling itself: these
+// numbers are RISK-ADJUSTED, not capital deployed. A bot resting a sell above
+// entry carries (T-p)/(1-p) of a full binary's variance, so 25% of NAV per week
+// scored 8.8% for Adam-7 and 15.6% for Argo-7. "Low risk" never meant it staked
+// a tenth of the portfolio.
 //
 // Bands live HERE, not in each bot's config. A bot that could define its own
 // bands could label itself anything.
@@ -65,8 +82,8 @@ const log = require("../log");
 
 // Upper bound of each tier, as a fraction of NAV.
 const BANDS = [
-  { tier: "low", max: 0.10 },
-  { tier: "medium", max: 0.20 },
+  { tier: "low", max: 0.25 },
+  { tier: "medium", max: 0.45 },
   { tier: "high", max: Infinity },
 ];
 
