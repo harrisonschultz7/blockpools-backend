@@ -34,7 +34,8 @@ const POLL_MS = Number(process.env.COPY_FANOUT_POLL_MS || 3000);
 // Fail loudly at boot rather than at the first order. A worker that starts
 // happily and then cannot sign is worse than one that refuses to start: the
 // first symptom would otherwise be a rejected trade on someone's money.
-for (const v of ["PRIVY_APP_ID", "PRIVY_APP_SECRET", "PM_SIGNING_URL",
+for (const v of ["PRIVY_APP_ID", "PRIVY_APP_SECRET",
+  "PRIVY_AUTHORIZATION_PRIVATE_KEY", "PM_SIGNING_URL",
                  "POLYMARKET_BUILDER_CODE"]) {
   if (!String(process.env[v] || "").trim()) {
     log.err(`copy fan-out: ${v} is not set -- refusing to start`);

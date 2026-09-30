@@ -9,9 +9,12 @@
 // differs -- a provider whose `request` routes signing to Privy instead of to a
 // wallet extension.
 //
-// DELEGATION IS THE WHOLE SECURITY BOUNDARY. Privy refuses to sign for a wallet
-// the user has not delegated, and refuses again the moment they revoke. This
-// module does not check delegation itself -- it cannot be trusted to -- it
+// THE SESSION SIGNER IS THE WHOLE SECURITY BOUNDARY. This app's wallets live in
+// Privy's TEE, so access is granted by the user adding OUR key quorum as a
+// session signer on their wallet. Two things must both hold for a signature:
+// the user added the quorum, and we can prove we hold that quorum's private key
+// (PRIVY_AUTHORIZATION_PRIVATE_KEY). Revoking either one stops us dead. This
+// module does not check the grant itself -- it cannot be trusted to -- it
 // simply asks, and a revoked wallet fails at the signature.
 //
 // Builder attribution goes through the SAME /pm/sign endpoint the frontend uses
@@ -25,6 +28,14 @@ const PRIVY_APP_ID = (process.env.PRIVY_APP_ID || "").trim();
 const PRIVY_APP_SECRET = (process.env.PRIVY_APP_SECRET || "").trim();
 /** Absolute URL of the deployed /pm/sign function. */
 const PM_SIGNING_URL = (process.env.PM_SIGNING_URL || "").trim();
+/**
+ * Private key of the authorization keypair (key quorum) registered in the Privy
+ * dashboard. Wallet RPC is rejected without it once a quorum exists, so this is
+ * not optional -- failing at construction beats failing per-signature, which
+ * would look like a Polymarket problem.
+ */
+const PRIVY_AUTHORIZATION_PRIVATE_KEY =
+  (process.env.PRIVY_AUTHORIZATION_PRIVATE_KEY || "").trim();
 
 let privy = null;
 function privyClient() {
@@ -32,7 +43,12 @@ function privyClient() {
     if (!PRIVY_APP_ID || !PRIVY_APP_SECRET) {
       throw new Error("PRIVY_APP_ID / PRIVY_APP_SECRET missing");
     }
-    privy = new PrivyClient(PRIVY_APP_ID, PRIVY_APP_SECRET);
+    if (!PRIVY_AUTHORIZATION_PRIVATE_KEY) {
+      throw new Error("PRIVY_AUTHORIZATION_PRIVATE_KEY missing");
+    }
+    privy = new PrivyClient(PRIVY_APP_ID, PRIVY_APP_SECRET, {
+      walletApi: { authorizationPrivateKey: PRIVY_AUTHORIZATION_PRIVATE_KEY },
+    });
   }
   return privy;
 }
