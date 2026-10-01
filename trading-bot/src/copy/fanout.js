@@ -24,6 +24,52 @@ const { getPmClient } = require("./pmClient");
 const MIN_ORDER_USD = 5;
 
 /**
+ * DRY RUN: do everything except hand the order to the exchange.
+ *
+ * The point is the bookkeeping, not the trade. Sizing, position accounting,
+ * exit sizing, reprice cancel-and-replace and every surface built on top of
+ * them are the parts that have never run end to end, and they do not need a
+ * real fill to be exercised -- they need a fill-shaped result.
+ *
+ * Off unless explicitly asked for, and everything it writes is flagged
+ * dry_run so a simulated position can never be mistaken for one somebody
+ * actually holds.
+ */
+const DRY_RUN = /^(1|true|yes|on)$/i.test(String(process.env.COPY_DRY_RUN || ""));
+
+/**
+ * What the order would have filled at.
+ *
+ * Reads the live book -- a public GET, not an order -- so a simulated fill
+ * carries a real price and the position maths is exercised on a real number
+ * rather than on the ceiling, which would never slip and never partial.
+ * Falls back to the ceiling when the book cannot be read: a dry run must not
+ * fail for want of a nicety.
+ */
+async function simulatedFillPrice(tokenId, maxPrice) {
+  try {
+    const r = await fetch(`https://clob.polymarket.com/book?token_id=${tokenId}`);
+    if (!r.ok) return maxPrice;
+    const b = await r.json();
+    const asks = (b?.asks || [])
+      .map((a) => Number(a.price))
+      .filter((p) => Number.isFinite(p) && p > 0)
+      .sort((x, y) => x - y);
+    const best = asks[0];
+    // Past our ceiling is a miss, which is a real outcome worth simulating.
+    if (!Number.isFinite(best)) return maxPrice;
+    return best > maxPrice ? null : best;
+  } catch {
+    return maxPrice;
+  }
+}
+
+/** Distinguishable from a real exchange id at a glance and in a query. */
+function dryOrderId(kind) {
+  return `dry-${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
  * The sleeve's current value: what they allocated, plus what this sleeve has
  * banked. Unrealised is deliberately excluded -- marking open copied positions
  * every tick would make the next trade's size depend on an unrealised swing,
@@ -110,7 +156,12 @@ async function claim(subId, intent) {
 async function finish(orderId, patch) {
   const sets = [];
   const vals = [orderId];
-  for (const [k, v] of Object.entries(patch)) {
+  // Stamped here rather than at each call site: the early skips -- no funds,
+  // below minimum, no position -- outnumber the paths that reach an exchange,
+  // and one of them forgetting the flag is a simulated row that looks real.
+  // Postgres refuses two assignments to one column, so only when absent.
+  const full = "dry_run" in patch ? patch : { ...patch, dry_run: DRY_RUN };
+  for (const [k, v] of Object.entries(full)) {
     vals.push(v);
     sets.push(`${k} = $${vals.length}`);
   }
@@ -175,15 +226,26 @@ async function copyEnter(sub, intent, orderId) {
 
   let res;
   try {
-    res = await client.placeMarketOrder({
-      assetId: intent.token_id,
-      side: OrderSide.BUY,
-      amount: usd,
-      maxSpend: usd,
-      maxPrice,
-      orderType: OrderType.FAK,
-      builderCode: process.env.POLYMARKET_BUILDER_CODE,
-    });
+    if (DRY_RUN) {
+      // Everything above this line ran for real: the sleeve maths, the wallet
+      // read, the signing client. Only the submission is withheld.
+      const fill = await simulatedFillPrice(intent.token_id, maxPrice);
+      res = fill === null
+        ? { orderId: null, makingAmount: 0, message: "dry run: book above maxPrice" }
+        : { orderId: dryOrderId("enter"), makingAmount: usd / fill };
+      log.info(`copy[dry] enter sub=${sub.id} ${usd.toFixed(2)} ` +
+               `max=${maxPrice} fill=${fill ?? "none"}`);
+    } else {
+      res = await client.placeMarketOrder({
+        assetId: intent.token_id,
+        side: OrderSide.BUY,
+        amount: usd,
+        maxSpend: usd,
+        maxPrice,
+        orderType: OrderType.FAK,
+        builderCode: process.env.POLYMARKET_BUILDER_CODE,
+      });
+    }
   } catch (e) {
     // Record what we TRIED before rethrowing. The outer handler only knows the
     // message, and a rejected row with no size or price is near useless when
@@ -192,6 +254,7 @@ async function copyEnter(sub, intent, orderId) {
       status: "rejected",
       requested_usd: usd,
       limit_price: maxPrice,
+      dry_run: DRY_RUN,
       error: String(e.message || e).slice(0, 400),
     }).catch(() => {});
     throw e;
@@ -205,21 +268,22 @@ async function copyEnter(sub, intent, orderId) {
     clob_order_id: res?.orderId || null,
     filled_shares: shares || null,
     avg_price: shares > 0 ? usd / shares : null,
+    dry_run: DRY_RUN,
     error: shares > 0 ? null : (res?.message || "no fill"),
   });
 
   if (shares > 0) {
     await q(
       `insert into copy.positions
-         (subscription_id, token_id, bot_trade_id, shares, cost_usd, avg_price)
-       values ($1,$2,$3,$4,$5,$6)
-       on conflict (subscription_id, token_id) do update set
+         (subscription_id, token_id, bot_trade_id, shares, cost_usd, avg_price, dry_run)
+       values ($1,$2,$3,$4,$5,$6,$7)
+       on conflict (subscription_id, token_id, dry_run) do update set
          shares    = copy.positions.shares + excluded.shares,
          cost_usd  = copy.positions.cost_usd + excluded.cost_usd,
          avg_price = (copy.positions.cost_usd + excluded.cost_usd)
                      / nullif(copy.positions.shares + excluded.shares, 0),
          updated_at = now()`,
-      [sub.id, intent.token_id, intent.bot_trade_id, shares, usd, usd / shares],
+      [sub.id, intent.token_id, intent.bot_trade_id, shares, usd, usd / shares, DRY_RUN],
     );
   }
   return shares > 0;
@@ -253,8 +317,8 @@ async function walletUsd(client) {
 async function copyExit(sub, intent, orderId) {
   const { rows } = await q(
     `select shares, detached from copy.positions
-      where subscription_id = $1 and token_id = $2`,
-    [sub.id, intent.token_id],
+      where subscription_id = $1 and token_id = $2 and dry_run = $3`,
+    [sub.id, intent.token_id, DRY_RUN],
   );
   const pos = rows[0];
   if (!pos || Number(pos.shares) <= 0) {
@@ -267,7 +331,13 @@ async function copyExit(sub, intent, orderId) {
   }
 
   const client = await getPmClient(sub.wallet_address);
-  const price = Number(intent.limit_price);
+  // Snapped UP for a sell: the price is a floor on what we will accept, so
+  // rounding it down would sell cheaper than the bot intended -- the mirror of
+  // the ceiling rule on the way in.
+  const tick = await tickSize(intent.condition_id);
+  const raw = Number(intent.limit_price);
+  const decimals = Math.max(0, Math.round(-Math.log10(tick)));
+  const price = Number((Math.ceil(raw / tick) * tick).toFixed(decimals));
   const shares = Number(pos.shares);
 
   if (intent.kind === "reprice") {
@@ -281,8 +351,12 @@ async function copyExit(sub, intent, orderId) {
     );
     const old = prev.rows[0]?.clob_order_id;
     if (old) {
-      try { await client.cancelOrder({ orderId: old }); }
-      catch (e) { log.warn(`copy: cancel ${old} failed: ${e.message}`); }
+      // A dry-run order was never on the book, so there is nothing to cancel --
+      // but the row still has to move, or the next reprice finds two live.
+      if (!DRY_RUN) {
+        try { await client.cancelOrder({ orderId: old }); }
+        catch (e) { log.warn(`copy: cancel ${old} failed: ${e.message}`); }
+      }
       await q(
         `update copy.orders set status = 'skipped', skip_reason = 'repriced',
                 updated_at = now()
@@ -293,18 +367,28 @@ async function copyExit(sub, intent, orderId) {
   }
 
   const { OrderSide } = await import("@polymarket/client");
-  const res = await client.placeLimitOrder({
-    assetId: intent.token_id,
-    side: OrderSide.SELL,
-    price,
-    size: shares,
-    builderCode: process.env.POLYMARKET_BUILDER_CODE,
-  });
+  let res;
+  if (DRY_RUN) {
+    // A resting sell has no fill to simulate -- it either rests or it does not,
+    // and what matters here is that it was sized from the subscriber's OWN
+    // position rather than the bot's.
+    res = { orderId: dryOrderId(intent.kind) };
+    log.info(`copy[dry] ${intent.kind} sub=${sub.id} ${shares.toFixed(2)} sh @ ${price}`);
+  } else {
+    res = await client.placeLimitOrder({
+      assetId: intent.token_id,
+      side: OrderSide.SELL,
+      price,
+      size: shares,
+      builderCode: process.env.POLYMARKET_BUILDER_CODE,
+    });
+  }
 
   await finish(orderId, {
     status: res?.orderId ? "placed" : "rejected",
     limit_price: price,
     clob_order_id: res?.orderId || null,
+    dry_run: DRY_RUN,
     error: res?.orderId ? null : (res?.message || "not placed"),
   });
   return Boolean(res?.orderId);

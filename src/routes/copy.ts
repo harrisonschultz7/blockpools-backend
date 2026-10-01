@@ -311,6 +311,7 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
               p.cost_usd,
               p.avg_price,
               p.detached,
+              p.dry_run,
               p.opened_at,
               p.updated_at,
               s.bot_id,
@@ -354,6 +355,10 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
         // Open means the fan-out still manages it: shares left, not detached.
         open: Number(r.shares) > 0 && !r.detached,
         detached: Boolean(r.detached),
+        // Simulated by a dry run, never placed on an exchange. Surfaced rather
+        // than filtered: a hidden fake position is how a fake position ends up
+        // in somebody's P&L.
+        dryRun: Boolean(r.dry_run),
         gameId: r.game_id,
         side: r.side,
         question: r.question,
