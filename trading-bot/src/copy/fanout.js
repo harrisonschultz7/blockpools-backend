@@ -33,6 +33,50 @@ function sleeveNav(sub) {
   return Number(sub.basis_usd) + Number(sub.realized_pnl);
 }
 
+/**
+ * The price grid a market accepts. Polymarket rejects anything off it outright
+ * ("maxPrice has unsupported precision"), so every price we send has to be
+ * snapped to it first.
+ *
+ * Cached per market: it is a property of the market, not of the moment, and the
+ * fan-out would otherwise re-read it for every subscriber on every intent.
+ *
+ * Falls back to 0.01, the coarser of the two grids in use. A 0.01 multiple is
+ * also a 0.001 multiple, so the fallback is valid on either market rather than
+ * merely likely to be.
+ */
+const tickCache = new Map();
+async function tickSize(conditionId) {
+  if (!conditionId) return 0.01;
+  if (tickCache.has(conditionId)) return tickCache.get(conditionId);
+  let tick = 0.01;
+  try {
+    const { rows } = await pool.query(
+      `select tick_size from sports.pm_totals_markets where condition_id = $1`,
+      [conditionId],
+    );
+    const t = Number(rows[0]?.tick_size);
+    if (Number.isFinite(t) && t > 0) tick = t;
+  } catch (e) {
+    log.warn(`copy: tick lookup failed for ${conditionId}: ${e.message}`);
+  }
+  tickCache.set(conditionId, tick);
+  return tick;
+}
+
+/**
+ * Snap a price DOWN to the grid. Down, because the only price we send is a
+ * ceiling on what we will pay, and rounding a ceiling up spends money the
+ * caller did not authorise.
+ *
+ * toFixed before parsing kills the float dust that makes 0.53 arrive as
+ * 0.5300000000000001 -- which the exchange rejects for the same reason.
+ */
+function floorToTick(price, tick) {
+  const decimals = Math.max(0, Math.round(-Math.log10(tick)));
+  return Number((Math.floor(price / tick) * tick).toFixed(decimals));
+}
+
 /** Active, delegated subscriptions for a bot. */
 async function subscribersOf(botId) {
   const { rows } = await q(
@@ -119,17 +163,39 @@ async function copyEnter(sub, intent, orderId) {
   }
 
   const { OrderSide, OrderType } = await import("@polymarket/client");
-  const maxPrice = Math.min(0.99, Number(intent.limit_price) * 1.03);
+  const tick = await tickSize(intent.condition_id);
+  const limit = Number(intent.limit_price);
+  // Chase up to 3% past the bot's price, snapped to the grid. Flooring can land
+  // below the bot's own price when 3% is thinner than one tick (cheap
+  // outcomes), so the bot's price, rounded up to the grid, is the floor: never
+  // pay less than it was willing to, never send a price the exchange refuses.
+  const chased = floorToTick(Math.min(0.99, limit * 1.03), tick);
+  const atLeastBot = floorToTick(Math.min(0.99, limit + tick), tick);
+  const maxPrice = Math.max(chased, atLeastBot);
 
-  const res = await client.placeMarketOrder({
-    assetId: intent.token_id,
-    side: OrderSide.BUY,
-    amount: usd,
-    maxSpend: usd,
-    maxPrice,
-    orderType: OrderType.FAK,
-    builderCode: process.env.POLYMARKET_BUILDER_CODE,
-  });
+  let res;
+  try {
+    res = await client.placeMarketOrder({
+      assetId: intent.token_id,
+      side: OrderSide.BUY,
+      amount: usd,
+      maxSpend: usd,
+      maxPrice,
+      orderType: OrderType.FAK,
+      builderCode: process.env.POLYMARKET_BUILDER_CODE,
+    });
+  } catch (e) {
+    // Record what we TRIED before rethrowing. The outer handler only knows the
+    // message, and a rejected row with no size or price is near useless when
+    // the thing that failed is the size or the price.
+    await finish(orderId, {
+      status: "rejected",
+      requested_usd: usd,
+      limit_price: maxPrice,
+      error: String(e.message || e).slice(0, 400),
+    }).catch(() => {});
+    throw e;
+  }
 
   const shares = Number(res?.makingAmount || 0);
   await finish(orderId, {
