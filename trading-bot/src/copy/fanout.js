@@ -233,7 +233,7 @@ async function copyEnter(sub, intent, orderId) {
       res = fill === null
         ? { orderId: null, makingAmount: 0, message: "dry run: book above maxPrice" }
         : { orderId: dryOrderId("enter"), makingAmount: usd / fill };
-      log.info(`copy[dry] enter sub=${sub.id} ${usd.toFixed(2)} ` +
+      log(`copy[dry] enter sub=${sub.id} ${usd.toFixed(2)} ` +
                `max=${maxPrice} fill=${fill ?? "none"}`);
     } else {
       res = await client.placeMarketOrder({
@@ -373,7 +373,7 @@ async function copyExit(sub, intent, orderId) {
     // and what matters here is that it was sized from the subscriber's OWN
     // position rather than the bot's.
     res = { orderId: dryOrderId(intent.kind) };
-    log.info(`copy[dry] ${intent.kind} sub=${sub.id} ${shares.toFixed(2)} sh @ ${price}`);
+    log(`copy[dry] ${intent.kind} sub=${sub.id} ${shares.toFixed(2)} sh @ ${price}`);
   } else {
     res = await client.placeLimitOrder({
       assetId: intent.token_id,
