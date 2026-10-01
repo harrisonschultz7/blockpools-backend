@@ -33,6 +33,21 @@ const { runFanout } = require("../src/copy/fanout");
 
 const POLL_MS = Number(process.env.COPY_FANOUT_POLL_MS || 3000);
 
+// A dry run left switched on is the worst failure this worker has: every
+// subscriber appears to be trading, positions accumulate, the UI fills in, and
+// not one order was ever placed. It would look like success until somebody
+// tried to withdraw. So it announces itself at every boot, loudly, rather than
+// sitting quietly in an env file nobody re-reads.
+if (/^(1|true|yes|on)$/i.test(String(process.env.COPY_DRY_RUN || ""))) {
+  log("");
+  log("  ############################################################");
+  log("  ##  COPY_DRY_RUN=1 -- NO ORDERS WILL REACH AN EXCHANGE    ##");
+  log("  ##  Fills are simulated. Positions written are NOT held.  ##");
+  log("  ##  Unset COPY_DRY_RUN and restart to trade for real.     ##");
+  log("  ############################################################");
+  log("");
+}
+
 // Fail loudly at boot rather than at the first order. A worker that starts
 // happily and then cannot sign is worse than one that refuses to start: the
 // first symptom would otherwise be a rejected trade on someone's money.
