@@ -327,7 +327,12 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
               g.away_team,
               g.kickoff,
               g.home_score,
-              g.away_score
+              g.away_score,
+              -- The exit the model has resting on this position. Lateral
+              -- because only the newest matters: a reprice supersedes the order
+              -- before it, and the superseded one is already marked skipped.
+              sell.limit_price as sell_price,
+              sell.kind        as sell_kind
          from copy.positions p
          join copy.subscriptions s on s.id = p.subscription_id
          join bots.bot b           on b.id = s.bot_id
@@ -335,6 +340,16 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
          left join sports.pm_totals_markets m
                 on m.condition_id = t.condition_id
          left join sports.nfl_games g on g.game_id = t.game_id
+         left join lateral (
+           select o.limit_price, o.kind
+             from copy.orders o
+            where o.subscription_id = p.subscription_id
+              and o.token_id = p.token_id
+              and o.kind in ('exit','reprice')
+              and o.status = 'placed'
+            order by o.id desc
+            limit 1
+         ) sell on true
         where s.privy_did = $1
         order by (p.shares > 0 and not p.detached) desc, p.updated_at desc
         limit $2`,
@@ -368,6 +383,8 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
         kickoff: r.kickoff,
         homeScore: num(r.home_score),
         awayScore: num(r.away_score),
+        /** The model's resting exit, or null if it has not set one yet. */
+        sellPrice: num(r.sell_price),
         openedAt: r.opened_at,
         updatedAt: r.updated_at,
       })),
