@@ -16,9 +16,15 @@
 // interaction fitted WITHOUT its main effects is a well-known way to produce a
 // large, confident and meaningless coefficient.
 //
-// WEIGHTED least squares, by neutral play count. An 18-snap target is a much
-// noisier measurement of an offence's EPA than a 53-snap one, and unweighted OLS
-// treats them as equals.
+// WEIGHTED least squares, by neutral play count TIMES season recency. An
+// 18-snap target is a much noisier measurement of an offence's EPA than a
+// 53-snap one, and unweighted OLS treats them as equals.
+//
+// The recency half is a judgement, not a measurement: how a team plays is a
+// property of this year's staff and personnel, so an old season is evidence
+// about a team that no longer exists. seasonRecencyDecay applies decay^(latest
+// season - this season), so at 0.5 a 2025 observation counts half of a 2026
+// one. Default 1 leaves the old unweighted-by-season behaviour in place.
 //
 // POINT-IN-TIME. Traits for a week-N game are pooled from weeks before N only,
 // which is why this walks the calendar week by week instead of building one
@@ -137,11 +143,20 @@ async function buildSamples() {
       samples.push({
         season, week, game_id: r.game_id, team: r.team, opponent: r.opponent,
         y: Number(r.off_epa_neutral),
+        // Season recency is applied after the loop, once the latest season in
+        // the sample is known -- it cannot be computed here without assuming
+        // which season is newest.
         w: Number(r.off_neutral_plays),
         x: [1, off.axes.aggression, off.axes.tempo, def.axes.pressure,
             def.axes.frontWeight, ...TERMS.map((t) => terms[t])],
       });
     }
+  }
+  // Scale by season recency now that the newest season in the sample is known.
+  const decay = Number(c.model.scheme.seasonRecencyDecay ?? 1);
+  if (samples.length && decay > 0 && decay !== 1) {
+    const latest = Math.max(...samples.map((s) => s.season));
+    for (const s of samples) s.w *= Math.pow(decay, latest - s.season);
   }
   return samples;
 }

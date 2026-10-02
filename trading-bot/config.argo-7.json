@@ -21,7 +21,7 @@
     "expectedPlaysPerTeam": 64,
     "weights": {
       "weather": 0.3,
-      "scheme": 0,
+      "scheme": 0.2,
       "rest": 0.15,
       "pace": 0,
       "injury": 0.08,
@@ -68,7 +68,10 @@
       "_comment_fit": "fitRidge is a small diagonal add on the normal equations. The four interaction products are correlated with their own main effects by construction, so the design matrix is near-collinear and plain OLS can invert into nonsense. minFitGames is a refusal threshold, not a target: below it, run/fit-scheme.js writes nothing and the scheme factor contributes exactly 0 rather than a coefficient fitted on 80 games.",
       "requireSignificantFit": true,
       "_comment_significance": "requireSignificantFit makes the factor contribute 0 unless some interaction reaches |t| >= 2. First real fit, 2025 + 2026 weeks 1-2, 587 team-game observations: max |t| 0.61, r2 0.008 -- no signal. So as shipped, the 0.29 scheme weight is DORMANT and Argo-7 is effectively running on weather, rest, pace, injury and situational. That is deliberate: a dead factor that announces itself is recoverable, a live factor fitted on noise is not. Re-run run/fit-scheme.js as the season adds charted games.",
-      "fitStartSeason": 2022,
+      "_comment_window": "RECENCY IS DONE WITH THE DECAY, NOT THE WINDOW. The brief was 2025+2026 only with the emphasis on 2026; measured, that window has 604 observations and max |t| 1.03, and requireSignificantFit then holds the factor at zero no matter what weight it is given -- so the literal version cannot price anything. The decay achieves the same intent without that: at 0.5 a 2026 row counts 1.0, 2025 0.5, 2024 0.25, 2023 0.125, so the old seasons stabilise the estimate while barely steering it. Measured with decay 0.5: 2025+ |t| 1.03, 2024+ 2.02 (and its max is a different term, so incoherent), 2023+ 2.52. 2023 is both the strongest and the one where tempo_pressure IS the max term. It also beats the old unweighted 2022-2026 fit at 2.10, so weighting by recency helped rather than cost.",
+      "fitStartSeason": 2023,
+      "_comment_recency": "0.5 -- a 2025 observation counts half of a 2026 one, on top of the existing neutral-play weighting. This is a judgement about how fast style goes stale, not a measured decay rate; there is nowhere near enough data to fit one.",
+      "seasonRecencyDecay": 0.5,
       "_comment_fit_window": "fitStartSeason (2022, FTN's first charted season) governs ONLY the league-wide interaction coefficient. Team TRAITS still start at data.schemePriorSeason (2025) per the no-stale-matchups rule -- the two windows are separate because they describe different objects: a team's tendencies go stale, but whether a no-huddle offence gains against a blitz-heavy defence is structural football and does not. Precedent: replacementBaselineStartSeason in Adam-7's config is split out for exactly this reason. MEASURED EFFECT OF THE WINDOW -- max interaction |t| by fit start: 2025 -> 0.61 (n=587), 2024 -> 1.38 (n=1142), 2023 -> 1.77 (n=1698), 2022 -> 2.28 (n=2253). The surviving term is tempo_pressure, positive: a high-tempo offence gains on a blitz-heavy defence, which is sensible (no-huddle denies substitution and disguise). Caveat that is NOT resolved: 4 terms times 4 windows is 16 tests, so a nominal t of 2.28 is suggestive rather than established -- Bonferroni across the 4 terms wants 2.5. The monotone climb with sample and the stable sign are the real evidence. Set this back to 2025 to veto the wider window; the factor then goes dormant via requireSignificantFit.",
       "betaShrinkByT": true
     },
