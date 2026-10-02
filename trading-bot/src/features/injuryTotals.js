@@ -74,10 +74,26 @@ async function teamUnitPenalties(team, season, week, asOf) {
 /**
  * Injury signal for a game total, in points.
  *
- * Offensive damage on either team lowers the total; defensive damage on either
- * team raises it. qbOutPoints is the calibration anchor: a starting quarterback
- * with a full snap share, ruled Out, with a replacement of unknown quality,
- * produces a cost of 1.0 and therefore exactly that many points.
+ * The two units are scaled SEPARATELY, and only because the data forced it.
+ *
+ * The original form was (defCost - offCost) x qbOutPoints: one constant, with
+ * the sign carried by which unit was hurt. That bakes in "offensive damage
+ * lowers the total" as an assumption, and measurement says it is wrong, or at
+ * least not right. Games where the STARTING quarterback was ruled out or
+ * doubtful went OVER 59.6% of the time against a 51.7% base (n=47, 2025+,
+ * starters identified by top offensive snap share), averaging +2.18 points.
+ *
+ * The likely reason is that the market already over-corrects: books cut the
+ * total hard on quarterback news and the game lands above the cut number. The
+ * old form added another 2.5 points of cut on top of that.
+ *
+ * So offenceOutPoints is now small and POSITIVE -- offensive damage nudges the
+ * total up, not down -- while defenceOutPoints keeps the original magnitude and
+ * meaning, because the defensive half was never measured and inverting it on
+ * the back of a quarterback finding would be inventing a result.
+ *
+ * Deliberately small: z is +1.08, which is under the |z| >= 2 bar this project
+ * uses, so the honest position is "stop betting against it", not "bet on it".
  */
 async function injuryTotalsSignal(game, asOf) {
   const m = cfg().model.injury;
@@ -88,7 +104,12 @@ async function injuryTotalsSignal(game, asOf) {
 
   const offCost = home.offense + away.offense;
   const defCost = home.defense + away.defense;
-  const raw = (defCost - offCost) * m.qbOutPoints;
+  // Fall back to the old single constant if the split keys are absent, so an
+  // un-migrated config keeps its previous behaviour rather than silently
+  // scaling everything to zero.
+  const defPts = m.defenceOutPoints ?? m.qbOutPoints;
+  const offPts = m.offenceOutPoints ?? -m.qbOutPoints;
+  const raw = defCost * defPts + offCost * offPts;
   const points = Math.max(-m.maxPoints, Math.min(m.maxPoints, raw));
 
   // A week-old "Out" still carries real information -- most players ruled out

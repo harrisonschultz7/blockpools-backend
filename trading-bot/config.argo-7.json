@@ -93,6 +93,9 @@
       "_comment": "Lowest weight of the substantive factors, per the user's read that injuries matter less to a total than to a side. SIGN DEPENDS ON UNIT: an offensive player lost pushes the total DOWN, a defensive player lost pushes it UP. This is the structural difference from Adam-7, where injury is signed by team rather than by unit. Baselining is unchanged -- the penalty is the player's marginal value times one minus demonstrated replacement quality, shrunk toward positional replacement until the sample earns its way out.",
       "shrinkGamesWithout": 4,
       "defaultReplacementQuality": 0.5,
+      "_comment_units_split": "offence and defence are scaled SEPARATELY as of 2026-10-02, because the single qbOutPoints constant baked in 'offensive damage lowers the total' and measurement disagrees. Starting QB out/doubtful: 59.6% over vs a 51.7% base, n=47 2025+, mean +2.18 pts. The market appears to over-cut on QB news and the game lands above the cut. offenceOutPoints is therefore small and POSITIVE -- a hurt offence nudges the total UP -- and deliberately small at 0.8 against a measured +2.18, because z is +1.08, under the |z| >= 2 bar. The honest position is stop betting against it, not bet on it. defenceOutPoints keeps the original 2.5: the defensive half was never measured, and flipping it on the back of a QB finding would be inventing a result. qbOutPoints is retained ONLY as the fallback for an un-migrated config.",
+      "offenceOutPoints": 0.8,
+      "defenceOutPoints": 2.5,
       "qbOutPoints": 2.5,
       "statusMultiplier": {
         "Out": 1,
@@ -124,8 +127,9 @@
     },
     "situational": {
       "_comment": "Very low weight, per the user. Division familiarity compresses scoring slightly; a closed roof raises it, but the roof is known to everyone and sits in the anchor, so only the division and primetime terms are applied.",
-      "divisionGamePoints": -0.4,
-      "primetimePoints": -0.2,
+      "_comment_magnitudes": "SWAPPED 2026-10-02. The two coefficients were sized inversely to their evidence. Division: 48.2% over vs 48.8% base, z -0.21 -- the sign is right and the effect is nil. Primetime: 45.6% over, z -1.07, and those games run 1.6 pts below daytime. The weaker signal carried the bigger number. Both stay negative -- the directions were never in doubt -- and both stay small, because neither clears |z| >= 2.",
+      "divisionGamePoints": -0.2,
+      "primetimePoints": -0.4,
       "maxPoints": 1
     },
     "confidence": {
