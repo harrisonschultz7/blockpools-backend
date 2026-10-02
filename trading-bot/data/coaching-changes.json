@@ -1,29 +1,175 @@
 {
-  "_comment": "MAINTAINED BY HAND. There is no reliable free coordinator table in nflverse, so this file is the source of truth for scheme discontinuity. It exists because the scheme traits blend a team's prior-season tendencies into its current ones -- right for a team that kept its staff, badly wrong for one that did not. A team listed for a season has the listed side's prior-season counts DISCARDED, so it shrinks toward the league average until the current season produces enough charted games to stand on its own.",
-  "_comment_scope": "off = offensive scheme changed. def = defensive scheme changed. Only DEF currently affects the price: since variant B, the FTN style terms that feed the base model are oppPressure and oppFrontWeight, both defensive. The off flags are recorded anyway so they are ready if offensive style is ever priced.",
-  "_comment_method": "Head-coach changes are VERIFIED against the 2026 NFL season page on Wikipedia. Coordinator-level changes are NOT independently verified -- no free structured source lists them -- so for a new head coach both sides are marked changed unless there is specific evidence of continuity. That errs toward 'we do not know this team's scheme', which shrinks them to league average. The opposite error would assert a scheme the team no longer runs, with full confidence, which is the failure mode worth avoiding.",
-  "_comment_maintenance": "Update each offseason, and again if a coordinator is fired mid-season. features/scheme.js logs the list size every run so an empty or forgotten file is visible in the logs.",
-
+  "2023": {
+    "_verified": true,
+    "_verified_note": "Derived from nflverse schedules (away_coach/home_coach on played REG games) on 2026-10-02: a team is listed when the coach of its FIRST game differs from the coach of its LAST game the season before. That comparison is what the scheme prior actually cares about, and it correctly skips interim-to-permanent promotions -- LV 2024 kept Antonio Pierce, so there was no discontinuity to reset. Both sides are marked changed, per this file's rule for a new head coach. Coordinator-only changes remain uncaptured.",
+    "teams": {
+      "ARI": {
+        "off": true,
+        "def": true,
+        "note": "Kliff Kingsbury -> Jonathan Gannon"
+      },
+      "CAR": {
+        "off": true,
+        "def": true,
+        "note": "Steve Wilks -> Frank Reich"
+      },
+      "DEN": {
+        "off": true,
+        "def": true,
+        "note": "Jay Rosburg -> Sean Payton"
+      },
+      "HOU": {
+        "off": true,
+        "def": true,
+        "note": "Lovie Smith -> DeMeco Ryans"
+      },
+      "IND": {
+        "off": true,
+        "def": true,
+        "note": "Jeff Saturday -> Shane Steichen"
+      }
+    }
+  },
+  "2024": {
+    "_verified": true,
+    "_verified_note": "Derived from nflverse schedules (away_coach/home_coach on played REG games) on 2026-10-02: a team is listed when the coach of its FIRST game differs from the coach of its LAST game the season before. That comparison is what the scheme prior actually cares about, and it correctly skips interim-to-permanent promotions -- LV 2024 kept Antonio Pierce, so there was no discontinuity to reset. Both sides are marked changed, per this file's rule for a new head coach. Coordinator-only changes remain uncaptured.",
+    "teams": {
+      "ATL": {
+        "off": true,
+        "def": true,
+        "note": "Arthur Smith -> Raheem Morris"
+      },
+      "CAR": {
+        "off": true,
+        "def": true,
+        "note": "Chris Tabor -> Dave Canales"
+      },
+      "LAC": {
+        "off": true,
+        "def": true,
+        "note": "Giff Smith -> Jim Harbaugh"
+      },
+      "NE": {
+        "off": true,
+        "def": true,
+        "note": "Bill Belichick -> Jerod Mayo"
+      },
+      "SEA": {
+        "off": true,
+        "def": true,
+        "note": "Pete Carroll -> Mike Macdonald"
+      },
+      "TEN": {
+        "off": true,
+        "def": true,
+        "note": "Mike Vrabel -> Brian Callahan"
+      },
+      "WAS": {
+        "off": true,
+        "def": true,
+        "note": "Ron Rivera -> Dan Quinn"
+      }
+    }
+  },
+  "2025": {
+    "_verified": true,
+    "_verified_note": "Derived from nflverse schedules (away_coach/home_coach on played REG games) on 2026-10-02: a team is listed when the coach of its FIRST game differs from the coach of its LAST game the season before. That comparison is what the scheme prior actually cares about, and it correctly skips interim-to-permanent promotions -- LV 2024 kept Antonio Pierce, so there was no discontinuity to reset. Both sides are marked changed, per this file's rule for a new head coach. Coordinator-only changes remain uncaptured.",
+    "teams": {
+      "CHI": {
+        "off": true,
+        "def": true,
+        "note": "Matt Eberflus -> Ben Johnson"
+      },
+      "DAL": {
+        "off": true,
+        "def": true,
+        "note": "Mike McCarthy -> Brian Schottenheimer"
+      },
+      "JAX": {
+        "off": true,
+        "def": true,
+        "note": "Doug Pederson -> Liam Coen"
+      },
+      "LV": {
+        "off": true,
+        "def": true,
+        "note": "Antonio Pierce -> Pete Carroll"
+      },
+      "NE": {
+        "off": true,
+        "def": true,
+        "note": "Jerod Mayo -> Mike Vrabel"
+      },
+      "NO": {
+        "off": true,
+        "def": true,
+        "note": "Dennis Allen -> Kellen Moore"
+      },
+      "NYJ": {
+        "off": true,
+        "def": true,
+        "note": "Robert Saleh -> Aaron Glenn"
+      }
+    }
+  },
   "2026": {
     "_verified": true,
     "_verified_note": "Head coaches verified 2026-09-27 against https://en.wikipedia.org/wiki/2026_NFL_season (Head coaching and general manager changes). Ten teams changed head coach. Coordinator-only changes elsewhere in the league are NOT captured and remain a known gap.",
     "teams": {
-      "ARI": { "off": true, "def": true, "note": "Gannon fired; Mike LaFleur hired 1 Feb, previously Rams OC. New staff both sides." },
-      "ATL": { "off": true, "def": true, "note": "Morris fired; Kevin Stefanski hired 17 Jan, previously Browns HC. New staff both sides." },
-      "BAL": { "off": true, "def": true, "note": "Harbaugh out after 18 seasons; Jesse Minter hired 22 Jan, previously Chargers DC. New staff both sides." },
-      "BUF": { "off": false, "def": true, "note": "McDermott fired; Joe Brady PROMOTED FROM OC on 27 Jan. Offensive continuity is well supported -- he called the offence 2023-25 -- while McDermott was the defensive architect, so the defence is new. The one team in this list with a documented reason to keep half its prior scheme." },
-      "CLE": { "off": true, "def": true, "note": "Stefanski fired; Todd Monken hired 28 Jan, previously Ravens OC. New staff both sides." },
-      "LV":  { "off": true, "def": true, "note": "Carroll fired; Klint Kubiak hired 8 Feb, previously Seahawks OC. New staff both sides." },
-      "MIA": { "off": true, "def": true, "note": "McDaniel fired; Jeff Hafley hired 19 Jan, previously Packers DC. New staff both sides." },
-      "NYG": { "off": true, "def": true, "note": "Daboll fired Nov 2025, Kafka interim; John Harbaugh hired 17 Jan. New staff both sides." },
-      "PIT": { "off": true, "def": true, "note": "Tomlin resigned after 19 seasons; Mike McCarthy hired 24 Jan. New staff both sides." },
-      "TEN": { "off": true, "def": true, "note": "Callahan fired Oct 2025, McCoy interim; Robert Saleh hired 22 Jan, previously 49ers DC. New staff both sides." }
+      "ARI": {
+        "off": true,
+        "def": true,
+        "note": "Gannon fired; Mike LaFleur hired 1 Feb, previously Rams OC. New staff both sides."
+      },
+      "ATL": {
+        "off": true,
+        "def": true,
+        "note": "Morris fired; Kevin Stefanski hired 17 Jan, previously Browns HC. New staff both sides."
+      },
+      "BAL": {
+        "off": true,
+        "def": true,
+        "note": "Harbaugh out after 18 seasons; Jesse Minter hired 22 Jan, previously Chargers DC. New staff both sides."
+      },
+      "BUF": {
+        "off": false,
+        "def": true,
+        "note": "McDermott fired; Joe Brady PROMOTED FROM OC on 27 Jan. Offensive continuity is well supported -- he called the offence 2023-25 -- while McDermott was the defensive architect, so the defence is new. The one team in this list with a documented reason to keep half its prior scheme."
+      },
+      "CLE": {
+        "off": true,
+        "def": true,
+        "note": "Stefanski fired; Todd Monken hired 28 Jan, previously Ravens OC. New staff both sides."
+      },
+      "LV": {
+        "off": true,
+        "def": true,
+        "note": "Carroll fired; Klint Kubiak hired 8 Feb, previously Seahawks OC. New staff both sides."
+      },
+      "MIA": {
+        "off": true,
+        "def": true,
+        "note": "McDaniel fired; Jeff Hafley hired 19 Jan, previously Packers DC. New staff both sides."
+      },
+      "NYG": {
+        "off": true,
+        "def": true,
+        "note": "Daboll fired Nov 2025, Kafka interim; John Harbaugh hired 17 Jan. New staff both sides."
+      },
+      "PIT": {
+        "off": true,
+        "def": true,
+        "note": "Tomlin resigned after 19 seasons; Mike McCarthy hired 24 Jan. New staff both sides."
+      },
+      "TEN": {
+        "off": true,
+        "def": true,
+        "note": "Callahan fired Oct 2025, McCoy interim; Robert Saleh hired 22 Jan, previously 49ers DC. New staff both sides."
+      }
     }
   },
-
-  "2025": {
-    "_verified": false,
-    "_verified_note": "NOT verified. Only matters for reading 2024 tendencies as a prior into 2025, which is one season removed from the live forecast and outside the trait window (data.schemePriorSeason is 2025). Left empty deliberately rather than guessed.",
-    "teams": {}
-  }
+  "_comment": "MAINTAINED BY HAND. There is no reliable free coordinator table in nflverse, so this file is the source of truth for scheme discontinuity. It exists because the scheme traits blend a team's prior-season tendencies into its current ones -- right for a team that kept its staff, badly wrong for one that did not. A team listed for a season has the listed side's prior-season counts DISCARDED, so it shrinks toward the league average until the current season produces enough charted games to stand on its own.",
+  "_comment_scope": "off = offensive scheme changed. def = defensive scheme changed. Only DEF currently affects the price: since variant B, the FTN style terms that feed the base model are oppPressure and oppFrontWeight, both defensive. The off flags are recorded anyway so they are ready if offensive style is ever priced.",
+  "_comment_method": "Head-coach changes are VERIFIED against the 2026 NFL season page on Wikipedia. Coordinator-level changes are NOT independently verified -- no free structured source lists them -- so for a new head coach both sides are marked changed unless there is specific evidence of continuity. That errs toward 'we do not know this team's scheme', which shrinks them to league average. The opposite error would assert a scheme the team no longer runs, with full confidence, which is the failure mode worth avoiding.",
+  "_comment_maintenance": "Update each offseason, and again if a coordinator is fired mid-season. features/scheme.js logs the list size every run so an empty or forgotten file is visible in the logs."
 }
