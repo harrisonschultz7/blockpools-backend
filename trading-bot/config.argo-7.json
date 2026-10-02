@@ -73,12 +73,13 @@
       "betaShrinkByT": true
     },
     "rest": {
-      "_comment": "Third weight, user-ranked. For a TOTAL the relevant quantity is the SUM of both sides' rest, not the differential Adam-7 uses -- two rested offences produce more points than one rested and one gassed. Honest caveat: the rest-to-total relationship is weaker in the literature than rest-to-margin, so this coefficient is deliberately small and the cap is tight.",
-      "pointsPerNetRestDaySum": 0.1,
+      "_comment": "RESIGNED 2026-10-02. The original reasoning -- two rested offences produce more points -- is backwards, and the bot was trading on it. Measured over 1,136 REG games 2022-2026 against the CLOSING TOTAL, mean residual by the shortest-rested team: <=4 days +1.67, 5-6 +1.23, 7 +0.88, >=8 -1.65. Monotonic, and the slope on summed rest is -0.22 pts/day (t -1.89). More rest means FEWER points, not more. The mechanism the user proposed fits: defences are the unit that needs recovery, so rest helps the defence more than the offence.",
+      "_comment_which_half_is_real": "The two sub-terms are NOT equally supported, and only one survives. Against the rest of the league: BYE (a team on 11+ days) runs -1.19 pts, t -1.87, n=134 -- the strongest thing in this factor and nearly at the |t| >= 2 bar. SHORT WEEK runs +1.67 raw, but the whole league runs +0.73 over the line, so it is only +0.94 above baseline at t 0.60, n=74. That is noise. Flipping it to positive would be acting on noise in the other direction, which is the same mistake with a better story, so it goes to ZERO instead. pointsPerNetRestDaySum is zeroed for a different reason: its slope is real but it is mostly the same bye-week games, and keeping both would count that effect twice.",
+      "pointsPerNetRestDaySum": 0,
       "shortWeekThresholdDays": 4,
-      "shortWeekPoints": -0.6,
+      "shortWeekPoints": 0,
       "byeWeekThresholdDays": 11,
-      "byeWeekPoints": 0.5,
+      "byeWeekPoints": -0.5,
       "maxPoints": 1.5
     },
     "pace": {

@@ -98,12 +98,43 @@ botsRouter.get("/", async (_req, res) => {
           order by 1`,
         [b.id],
       );
+      // SELECTIVITY IS PER NFL WEEK, not per rolling 8 days.
+      //
+      // "Traded 2 of 16" only means something against a slate, and a rolling
+      // window straddles two of them: on a Tuesday it mixed the week that just
+      // finished with the one being priced, so the denominator moved for
+      // reasons that had nothing to do with the bot being choosier.
+      //
+      // The current week is the earliest week still holding an unplayed game,
+      // which is correct mid-slate too -- on a Friday, Thursday's game is done
+      // and Sunday's are not, and both belong to the week being reported.
+      // Falling back to the last week played keeps it sane in the offseason.
+      const { rows: weekRows } = await pg.query(
+        `select season, week from sports.nfl_games
+           where kickoff > now() and game_type = 'REG'
+           order by kickoff limit 1`,
+      );
+      const { rows: lastWeekRows } = weekRows.length ? { rows: [] } : await pg.query(
+        `select season, week from sports.nfl_games
+           where home_score is not null and game_type = 'REG'
+           order by kickoff desc limit 1`,
+      );
+      const cur = weekRows[0] || lastWeekRows[0] || null;
+
+      // A GAME THAT HAS NOT KICKED OFF IS NOT A PASS. Counting the whole slate
+      // the moment it is first evaluated reports "1 of 16" on a Thursday night
+      // when fifteen of those games can still be traded, which reads as a bot
+      // that declined them. The denominator is games whose chance has gone --
+      // kicked off -- plus any it has already taken a position in, so a trade
+      // placed on Friday for Sunday cannot produce "1 of 0".
       const { rows: selRows } = await pg.query(
-        `select count(distinct game_id) as looks,
-                count(distinct game_id) filter (where acted) as acted
-           from bots.decisions
-          where bot_id = $1 and asof_ts > now() - interval '8 days'`,
-        [b.id],
+        `select count(distinct d.game_id) as looks,
+                count(distinct d.game_id) filter (where d.acted) as acted
+           from bots.decisions d
+           join sports.nfl_games g on g.game_id = d.game_id
+          where d.bot_id = $1 and g.season = $2 and g.week = $3
+            and (g.kickoff <= now() or d.acted)`,
+        [b.id, cur?.season ?? 0, cur?.week ?? 0],
       );
 
       const startNav = Number(b.starting_nav);
@@ -165,6 +196,9 @@ botsRouter.get("/", async (_req, res) => {
         selectivity: {
           looks: Number(selRows[0].looks),
           acted: Number(selRows[0].acted),
+          /** The slate those counts describe, so the UI can name it. */
+          season: cur ? Number(cur.season) : null,
+          week: cur ? Number(cur.week) : null,
         },
         // Today's point is replaced with the live NAV below, so the curve does
         // not flatten between daily runs.
