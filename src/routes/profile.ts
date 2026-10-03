@@ -25,6 +25,42 @@ import { createReferralRedemptions } from "../services/promotions/createReferral
 
 const router = Router();
 
+// ---------------------------------------------------------------------------
+// POST /api/profile/polygon-wallet
+// Persist a user's Polygon addresses (derived client-side from their embedded
+// EOA): the trading wallet (holds pUSD + positions) and the deposit address
+// (USDC funding target). Called by the frontend once they resolve, so existing
+// users backfill on their next visit. COALESCE keeps a known value if one side
+// is momentarily missing.
+// ---------------------------------------------------------------------------
+const isEvmAddr = (x: unknown): string | null => {
+  const v = String(x || "").trim().toLowerCase();
+  return /^0x[0-9a-f]{40}$/.test(v) ? v : null;
+};
+
+router.post("/polygon-wallet", authPrivyOptionalWallet, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+    const depositAddress = isEvmAddr((req.body || {}).depositAddress);
+    const tradingAddress = isEvmAddr((req.body || {}).tradingAddress);
+    if (!depositAddress && !tradingAddress) {
+      return res.status(400).json({ error: "depositAddress or tradingAddress required" });
+    }
+    await pool.query(
+      `UPDATE users SET
+         deposit_address = COALESCE($2, deposit_address),
+         trading_address = COALESCE($3, trading_address),
+         updated_at      = now()
+       WHERE id = $1`,
+      [req.user.id, depositAddress, tradingAddress]
+    );
+    return res.json({ ok: true, depositAddress, tradingAddress });
+  } catch (e: any) {
+    console.error("[POST /api/profile/polygon-wallet] error", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ── Resend client ────────────────────────────────────────────────────────────
 const resend = new Resend(process.env.RESEND_API_KEY);
 

@@ -39,6 +39,7 @@ import settlementResultRouter from "./routes/settlementResult";
 // ✅ Standings proxy + background cron (Goalserve — UCL, EPL, NBA, NHL, MLB etc.)
 import standingsRouter, { startStandingsCron } from "./routes/standings";
 import { startPortfolioSnapshotCron } from "./workers/portfolioSnapshotWorker";
+import { startPmSettlementCron } from "./workers/pmSettlementWorker";
 
 // ✅ Chart data from Supabase (league winner price history)
 import chartRouter from "./routes/chart";
@@ -243,5 +244,6 @@ if (require.main === module) {
     console.log(`BlockPools backend listening on port ${PORT}`);
     startStandingsCron();
     startPortfolioSnapshotCron();
+    startPmSettlementCron();
   });
 }
