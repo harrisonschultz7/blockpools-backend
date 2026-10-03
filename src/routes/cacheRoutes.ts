@@ -173,6 +173,18 @@ cacheRoutes.post("/user/:address/record-trade", async (req, res) => {
   const outcomeCode = b.outcomeCode != null ? String(b.outcomeCode) : null;
   const side = b.side != null ? String(b.side) : null;
 
+  // Optional game metadata (pm trades send these so public.games gets a rich
+  // row instead of a bare {id,league}). persistTrades upserts with COALESCE, so
+  // omitting them (legacy Arbitrum callers) leaves existing values untouched.
+  const teamACode = b.teamACode != null ? String(b.teamACode) : null;
+  const teamBCode = b.teamBCode != null ? String(b.teamBCode) : null;
+  const teamAName = b.teamAName != null ? String(b.teamAName) : null;
+  const teamBName = b.teamBName != null ? String(b.teamBName) : null;
+  const marketType = b.marketType != null ? String(b.marketType) : null;
+  const marketQuestion = b.marketQuestion != null ? String(b.marketQuestion) : null;
+  const lockTimeNum = Number(b.lockTime);
+  const lockTime = Number.isFinite(lockTimeNum) && lockTimeNum > 0 ? Math.trunc(lockTimeNum) : null;
+
   // Optional trade direction. Defaults to BUY (back-compat with every existing
   // caller). SELL records a close/exit: grossOutDec = proceeds, netOutDec =
   // proceeds - fee, buy-side amount fields zeroed - mirroring the shape the
@@ -212,7 +224,17 @@ cacheRoutes.post("/user/:address/record-trade", async (req, res) => {
     netOutDec: isSell ? netOut : "0",
     costBasisClosedDec: "0",
     realizedPnlDec: "0",
-    game: { id: gameId, league },
+    game: {
+      id: gameId,
+      league,
+      lockTime,
+      teamACode,
+      teamBCode,
+      teamAName,
+      teamBName,
+      marketType,
+      marketQuestion,
+    },
     __source: isSell ? "sell-direct" : "buy-direct",
   };
 
