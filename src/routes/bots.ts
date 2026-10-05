@@ -385,7 +385,7 @@ botsRouter.get("/:botId/trades", async (req, res) => {
     const { rows } = await pg.query(
       `select t.id, t.game_id, t.side, t.settled, t.won, t.exited,
               t.market_type, t.line,
-              t.fill_price, t.shares, t.notional_usd,
+              t.p_fair, t.fill_price, t.shares, t.notional_usd,
               t.exit_price, t.exit_at, t.exit_reason,
               t.pnl_usd, t.clv_bps, t.opened_at, t.closed_at,
               g.away_team, g.home_team, g.kickoff, g.week, g.season,
@@ -433,6 +433,13 @@ botsRouter.get("/:botId/trades", async (req, res) => {
       const mark = t.mark_price === null || t.mark_price === undefined
         ? null : Number(t.mark_price);
       const isOpen = status === "open";
+      // Resting SELL the bot holds on an open position: fair value of the TOKEN
+      // it owns. p_fair is stored for the home/over side, so flip it for
+      // away/under to get the held token's fair.
+      const pFair = t.p_fair === null || t.p_fair === undefined ? null : Number(t.p_fair);
+      const heldFair = pFair === null
+        ? null
+        : (t.side === "home" || t.side === "over" ? pFair : 1 - pFair);
       const markValueUsd = isOpen && mark !== null ? mark * shares : null;
       const unrealizedPnlUsd = isOpen && mark !== null ? (mark - entry) * shares : null;
       const unrealizedPct = isOpen && mark !== null && entry
@@ -481,6 +488,9 @@ botsRouter.get("/:botId/trades", async (req, res) => {
         markValueUsd,
         unrealizedPnlUsd,
         unrealizedPct,
+        /** Resting sell (limit) price the model holds on an OPEN position =
+         *  fair value of the owned token. Null once the position closes. */
+        limitSellPrice: isOpen && heldFair !== null ? heldFair : null,
         status,
         exitReason: t.exit_reason || null,
         clvBps: t.clv_bps === null ? null : Number(t.clv_bps),
