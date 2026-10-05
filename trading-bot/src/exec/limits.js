@@ -255,6 +255,82 @@ async function tryFill(botId, order, hit, bookTs) {
     client.release();
   }
 }
+
+/** Stop-loss floor price (a fraction of entry), or null when disabled. The
+ *  worst realised loss is exitStopLossMaxLossPct (e.g. 0.85 -> sell floor at 15%
+ *  of entry, capping the loss at -85% instead of riding a collapsed token to 0). */
+function stopFloor(policy, entryPrice) {
+  if (!policy || !policy.exitStopLossEnabled) return null;
+  const maxLoss = Number(policy.exitStopLossMaxLossPct);
+  const entry = Number(entryPrice);
+  if (!(maxLoss > 0 && maxLoss < 1) || !(entry > 0)) return null;
+  return entry * (1 - maxLoss);
+}
+
+/** Book a STOP-LOSS: sell the WHOLE remaining position at floorPrice. Unlike the
+ *  take-profit, this is a TRIGGERED market exit (a resting limit at a low price
+ *  would be marketable and fill instantly), so it is driven from the fill loops
+ *  when the recorded mid has fallen to the floor. */
+async function settleStop(botId, order, floorPrice, bookTs, exec) {
+  const run = exec ? (text, params) => exec.query(text, params) : q;
+  const shares = Number(order.shares);
+  await run(
+    `update bots.limit_orders
+        set status='filled', filled_at=now(), fill_price=$2,
+            fill_detail=$3, closed_reason='stop_loss', shares=$4, updated_at=now()
+      where id=$1`,
+    [order.id, floorPrice, JSON.stringify({ stop: true, bookTs }), shares],
+  );
+  const { rows } = await run(
+    `update bots.trades t
+        set exit_price  = $2,
+            exit_at     = now(),
+            exit_shares = coalesce(t.exit_shares,0) + $3,
+            exit_reason = 'stop_loss',
+            exited      = true,
+            settled     = true,
+            closed_at   = now(),
+            pnl_usd     = coalesce(t.pnl_usd,0) + ($3 * ($2 - t.fill_price))
+      where t.id = $1
+      returning t.game_id, t.pnl_usd`,
+    [order.trade_id, floorPrice, shares],
+  );
+  await run(
+    `update bots.positions
+        set shares = greatest(0, shares - $3),
+            cost_usd = greatest(0, cost_usd - ($3 * avg_price)),
+            updated_at = now()
+      where bot_id = $1 and token_id = $2`,
+    [botId, order.token_id, shares],
+  );
+  await run(`delete from bots.positions where bot_id = $1 and shares <= 1e-6`, [botId]);
+  const pnl = rows[0] ? Number(rows[0].pnl_usd) : 0;
+  log(`    STOP ${rows[0] ? rows[0].game_id : order.game_id} sold ${shares.toFixed(0)} @ ${floorPrice.toFixed(3)} -> pnl ${pnl.toFixed(2)}`);
+}
+
+/** Claim one order and stop it out, atomically -- same row-lock discipline as
+ *  tryFill so the sweep and the tick cannot sell the same shares twice. */
+async function tryStop(botId, order, floorPrice, bookTs) {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const { rows } = await client.query(
+      `select shares, status from bots.limit_orders where id = $1 for update`,
+      [order.id],
+    );
+    const cur = rows[0];
+    if (!cur || cur.status !== "open") { await client.query("rollback"); return false; }
+    await settleStop(botId, { ...order, shares: cur.shares }, floorPrice, bookTs, client);
+    await client.query("commit");
+    return true;
+  } catch (e) {
+    await client.query("rollback").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 /**
  * FILL ONLY. Walk every open exit against the freshest recorded book and sell
  * whatever the ladder will take. No repricing, no cancelling.
@@ -278,13 +354,14 @@ async function tryFill(botId, order, hit, bookTs) {
 async function sweepFills(botId) {
   const { rows: orders } = await q(
     `select o.id, o.trade_id, o.token_id, o.shares, o.limit_price, o.game_id,
-            bk.bids, bk.ts as book_ts
+            t.fill_price as entry_price, bk.bids, bk.mid, bk.ts as book_ts
        from bots.limit_orders o
        join sports.nfl_games g on g.game_id = o.game_id
+       join bots.trades t on t.id = o.trade_id
        left join sports.pm_markets        ml on ml.condition_id = o.condition_id
        left join sports.pm_totals_markets tm on tm.condition_id = o.condition_id
        left join lateral (
-         select h.bids, h.ts from sports.odds_history h
+         select h.bids, h.mid, h.ts from sports.odds_history h
           where h.token_id = o.token_id and h.bids is not null
           order by h.ts desc limit 1
        ) bk on true
@@ -297,14 +374,22 @@ async function sweepFills(botId) {
     [botId],
   );
 
+  const p = cfg().policy;
   let filled = 0;
+  let stopped = 0;
   for (const o of orders) {
+    const floor = stopFloor(p, o.entry_price);
+    const mid = o.mid == null ? null : Number(o.mid);
+    if (floor !== null && mid !== null && mid <= floor + 1e-9) {
+      if (await tryStop(botId, o, Math.max(0.001, Math.min(floor, mid)), o.book_ts)) { stopped++; continue; }
+    }
     if (!o.bids) continue;
     const hit = walkBids(o.bids, Number(o.shares), Number(o.limit_price));
     if (!hit.filledShares) continue;
     if (await tryFill(botId, o, hit, o.book_ts)) filled++;
   }
-  return { filled, checked: orders.length };
+  if (stopped) log(`  sweep: ${stopped} stop-loss exit(s)`);
+  return { filled, stopped, checked: orders.length };
 }
 /**
  * Re-price every open exit to current fair, then try to fill it against the
@@ -332,6 +417,7 @@ async function manageExits(botId, forecasts, now) {
   let filled = 0;
   let repriced = 0;
   let cancelled = 0;
+  let stopped = 0;
 
   for (const o of orders) {
     const inPlay = new Date(o.kickoff).getTime() <= now.getTime();
@@ -399,11 +485,24 @@ async function manageExits(botId, forecasts, now) {
     }
 
     const { rows: books } = await q(
-      `select bids, ts from sports.odds_history
+      `select bids, mid, ts from sports.odds_history
         where token_id = $1 order by ts desc limit 1`,
       [o.token_id],
     );
     if (!books[0]) continue;
+
+    // STOP-LOSS: the price has collapsed to the floor -> cut the position rather
+    // than ride a near-certain loser to -100%. Floor is a fraction of entry
+    // (worst loss = exitStopLossMaxLossPct). Checked here so the tick covers
+    // Adam-7 too, which has no 20s book sweep.
+    const stopAt = stopFloor(p, o.entry_price);
+    const bmid = books[0].mid == null ? null : Number(books[0].mid);
+    if (stopAt !== null && bmid !== null && bmid <= stopAt + 1e-9) {
+      if (await tryStop(botId, o, Math.max(0.001, Math.min(stopAt, bmid)), books[0].ts)) {
+        stopped++;
+        continue;
+      }
+    }
 
     const hit = walkBids(books[0].bids, Number(o.shares), limit);
     if (!hit.filledShares) continue;
@@ -412,10 +511,10 @@ async function manageExits(botId, forecasts, now) {
     if (await tryFill(botId, o, hit, books[0].ts)) filled++;
   }
 
-  if (repriced || filled || cancelled) {
-    log(`  exits: ${repriced} repriced, ${filled} filled, ${cancelled} cancelled`);
+  if (repriced || filled || cancelled || stopped) {
+    log(`  exits: ${repriced} repriced, ${filled} filled, ${stopped} stopped, ${cancelled} cancelled`);
   }
-  return { filled, repriced, cancelled };
+  return { filled, repriced, cancelled, stopped };
 }
 
 

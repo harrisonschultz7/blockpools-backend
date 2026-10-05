@@ -199,6 +199,8 @@
     "exitHoldThroughKickoff": true,
     "exitVolatilityAlphaLogit": 0.45,
     "exitInPlayMaxPrice": 0.97,
+    "exitStopLossEnabled": true,
+    "exitStopLossMaxLossPct": 0.85,
     "_comment_minEdge": "0.080, RAISED from 0.025 on 2026-10-02. Argo-7 was not being selective at all: 0.025 let through 10 of the 11 games it evaluated, and 0.020 would have taken all 11. The two bots were sharing one constant while producing edges on completely different scales -- Argo-7's median best edge is 0.0800, Adam-7's MAXIMUM EVER is 0.0287 -- so the same number is a near-no-op on one and a near-off-switch on the other. 0.080 is Argo-7's own median, which puts it at 6 of 11 (55%) by construction. Measured ladder: 0.040 -> 82%, 0.060 -> 55%, 0.080 -> 55%, 0.100 -> 27%, 0.120 -> 18%. CAVEAT n=11, and the rest-factor resign on the same day moves p_fair, so re-measure after a few weeks rather than trusting this split.",
     "minEdge": 0.08,
     "kellyFraction": 0.25,
