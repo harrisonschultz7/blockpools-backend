@@ -196,7 +196,8 @@ async function linesToRecord() {
             order by m.liquidity_num desc nulls last
             limit $1
          ) t on true
-        where g.kickoff between now() - interval '6 hours'
+        where g.home_score is null
+          and g.kickoff between now() - interval '6 hours'
                             and now() + ($2 || ' hours')::interval
      ), held as (
        select m.*, g.kickoff

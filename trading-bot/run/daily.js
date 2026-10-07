@@ -50,6 +50,23 @@ async function main() {
   await settleTrades();   // pay out finished games
   await settleFromMarkets();  // and any the exchange resolved before the box score landed
 
+  // STORAGE PRUNE. Supabase is size-capped and the depth recorder is by far the
+  // largest table. A finished game's books are never read again (its fills are
+  // done), and the recorders now skip finished games -- this clears any stragglers
+  // plus trims old click analytics. Keeps the DB flat instead of growing weekly.
+  try {
+    const oh = await q(
+      `delete from sports.odds_history o using sports.nfl_games g
+         where g.game_id = o.game_id and g.home_score is not null`,
+    );
+    const ae = await q(
+      `delete from public.analytics_events where created_at < now() - interval '60 days'`,
+    );
+    log(`storage prune: odds_history -${oh.rowCount}, analytics_events -${ae.rowCount}`);
+  } catch (e) {
+    log.warn(`storage prune failed: ${e.message}`);
+  }
+
   const { rows: bots } = await q(`select id, name from bots.bot where enabled order by id`);
   if (!bots.length) { log("daily: no enabled bots registered yet"); return; }
 

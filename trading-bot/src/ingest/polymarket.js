@@ -233,6 +233,7 @@ async function recordBooks() {
               on o.game_id = m.game_id and o.status = 'open'
       where m.closed = false
         and m.home_token_id is not null
+        and g.home_score is null
         and (
           g.kickoff between now() - interval '6 hours'
                         and now() + ($1 || ' hours')::interval
