@@ -398,6 +398,16 @@ function buildNavSeries(
 botsRouter.get("/:botId/trades", async (req, res) => {
   try {
     const limit = Math.min(200, Number(req.query.limit) || 50);
+
+    // The exit policy of THIS bot, for reconstructing its resting sell price.
+    const { rows: cfgRows } = await pg.query(
+      `select (config->'policy'->>'exitVolatilityAlphaLogit')::numeric as alpha,
+              (config->'policy'->>'exitInPlayMaxPrice')::numeric as cap
+         from bots.bot where id = $1`,
+      [req.params.botId],
+    );
+    const exitAlpha = Number(cfgRows[0]?.alpha ?? 0);
+    const exitCap = Number(cfgRows[0]?.cap ?? 0.97);
     const { rows } = await pg.query(
       `select t.id, t.game_id, t.side, t.settled, t.won, t.exited,
               t.market_type, t.line,
@@ -456,6 +466,26 @@ botsRouter.get("/:botId/trades", async (req, res) => {
       const heldFair = pFair === null
         ? null
         : (t.side === "home" || t.side === "over" ? pFair : 1 - pFair);
+
+      // THE RESTING SELL IS NOT AT FAIR VALUE. exec/limits.js sets it to
+      // sigmoid(logit(fair) + exitVolatilityAlphaLogit) -- fair pushed out in
+      // logit space, because the point of the resting order is to be paid for
+      // variance the model does not forecast, not to hand back the edge at the
+      // price the model already thinks is right.
+      //
+      // This surface reported plain fair value and called it the limit, which
+      // understated every open target badly: on 2026-10-08 Adam-7's TB position
+      // showed 0.24 against a real resting order at 0.3338, a +20% target
+      // displayed where the bot was actually holding out for +67%.
+      //
+      // The formula is duplicated rather than imported: the API is TypeScript
+      // under src/ and the executor is CommonJS under trading-bot/. If
+      // exitVolatilityAlphaLogit changes meaning, both move.
+      const restingSell = heldFair === null ? null : (() => {
+        const safe = Math.max(0.02, Math.min(0.98, heldFair));
+        const target = 1 / (1 + Math.exp(-(Math.log(safe / (1 - safe)) + exitAlpha)));
+        return Math.max(0.02, Math.min(exitCap, target));
+      })();
       const markValueUsd = isOpen && mark !== null ? mark * shares : null;
       const unrealizedPnlUsd = isOpen && mark !== null ? (mark - entry) * shares : null;
       const unrealizedPct = isOpen && mark !== null && entry
@@ -504,9 +534,10 @@ botsRouter.get("/:botId/trades", async (req, res) => {
         markValueUsd,
         unrealizedPnlUsd,
         unrealizedPct,
-        /** Resting sell (limit) price the model holds on an OPEN position =
-         *  fair value of the owned token. Null once the position closes. */
-        limitSellPrice: isOpen && heldFair !== null ? heldFair : null,
+        /** Resting sell the model is actually holding on an OPEN position:
+         *  fair value pushed out by exitVolatilityAlphaLogit, matching
+         *  exec/limits.js. Null once the position closes. */
+        limitSellPrice: isOpen ? restingSell : null,
         status,
         exitReason: t.exit_reason || null,
         clvBps: t.clv_bps === null ? null : Number(t.clv_bps),
