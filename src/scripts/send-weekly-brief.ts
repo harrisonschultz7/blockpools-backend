@@ -95,7 +95,7 @@ async function run() {
     const lang = templateId === ENGLISH_TEMPLATE_ID ? "EN" : "ES";
     try {
       const result = await resend.emails.send({
-        from: "Harrison from BlockPools <harrison@mail.blockpools.io>",
+        from: "BlockPools <harrison@mail.blockpools.io>",
         to: email,
         template: {
           id: templateId,
