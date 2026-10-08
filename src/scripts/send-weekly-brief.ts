@@ -63,18 +63,31 @@ async function getRecipients(): Promise<Recipient[]> {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-  const { data, error } = await supabase
-    .from("users")
-    .select("email, preferred_locale")
-    .not("email", "is", null)
-    .neq("email", "")
-    .eq("email_unsubscribed", false);
+  // Supabase caps a single .select() at 1000 rows by default, so paginate
+  // with .range() until a short page comes back — otherwise recipients past
+  // the first 1000 are silently dropped.
+  const PAGE = 1000;
+  const rows: { email: string; preferred_locale: string | null }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from("users")
+      .select("email, preferred_locale")
+      .not("email", "is", null)
+      .neq("email", "")
+      .eq("email_unsubscribed", false)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
 
-  if (error) {
-    throw new Error(`Supabase fetch failed: ${error.message}`);
+    if (error) {
+      throw new Error(`Supabase fetch failed: ${error.message}`);
+    }
+
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length < PAGE) break;
   }
 
-  return (data ?? [])
+  return rows
     .map((row: { email: string; preferred_locale: string | null }) => ({
       email: row.email,
       preferredLocale: row.preferred_locale,
