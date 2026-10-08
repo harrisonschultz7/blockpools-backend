@@ -34,7 +34,7 @@ const DELAY_MS = 700;
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send BOTH language versions only to TEST_EMAIL.
 // Set to false when ready to blast everyone.
-const TEST_MODE = false;
+const TEST_MODE = true;
 const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
