@@ -29,6 +29,7 @@
 
 const { cfg } = require("../config");
 const { q } = require("../db");
+const log = require("../log");
 
 /** Most recent forecast recorded at or before asOf. Never a later one. */
 async function latestForecast(gameId, asOf) {
@@ -100,10 +101,50 @@ function weatherPoints({ roof, wind, temp, precip }) {
   };
 }
 
+/**
+ * A stadium's usual roof, for fixtures whose own roof field is not set yet.
+ *
+ * nflverse fills games.roof only once a game has been PLAYED, and only for
+ * retractable venues -- whether the roof will be open is not knowable from a
+ * schedule. Measured 2026-10-08: all 34 null-roof upcoming games belonged to
+ * exactly five teams, ARI ATL DAL HOU IND, every one retractable, and every one
+ * of them closed in at least 18 of its last 19 home games.
+ *
+ * So the unknown-roof games are precisely the games where weather cannot
+ * matter, and refusing to price them was the worst possible trade-off. The
+ * modal roof across recent home games is used rather than the latest, so one
+ * freak open-roof night cannot redefine a stadium.
+ *
+ * Cached per process: it is a property of the building, and the fallback is
+ * only consulted for fixtures the feed has not filled in.
+ */
+let _roofByTeam = null;
+async function stadiumRoof(homeTeam) {
+  if (!homeTeam) return "";
+  if (!_roofByTeam) {
+    _roofByTeam = new Map();
+    try {
+      const { rows } = await q(
+        `select distinct on (home_team) home_team, roof
+           from (select home_team, roof, count(*) n
+                   from sports.nfl_games
+                  where roof is not null and roof <> '' and game_type = 'REG'
+                    and season >= 2024
+                  group by home_team, roof) x
+          order by home_team, n desc`);
+      rows.forEach((r) => _roofByTeam.set(r.home_team, String(r.roof).toLowerCase()));
+    } catch (e) {
+      log.warn(`weather: stadium roof lookup failed (${e.message})`);
+    }
+  }
+  return _roofByTeam.get(homeTeam) || "";
+}
+
 async function weatherTotalsSignal(game, asOf) {
   const w = cfg().model.weather;
 
-  const roof = String(game.roof || "").toLowerCase();
+  let roof = String(game.roof || "").toLowerCase();
+  if (!roof) roof = await stadiumRoof(game.home_team);
   if (!["outdoors", "open", "dome", "closed"].includes(roof)) {
     // Confidence 0, not 1. The difference matters: a confident zero lets the
     // game trade with no weather input, which for a weather-led model is the

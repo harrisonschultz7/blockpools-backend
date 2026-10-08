@@ -25,8 +25,11 @@ botsRouter.get("/", async (_req, res) => {
     if (cache && Date.now() - cache.at < CACHE_MS) return res.json(cache.body);
 
     const { rows: bots } = await pg.query(
+      // config is read for policy.openWindowHoursBeforeKickoff, which sets the
+      // selectivity denominator. Without it the ?? 24 fallback silently applies
+      // to every bot, which is right today and wrong the moment one changes.
       `select id, name, league, risk_tier, mode, enabled, starting_nav, created_at,
-              market_scope, description
+              market_scope, description, config
          from bots.bot where enabled = true order by created_at`,
     );
 
@@ -121,20 +124,33 @@ botsRouter.get("/", async (_req, res) => {
       );
       const cur = weekRows[0] || lastWeekRows[0] || null;
 
-      // A GAME THAT HAS NOT KICKED OFF IS NOT A PASS. Counting the whole slate
-      // the moment it is first evaluated reports "1 of 16" on a Thursday night
-      // when fifteen of those games can still be traded, which reads as a bot
-      // that declined them. The denominator is games whose chance has gone --
-      // kicked off -- plus any it has already taken a position in, so a trade
-      // placed on Friday for Sunday cannot produce "1 of 0".
+      // THE DENOMINATOR IS GAMES THE BOT COULD HAVE TRADED BY NOW.
+      //
+      // A game outside the opening window is not a pass -- it has not been
+      // offered yet -- so counting the whole slate on a Thursday reads as a bot
+      // that declined fifteen games it has not looked at. But waiting for
+      // KICKOFF is wrong in the other direction: it showed "-" all week, and a
+      // bot that had evaluated tonight's game sixty times and declined it
+      // reported nothing at all.
+      //
+      // So: inside the bot's own opening window, or already positioned. The
+      // window comes from that bot's config rather than a constant, because
+      // Adam-7 and Argo-7 need not share one.
+      //
+      // Not skip_reason: the totals forecast emits exceeds_market_gap_rail and
+      // no_weather_forecast BEFORE the window gate, so filtering on "not
+      // outside_window" counted games three days out.
+      const windowHours = Number(
+        (b.config as any)?.policy?.openWindowHoursBeforeKickoff ?? 24,
+      );
       const { rows: selRows } = await pg.query(
         `select count(distinct d.game_id) as looks,
                 count(distinct d.game_id) filter (where d.acted) as acted
            from bots.decisions d
            join sports.nfl_games g on g.game_id = d.game_id
           where d.bot_id = $1 and g.season = $2 and g.week = $3
-            and (g.kickoff <= now() or d.acted)`,
-        [b.id, cur?.season ?? 0, cur?.week ?? 0],
+            and (d.acted or g.kickoff <= now() + ($4 || ' hours')::interval)`,
+        [b.id, cur?.season ?? 0, cur?.week ?? 0, windowHours],
       );
 
       const startNav = Number(b.starting_nav);
