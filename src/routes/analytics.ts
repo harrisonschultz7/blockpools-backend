@@ -57,6 +57,8 @@ router.post("/track", async (req: Request, res: Response) => {
       // Embedded in-app browser name (Facebook/Instagram/TikTok…), null for a
       // normal browser — lets us measure sign-in friction for Meta-ad WebViews.
       in_app_browser: e.inAppBrowser ? String(e.inAppBrowser).slice(0, 40) : null,
+      // ISO country from the edge (/api/geo), stamped client-side once known.
+      country: e.country ? String(e.country).toUpperCase().slice(0, 8) : null,
     }));
 
     const { error } = await supabaseAdmin().from("analytics_events").insert(rows);
