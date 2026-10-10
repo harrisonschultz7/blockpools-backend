@@ -38,6 +38,14 @@ const TEST_MODE = false;
 const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── SCHEDULED SEND ───────────────────────────────────────────────────────────
+// Leave "" to send immediately. To schedule, set an ISO 8601 time WITH an offset
+// (e.g. Eastern: "2026-10-11T13:00:00-04:00"; Central/CDMX: "2026-10-11T12:00:00-06:00")
+// or natural language in UTC ("in 2 hours"). Resend holds each email and delivers
+// it at that time, so the script can be run now and exit. Max ~72 hours ahead.
+const SCHEDULED_AT = "";
+// ─────────────────────────────────────────────────────────────────────────────
+
 const ALREADY_SENT = new Set<string>([
   "bgee355@gmail.com",
   "adrianop1414@gmail.com",
@@ -98,7 +106,12 @@ async function getRecipients(): Promise<Recipient[]> {
 async function run() {
   console.log("Fetching recipients from users table...");
   const recipients = await getRecipients();
-  console.log(`Found ${recipients.length} remaining recipients. Starting send...\n`);
+  console.log(`Found ${recipients.length} remaining recipients. Starting send...`);
+  console.log(
+    SCHEDULED_AT
+      ? `SCHEDULED MODE — queuing in Resend for delivery at ${SCHEDULED_AT}\n`
+      : "Sending immediately.\n"
+  );
 
   let sent = 0;
   let failed = 0;
@@ -113,6 +126,7 @@ async function run() {
         template: {
           id: templateId,
         },
+        ...(SCHEDULED_AT ? { scheduledAt: SCHEDULED_AT } : {}),
       } as any);
 
       const resultAny = result as any;
