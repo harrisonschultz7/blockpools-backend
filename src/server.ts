@@ -10,6 +10,7 @@ import { pingDb } from "./db/pg";
 
 // Existing routes (keep these exactly as your backend uses today)
 import profileRouter from "./routes/profile";
+import pmOrdersRouter from "./routes/pmOrders";
 import wallRouter from "./routes/wall";
 import leagueChatRouter from "./routes/leagueChat";
 import socialTagsRouter from "./routes/socialTags";
@@ -138,6 +139,8 @@ export function makeServer() {
   //     bare /api mounts so they are not swallowed.
 
   app.use("/api/profile", profileRouter);
+  // Resting Polymarket limit orders, per user (same on every device).
+  app.use("/api/pm/orders", pmOrdersRouter);
 
   // ✅ Chart data from Supabase — MUST be before generic /api routers
   //   GET /api/chart/:contractAddress
