@@ -1,14 +1,16 @@
 // ---------------------------------------------------------------------------
 // model trade alert worker
 //
-// When a BlockPools model (Adam-7 / Argo-7) opens a trade, alert every user who
-// FOLLOWS that model (public.model_follows). Alerts only -- no copy/execution,
-// so none of the Polymarket geoblock applies. Mirrors the user-follow trade
-// alerts (notifyTradeToFollowers), but sourced from bots.trades.
+// When a BlockPools model (Adam-7 / Argo-7) acts, alert every user who FOLLOWS
+// that model (public.model_follows). Alerts only -- no copy/execution, so no
+// Polymarket geoblock. Three event kinds:
+//   buy   -- opened a position            (bots.trades.opened_at)
+//   limit -- set its resting limit sell   (bots.limit_orders, action='SELL')
+//   sell  -- the position was sold/exited  (bots.trades.exit_at)
 //
-// Idempotent: each trade fans out once (notifications deduped by `mtrade:<id>`),
-// and only to followers who were already following when the trade opened. Polls
-// a short recent window and leans on the dedupe, so no cursor table is needed.
+// Idempotent: each event fans out once (deduped by `mtrade:<event>:<id>`), and
+// only to followers who were already following when the event happened. Polls a
+// short recent window and leans on the dedupe, so no cursor table is needed.
 // ---------------------------------------------------------------------------
 import { pg } from "../db/pg";
 import { notifyModelTradeToFollowers } from "../services/notifications/notify";
@@ -26,6 +28,8 @@ function positionLabel(row: any): string {
   return side === "home" ? String(row.home_team || "") : String(row.away_team || "");
 }
 
+const pct = (v: any) => (v == null ? null : Math.round(Number(v) * 100));
+
 let running = false;
 
 export async function runModelAlertsOnce(): Promise<void> {
@@ -39,32 +43,72 @@ export async function runModelAlertsOnce(): Promise<void> {
     if (!followed.length) return;
     const botIds = followed.map((r: any) => r.bot_id);
 
-    const { rows } = await pg.query(
+    // 1) BUYS (opens) + 3) SELLS (exits) — both live on bots.trades.
+    const { rows: trades } = await pg.query(
       `SELECT t.id, t.bot_id, b.name AS bot_name, t.side, t.market_type, t.line,
-              t.fill_price, extract(epoch FROM t.opened_at)::bigint AS opened_sec,
+              t.fill_price, t.exit_price,
+              extract(epoch FROM t.opened_at)::bigint AS opened_sec,
+              extract(epoch FROM t.exit_at)::bigint   AS exit_sec,
+              (t.exit_at IS NOT NULL) AS exited,
               g.away_team, g.home_team
          FROM bots.trades t
          JOIN bots.bot b ON b.id = t.bot_id
          JOIN sports.nfl_games g ON g.game_id = t.game_id
         WHERE t.bot_id = ANY($1)
-          AND t.opened_at > now() - ($2)::interval
+          AND (t.opened_at > now() - ($2)::interval
+               OR (t.exit_at IS NOT NULL AND t.exit_at > now() - ($2)::interval))
         ORDER BY t.opened_at ASC`,
       [botIds, WINDOW],
     );
 
-    for (const r of rows) {
-      const pricePct =
-        r.fill_price == null ? null : Math.round(Number(r.fill_price) * 100);
+    for (const r of trades) {
+      const base = {
+        botId: r.bot_id,
+        botName: r.bot_name || r.bot_id,
+        position: positionLabel(r),
+        matchup: `${r.away_team} @ ${r.home_team}`,
+        league: "NFL",
+      };
+      // BUY (dedupe + follower-time gating make a re-emit a no-op, so no window
+      // guard needed even when this row was selected only for its recent exit).
+      await notifyModelTradeToFollowers({
+        ...base, event: "buy", entityId: `t${r.id}`,
+        tradeAtSec: Number(r.opened_sec), pricePct: pct(r.fill_price),
+      });
+      // SELL — the exit filled inside the window.
+      if (r.exited && r.exit_sec != null) {
+        await notifyModelTradeToFollowers({
+          ...base, event: "sell", entityId: `t${r.id}`,
+          tradeAtSec: Number(r.exit_sec), pricePct: pct(r.exit_price),
+        });
+      }
+    }
+
+    // 2) LIMIT SELLS set — the resting sell the bot places after a buy. One row
+    //    per position (reprices update it in place, so created_at = placement).
+    const { rows: limits } = await pg.query(
+      `SELECT o.id, o.bot_id, b.name AS bot_name, o.side, o.market_type, o.line,
+              coalesce(o.original_price, o.limit_price) AS px,
+              extract(epoch FROM o.created_at)::bigint AS set_sec,
+              g.away_team, g.home_team
+         FROM bots.limit_orders o
+         JOIN bots.bot b ON b.id = o.bot_id
+         JOIN sports.nfl_games g ON g.game_id = o.game_id
+        WHERE o.bot_id = ANY($1) AND o.action = 'SELL'
+          AND o.created_at > now() - ($2)::interval`,
+      [botIds, WINDOW],
+    );
+    for (const r of limits) {
       await notifyModelTradeToFollowers({
         botId: r.bot_id,
         botName: r.bot_name || r.bot_id,
-        tradeId: r.id,
-        tradeAtSec: Number(r.opened_sec),
         position: positionLabel(r),
-        side: "BUY", // models buy to open
-        pricePct,
         matchup: `${r.away_team} @ ${r.home_team}`,
         league: "NFL",
+        event: "limit",
+        entityId: `o${r.id}`,
+        tradeAtSec: Number(r.set_sec),
+        pricePct: pct(r.px),
       });
     }
   } catch (e: any) {

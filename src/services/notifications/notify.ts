@@ -458,23 +458,23 @@ export async function notifyReferral(opts: {
 export async function notifyModelTradeToFollowers(opts: {
   botId: string;
   botName: string;
-  tradeId: string | number;
+  event: "buy" | "sell" | "limit";
+  entityId: string | number;
   tradeAtSec: number;
   position: string;        // "Over 44.5" | team code
-  side: "BUY" | "SELL";
   pricePct: number | null; // 0-100
   matchup: string;         // "NE @ JAX"
   league: string;
 }): Promise<void> {
   try {
-    if (!opts.botId || !opts.tradeId) return;
+    if (!opts.botId || !opts.entityId) return;
     const { rows } = await pool.query(
       `SELECT follower_id FROM public.model_follows
          WHERE bot_id = $1 AND created_at <= to_timestamp($2)`,
       [opts.botId, opts.tradeAtSec],
     );
     if (!rows.length) return;
-    const dedupeKey = `mtrade:${opts.tradeId}`;
+    const dedupeKey = `mtrade:${opts.event}:${opts.entityId}`;
     await insertNotifications(
       rows.map((r: any) => ({
         recipientId: r.follower_id,
@@ -485,7 +485,8 @@ export async function notifyModelTradeToFollowers(opts: {
           botId: opts.botId,
           botName: opts.botName,
           position: opts.position,
-          side: opts.side,
+          event: opts.event,
+          side: opts.event === "buy" ? "BUY" : "SELL",
           pricePct: opts.pricePct,
           matchup: opts.matchup,
           league: opts.league,
