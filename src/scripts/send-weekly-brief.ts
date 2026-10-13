@@ -46,13 +46,9 @@ const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 const SCHEDULED_AT = "";
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ALREADY_SENT = new Set<string>([
-  "bgee355@gmail.com",
-  "adrianop1414@gmail.com",
-  "max.r.mccullough@gmail.com",
-  "rschacht25@gmail.com",
-  "tommy.rice6@gmail.com",
-]);
+// Per-send exclusions only. Durable opt-outs live in users.email_unsubscribed
+// (honored by the query below), so this stays empty for a normal weekly blast.
+const ALREADY_SENT = new Set<string>([]);
 
 type Recipient = { email: string; preferredLocale: string | null };
 
