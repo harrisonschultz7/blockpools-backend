@@ -40,6 +40,7 @@ import settlementResultRouter from "./routes/settlementResult";
 import standingsRouter, { startStandingsCron } from "./routes/standings";
 import { startPortfolioSnapshotCron } from "./workers/portfolioSnapshotWorker";
 import { startPmSettlementCron } from "./workers/pmSettlementWorker";
+import { startModelAlertCron } from "./workers/modelAlertWorker";
 
 // ✅ Chart data from Supabase (league winner price history)
 import chartRouter from "./routes/chart";
@@ -245,5 +246,6 @@ if (require.main === module) {
     startStandingsCron();
     startPortfolioSnapshotCron();
     startPmSettlementCron();
+    startModelAlertCron();
   });
 }

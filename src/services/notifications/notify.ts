@@ -13,7 +13,7 @@
 
 import { pool } from "../../db";
 
-type NotificationType = "follow" | "trade" | "promo_credit" | "referral";
+type NotificationType = "follow" | "trade" | "promo_credit" | "referral" | "model_trade";
 
 interface NotificationRow {
   recipientId: string;
@@ -445,5 +445,54 @@ export async function notifyReferral(opts: {
     ]);
   } catch (err) {
     console.error("[notify] notifyReferral failed (non-blocking)", err);
+  }
+}
+
+
+/**
+ * A BlockPools MODEL (Adam-7 / Argo-7) opened a trade -> alert every user who
+ * follows that model. Alerts only (no copy execution). Deduped by the model
+ * trade id so re-scanning the same trade is a no-op, and only sent to followers
+ * who were already following when the trade happened.
+ */
+export async function notifyModelTradeToFollowers(opts: {
+  botId: string;
+  botName: string;
+  tradeId: string | number;
+  tradeAtSec: number;
+  position: string;        // "Over 44.5" | team code
+  side: "BUY" | "SELL";
+  pricePct: number | null; // 0-100
+  matchup: string;         // "NE @ JAX"
+  league: string;
+}): Promise<void> {
+  try {
+    if (!opts.botId || !opts.tradeId) return;
+    const { rows } = await pool.query(
+      `SELECT follower_id FROM public.model_follows
+         WHERE bot_id = $1 AND created_at <= to_timestamp($2)`,
+      [opts.botId, opts.tradeAtSec],
+    );
+    if (!rows.length) return;
+    const dedupeKey = `mtrade:${opts.tradeId}`;
+    await insertNotifications(
+      rows.map((r: any) => ({
+        recipientId: r.follower_id,
+        type: "model_trade" as NotificationType,
+        actorId: null,
+        dedupeKey,
+        payload: {
+          botId: opts.botId,
+          botName: opts.botName,
+          position: opts.position,
+          side: opts.side,
+          pricePct: opts.pricePct,
+          matchup: opts.matchup,
+          league: opts.league,
+        },
+      })),
+    );
+  } catch (err) {
+    console.error("[notify] notifyModelTradeToFollowers failed (non-blocking)", err);
   }
 }

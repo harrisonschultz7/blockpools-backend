@@ -12,8 +12,9 @@
 // Deliberately NOT exposed: p_fair for any un-started game, factor weights,
 // resting limit prices, or open position sizes for upcoming games.
 
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { pg } from "../db/pg";
+import { authPrivy, type AuthedRequest } from "../middleware/authPrivy";
 
 const botsRouter = Router();
 
@@ -551,5 +552,70 @@ botsRouter.get("/:botId/trades", async (req, res) => {
   }
 });
 
+
+
+// ---------------------------------------------------------------------------
+// Follow a MODEL for trade alerts. Alerts only -- no copy/execution (so no
+// Polymarket geoblock in play). follower_id = users.id (Privy DID); mirrors the
+// user-follow endpoints on /api/profile. The model-trade alert fan-out runs in
+// modelAlertWorker and reads public.model_follows.
+// ---------------------------------------------------------------------------
+botsRouter.get("/:botId/follow-status", authPrivy, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+    const botId = String(req.params.botId);
+    const { rows } = await pg.query(
+      `SELECT
+         EXISTS (SELECT 1 FROM public.model_follows WHERE follower_id=$1 AND bot_id=$2) AS is_followed_by_me,
+         (SELECT count(*)::int FROM public.model_follows WHERE bot_id=$2) AS followers_count`,
+      [req.user.id, botId],
+    );
+    return res.json({
+      is_followed_by_me: !!rows[0]?.is_followed_by_me,
+      followersCount: rows[0]?.followers_count ?? 0,
+    });
+  } catch (e: any) {
+    console.error("[GET /api/bots/:botId/follow-status]", e?.message || e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+botsRouter.post("/:botId/follow", authPrivy, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+    const botId = String(req.params.botId);
+    const exists = await pg.query(`SELECT 1 FROM bots.bot WHERE id=$1`, [botId]);
+    if (!exists.rows.length) return res.status(404).json({ error: "Model not found" });
+    await pg.query(
+      `INSERT INTO public.model_follows (follower_id, bot_id) VALUES ($1,$2)
+       ON CONFLICT (follower_id, bot_id) DO NOTHING`,
+      [req.user.id, botId],
+    );
+    const { rows } = await pg.query(
+      `SELECT count(*)::int AS followers_count FROM public.model_follows WHERE bot_id=$1`,
+      [botId],
+    );
+    return res.json({ is_followed_by_me: true, followersCount: rows[0]?.followers_count ?? 0 });
+  } catch (e: any) {
+    console.error("[POST /api/bots/:botId/follow]", e?.message || e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+botsRouter.delete("/:botId/follow", authPrivy, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+    const botId = String(req.params.botId);
+    await pg.query(`DELETE FROM public.model_follows WHERE follower_id=$1 AND bot_id=$2`, [req.user.id, botId]);
+    const { rows } = await pg.query(
+      `SELECT count(*)::int AS followers_count FROM public.model_follows WHERE bot_id=$1`,
+      [botId],
+    );
+    return res.json({ is_followed_by_me: false, followersCount: rows[0]?.followers_count ?? 0 });
+  } catch (e: any) {
+    console.error("[DELETE /api/bots/:botId/follow]", e?.message || e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 export default botsRouter;
