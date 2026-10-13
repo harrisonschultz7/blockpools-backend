@@ -22,6 +22,7 @@ import { notifyFollow } from "../services/notifications/notify";
 import { buildProfilePortfolio } from "../services/profilePortfolio";
 import { PROMO_FRAMEWORK_ENABLED } from "../config/promo";
 import { createReferralRedemptions } from "../services/promotions/createReferralRedemptions";
+import { emailTracking } from "../lib/emailTracking";
 
 const router = Router();
 
@@ -231,6 +232,7 @@ async function sendWelcomeEmail(
     console.log(`[Welcome Email][${context}] Sending to: ${email} (userId: ${userId}, lang: ${effectiveLang})`);
     console.log(`[Welcome Email][${context}] RESEND_API_KEY present: ${!!process.env.RESEND_API_KEY}`);
 
+    const welcomeTracking = emailTracking({ userId, campaign: "welcome", lang: effectiveLang });
     const emailResult = await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL || "BlockPools <welcome@mail.blockpools.io>",
       to: email,
@@ -238,6 +240,8 @@ async function sendWelcomeEmail(
       template: {
         id: templateId,
       },
+      // Tags only: the welcome templates don't declare RID / tag their links.
+      tags: welcomeTracking.tags,
     } as any);
 
     console.log(`[Welcome Email][${context}] Resend result:`, JSON.stringify(emailResult));

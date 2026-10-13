@@ -11,6 +11,7 @@
  */
 import { pool } from "../db";
 import { Resend } from "resend";
+import { emailTracking } from "../lib/emailTracking";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -41,6 +42,7 @@ async function run() {
 
   for (const user of rows) {
     try {
+      const tracking = emailTracking({ userId: user.id, campaign: "signin_followup", lang: "en" });
       const result = await resend.emails.send({
         from: process.env.RESEND_FROM_EMAIL || "Harrison at BlockPools <info@mail.blockpools.io>",
         to: user.email,
@@ -48,6 +50,8 @@ async function run() {
         template: {
           id: "f304fffd-a8c3-4bfe-b208-a0d3dde0a663",
         },
+        // Tags only: this template doesn't declare RID / tag its links.
+        tags: tracking.tags,
       } as any);
 
       const resultAny = result as any;

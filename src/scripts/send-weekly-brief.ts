@@ -15,6 +15,7 @@
 import "dotenv/config";
 import { Resend } from "resend";
 import { createClient } from "@supabase/supabase-js";
+import { emailTracking } from "../lib/emailTracking";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -30,6 +31,10 @@ function pickTemplateId(preferredLocale: string | null): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DELAY_MS = 700;
+
+// Resend tag for this send (see lib/emailTracking.ts). Keep in step with the
+// utm_campaign hardcoded in the template links.
+const CAMPAIGN = "weekly_model_report";
 
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send BOTH language versions only to TEST_EMAIL.
@@ -50,14 +55,14 @@ const SCHEDULED_AT = "";
 // (honored by the query below), so this stays empty for a normal weekly blast.
 const ALREADY_SENT = new Set<string>([]);
 
-type Recipient = { email: string; preferredLocale: string | null };
+type Recipient = { id: string | null; email: string; preferredLocale: string | null };
 
 async function getRecipients(): Promise<Recipient[]> {
   if (TEST_MODE) {
     console.log(`TEST MODE — sending both language versions only to ${TEST_EMAIL}`);
     return [
-      { email: TEST_EMAIL, preferredLocale: "es" },
-      { email: TEST_EMAIL, preferredLocale: "en" },
+      { id: null, email: TEST_EMAIL, preferredLocale: "es" },
+      { id: null, email: TEST_EMAIL, preferredLocale: "en" },
     ];
   }
 
@@ -71,11 +76,11 @@ async function getRecipients(): Promise<Recipient[]> {
   // with .range() until a short page comes back — otherwise recipients past
   // the first 1000 are silently dropped.
   const PAGE = 1000;
-  const rows: { email: string; preferred_locale: string | null }[] = [];
+  const rows: { id: string; email: string; preferred_locale: string | null }[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await supabase
       .from("users")
-      .select("email, preferred_locale")
+      .select("id, email, preferred_locale")
       .not("email", "is", null)
       .neq("email", "")
       .eq("email_unsubscribed", false)
@@ -92,7 +97,8 @@ async function getRecipients(): Promise<Recipient[]> {
   }
 
   return rows
-    .map((row: { email: string; preferred_locale: string | null }) => ({
+    .map((row: { id: string; email: string; preferred_locale: string | null }) => ({
+      id: row.id,
       email: row.email,
       preferredLocale: row.preferred_locale,
     }))
@@ -112,16 +118,19 @@ async function run() {
   let sent = 0;
   let failed = 0;
 
-  for (const { email, preferredLocale } of recipients) {
+  for (const { id, email, preferredLocale } of recipients) {
     const templateId = pickTemplateId(preferredLocale);
     const lang = templateId === ENGLISH_TEMPLATE_ID ? "EN" : "ES";
+    const tracking = emailTracking({ userId: id, campaign: CAMPAIGN, lang });
     try {
       const result = await resend.emails.send({
         from: "BlockPools <harrison@mail.blockpools.io>",
         to: email,
         template: {
           id: templateId,
+          variables: tracking.variables,
         },
+        tags: tracking.tags,
         ...(SCHEDULED_AT ? { scheduledAt: SCHEDULED_AT } : {}),
       } as any);
 
