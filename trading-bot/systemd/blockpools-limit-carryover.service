@@ -1,0 +1,21 @@
+[Unit]
+Description=BlockPools -- re-place "Keep after kickoff" Polymarket limit orders
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Runs on the ALLOWED-REGION order host, not the main VPS (geoblocked by the
+# CLOB). Adjust User/WorkingDirectory to that host's checkout.
+Type=simple
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+ExecStart=/usr/bin/node trading-bot/run/limit-carryover.js
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-limit-carryover
+
+[Install]
+WantedBy=multi-user.target
