@@ -22,7 +22,7 @@ const router = Router();
 
 /** Safety net: an order nobody ever resolved stops showing after this long. */
 const MAX_AGE_DAYS = 21;
-const CLOSE_REASONS = new Set(["cancelled", "filled", "edited", "expired", "venue_closed"]);
+const CLOSE_REASONS = new Set(["cancelled", "filled", "edited", "expired", "venue_closed", "game_start"]);
 
 const isOrderId = (x: unknown) => /^0x[0-9a-fA-F]{8,128}$/.test(String(x || ""));
 const isCondition = (x: unknown) => /^0x[0-9a-fA-F]{64}$/.test(String(x || ""));
