@@ -232,6 +232,12 @@
     "_comment_recorder": "totalsLinesRecordedPerGame is the single most important number in this block. There are 2028 open NFL totals markets, so recording every one would be 4056 book calls per poll. Only the top few lines per game by liquidity are recorded -- the bot trades the deepest, and the neighbours are kept so a later version can compare lines without having lost the history. Historical depth cannot be backfilled from anywhere at any price, so an unrecorded line is gone for good.",
     "_comment_ftn_lag": "FTN charting lags the schedule. On 2026-09-26 the 2026 file held weeks 1-2 complete and one week-3 game. The scheme factor must therefore lean on the prior season for most of the first half of the year, which is what data.schemePriorSeason is for.",
     "pmNflTagId": 450,
+
+    "_comment_passing": "Cash-7 passing-yards prop probe reuses this ingest block. passingLinesRecordedPerPlayer records the N lines nearest the ladder centre per QB (liquidityNum is 0 on every prop, so the deepest-line rule totals use does not apply). passingRecordWindowHours is kept tighter than totals because props seed near kickoff.",
+
+    "passingLinesRecordedPerPlayer": 3,
+
+    "passingRecordWindowHours": 30,
     "totalsLinesRecordedPerGame": 1,
     "recordWindowHours": 120,
     "bookPollSeconds": 60,

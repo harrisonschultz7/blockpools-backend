@@ -15,6 +15,7 @@
 
 const { selectConfig } = require("../src/config");
 const { ingestAll } = require("../src/ingest/nflverse");
+const { ingestPlayerWeekAll } = require("../src/ingest/nflversePlayers");
 const { ingestWeather } = require("../src/ingest/weather");
 const { ingestFtnAll } = require("../src/ingest/ftn");
 const { gradeClv, settleTrades, settleFromMarkets, botSummary } = require("../src/accounting/settle");
@@ -25,6 +26,10 @@ const log = require("../src/log");
 
 async function main() {
   await ingestAll();
+  // Weekly player box scores -> sports.nfl_player_week. Upserts, so a finalised
+  // week overwrites its in-progress numbers; feeds Cash-7 (QB passing yards):
+  // QB recent form, opponent pass-D allowed (pass-only), WR target share.
+  await ingestPlayerWeekAll();
   await ingestWeather();
   // FTN charting for the scheme factor. Re-pulled daily because it LAGS the
   // schedule -- games get charted days after they are played -- so the useful
