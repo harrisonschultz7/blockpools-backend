@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Cash-7 shadow passing forecaster hourly
+
+[Timer]
+# Hourly logs a forecast-vs-line time series through the game-day window; that
+# pairing (factor signals + the live line + the eventual outcome) is the raw
+# material for the line-residual calibration that replaces the backtest weights.
+OnBootSec=3min
+OnUnitActiveSec=1h
+AccuracySec=2min
+
+[Install]
+WantedBy=timers.target
