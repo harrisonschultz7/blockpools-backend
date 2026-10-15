@@ -39,7 +39,7 @@ const CAMPAIGN = "weekly_model_report";
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send BOTH language versions only to TEST_EMAIL.
 // Set to false when ready to blast everyone.
-const TEST_MODE = true;
+const TEST_MODE = false;
 const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // (e.g. Eastern: "2026-10-11T13:00:00-04:00"; Central/CDMX: "2026-10-11T12:00:00-06:00")
 // or natural language in UTC ("in 2 hours"). Resend holds each email and delivers
 // it at that time, so the script can be run now and exit. Max ~72 hours ahead.
-const SCHEDULED_AT = "";
+const SCHEDULED_AT = "2026-10-15T19:00:00-04:00";
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Per-send exclusions only. Durable opt-outs live in users.email_unsubscribed
