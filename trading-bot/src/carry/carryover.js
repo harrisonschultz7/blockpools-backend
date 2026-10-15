@@ -161,11 +161,12 @@ async function commitPlaced(row, newId, price, size) {
     await c.query(
       `insert into public.pm_limit_orders
          (id, user_id, owner_address, market_id, outcome_index, side, price, shares,
-          token_id, signer_address, game_start_at, carry_over, carry_status, carried_from)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,false,'placed',$12)
+          token_id, signer_address, game_start_at, carry_over, carry_status, carried_from, game_id, meta)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,false,'placed',$12,$13,$14)
        on conflict (id) do nothing`,
       [newId, row.user_id, row.owner_address, row.market_id, row.outcome_index, row.side,
-       price, size, row.token_id, row.signer_address, row.game_start_at, row.id]);
+       price, size, row.token_id, row.signer_address, row.game_start_at, row.id,
+       row.game_id ?? null, row.meta ?? null]);
     await c.query("commit");
     return true;
   } catch (e) {

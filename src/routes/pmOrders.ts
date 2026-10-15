@@ -123,6 +123,18 @@ router.post("/", authPrivyOptionalWallet, async (req: AuthedRequest, res: Respon
     const signer = isAddress(b.signerAddress) ? String(b.signerAddress).toLowerCase() : null;
     const startSec = Number(b.gameStartAt);
     const gameStartAt = Number.isFinite(startSec) && startSec > 1e9 ? new Date(startSec * 1000) : null;
+    // Game identity + display metadata, so a later resting fill can be written
+    // to the trade table under the same game as the app's own rows
+    // (src/workers/pmFillSyncWorker.ts). Bounded; never trusted for money.
+    const gameId = typeof b.gameId === "string" && b.gameId.length <= 120 ? b.gameId.toLowerCase() : null;
+    const m = b.meta && typeof b.meta === "object" ? b.meta : null;
+    const str = (x: unknown) => (typeof x === "string" && x.length <= 200 ? x : null);
+    const meta = m ? {
+      league: str(m.league), lockTime: Number(m.lockTime) > 0 ? Math.trunc(Number(m.lockTime)) : null,
+      teamACode: str(m.teamACode), teamBCode: str(m.teamBCode),
+      teamAName: str(m.teamAName), teamBName: str(m.teamBName),
+      marketType: str(m.marketType), marketQuestion: str(m.marketQuestion),
+    } : null;
     let carryOver = false;
     if (CARRY_ENABLED && b.carryOver === true && tokenId && signer && gameStartAt && gameStartAt.getTime() > Date.now()) {
       carryOver = await hasDelegated(req.user.id, signer);
@@ -132,8 +144,8 @@ router.post("/", authPrivyOptionalWallet, async (req: AuthedRequest, res: Respon
     // left untouched (the WHERE on the conflict update), and reported.
     const { rowCount } = await pool.query(
       `INSERT INTO pm_limit_orders (id, user_id, owner_address, market_id, outcome_index, side, price, shares,
-                                    token_id, signer_address, game_start_at, carry_over, carry_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CASE WHEN $12 THEN 'pending' END)
+                                    token_id, signer_address, game_start_at, carry_over, carry_status, game_id, meta)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CASE WHEN $12 THEN 'pending' END, $13, $14)
        ON CONFLICT (id) DO UPDATE SET
          market_id = EXCLUDED.market_id, outcome_index = EXCLUDED.outcome_index,
          side = EXCLUDED.side, price = EXCLUDED.price, shares = EXCLUDED.shares,
@@ -142,10 +154,12 @@ router.post("/", authPrivyOptionalWallet, async (req: AuthedRequest, res: Respon
          game_start_at = COALESCE(EXCLUDED.game_start_at, pm_limit_orders.game_start_at),
          carry_over = pm_limit_orders.carry_over OR EXCLUDED.carry_over,
          carry_status = COALESCE(pm_limit_orders.carry_status, EXCLUDED.carry_status),
+         game_id = COALESCE(EXCLUDED.game_id, pm_limit_orders.game_id),
+         meta = COALESCE(EXCLUDED.meta, pm_limit_orders.meta),
          updated_at = now()
        WHERE pm_limit_orders.user_id = EXCLUDED.user_id`,
       [id, req.user.id, req.user.primaryAddress || null, marketId, outcomeIndex, side, price, shares,
-       tokenId, signer, gameStartAt, carryOver],
+       tokenId, signer, gameStartAt, carryOver, gameId, meta ? JSON.stringify(meta) : null],
     );
     if (!rowCount) return res.status(409).json({ error: "order belongs to another account" });
     return res.json({ ok: true, carryOver });
