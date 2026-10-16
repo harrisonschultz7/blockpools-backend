@@ -19,6 +19,7 @@
 const { q, pool } = require("../db");
 const log = require("../log");
 const { getPmClient } = require("./pmClient");
+const mkt = require("./market");
 
 /** Nothing below this is worth a fill; Polymarket's own floor is $5. */
 const MIN_ORDER_USD = 5;
@@ -198,11 +199,12 @@ async function copyEnter(sub, intent, orderId) {
   }
 
   const client = await getPmClient(sub.wallet_address);
+  const wallets = await mkt.userWallets(sub.privy_did);
 
   // The wallet is the real constraint, not the sleeve. Someone can allocate
   // $500 and later withdraw to $50; the sleeve does not know, and only the
   // balance at THIS moment can say what is spendable.
-  const balance = await walletUsd(client);
+  const balance = await mkt.spendableUsd(wallets.trading);
   if (balance !== null && usd > balance) {
     if (balance < MIN_ORDER_USD) {
       await finish(orderId, {
@@ -214,7 +216,7 @@ async function copyEnter(sub, intent, orderId) {
   }
 
   const { OrderSide, OrderType } = await import("@polymarket/client");
-  const tick = await tickSize(intent.condition_id);
+  const tick = await mkt.tickSize(intent.token_id);
   const limit = Number(intent.limit_price);
   // Chase up to 3% past the bot's price, snapped to the grid. Flooring can land
   // below the bot's own price when 3% is thinner than one tick (cheap
@@ -232,7 +234,7 @@ async function copyEnter(sub, intent, orderId) {
       const fill = await simulatedFillPrice(intent.token_id, maxPrice);
       res = fill === null
         ? { orderId: null, makingAmount: 0, message: "dry run: book above maxPrice" }
-        : { orderId: dryOrderId("enter"), makingAmount: usd / fill };
+        : { orderId: dryOrderId("enter"), makingAmount: usd, takingAmount: usd / fill };
       log(`copy[dry] enter sub=${sub.id} ${usd.toFixed(2)} ` +
                `max=${maxPrice} fill=${fill ?? "none"}`);
     } else {
@@ -260,14 +262,17 @@ async function copyEnter(sub, intent, orderId) {
     throw e;
   }
 
-  const shares = Number(res?.makingAmount || 0);
+  // A BUY gives dollars (making) for shares (taking). The dry run's simulated
+  // result follows the same shape.
+  const shares = Number(res?.takingAmount || 0);
+  const spent = Number(res?.makingAmount || 0) > 0 ? Number(res.makingAmount) : usd;
   await finish(orderId, {
     status: shares > 0 ? "filled" : "rejected",
     requested_usd: usd,
     limit_price: maxPrice,
     clob_order_id: res?.orderId || null,
     filled_shares: shares || null,
-    avg_price: shares > 0 ? usd / shares : null,
+    avg_price: shares > 0 ? spent / shares : null,
     dry_run: DRY_RUN,
     error: shares > 0 ? null : (res?.message || "no fill"),
   });
@@ -278,13 +283,31 @@ async function copyEnter(sub, intent, orderId) {
          (subscription_id, token_id, bot_trade_id, shares, cost_usd, avg_price, dry_run)
        values ($1,$2,$3,$4,$5,$6,$7)
        on conflict (subscription_id, token_id, dry_run) do update set
-         shares    = copy.positions.shares + excluded.shares,
-         cost_usd  = copy.positions.cost_usd + excluded.cost_usd,
-         avg_price = (copy.positions.cost_usd + excluded.cost_usd)
-                     / nullif(copy.positions.shares + excluded.shares, 0),
+         -- A closed row (exited or settled) starts over rather than adding to
+         -- shares that no longer exist.
+         shares    = case when copy.positions.closed_at is null
+                          then copy.positions.shares + excluded.shares else excluded.shares end,
+         cost_usd  = case when copy.positions.closed_at is null
+                          then copy.positions.cost_usd + excluded.cost_usd else excluded.cost_usd end,
+         avg_price = case when copy.positions.closed_at is null
+                          then (copy.positions.cost_usd + excluded.cost_usd)
+                               / nullif(copy.positions.shares + excluded.shares, 0)
+                          else excluded.avg_price end,
+         bot_trade_id = excluded.bot_trade_id,
+         opened_at  = case when copy.positions.closed_at is null then copy.positions.opened_at else now() end,
+         closed_at  = null,
+         realized_usd = null,
          updated_at = now()`,
-      [sub.id, intent.token_id, intent.bot_trade_id, shares, usd, usd / shares, DRY_RUN],
+      [sub.id, intent.token_id, intent.bot_trade_id, shares, spent, spent / shares, DRY_RUN],
     );
+    if (!DRY_RUN && res?.orderId) {
+      // Into the shared order record (closed at once: a FAK does not rest), so
+      // the fill sync writes the buy to the subscriber's History with its fee.
+      await recordPmOrder(sub, intent, wallets, {
+        id: res.orderId, side: "buy", price: maxPrice, shares, live: false,
+      });
+      await notifyCopy(sub, intent, "buy", spent / shares, res.orderId);
+    }
   }
   return shares > 0;
 }
@@ -317,7 +340,8 @@ async function walletUsd(client) {
 async function copyExit(sub, intent, orderId) {
   const { rows } = await q(
     `select shares, detached from copy.positions
-      where subscription_id = $1 and token_id = $2 and dry_run = $3`,
+      where subscription_id = $1 and token_id = $2 and dry_run = $3
+        and closed_at is null`,
     [sub.id, intent.token_id, DRY_RUN],
   );
   const pos = rows[0];
@@ -331,14 +355,45 @@ async function copyExit(sub, intent, orderId) {
   }
 
   const client = await getPmClient(sub.wallet_address);
+  const wallets = await mkt.userWallets(sub.privy_did);
   // Snapped UP for a sell: the price is a floor on what we will accept, so
   // rounding it down would sell cheaper than the bot intended -- the mirror of
   // the ceiling rule on the way in.
-  const tick = await tickSize(intent.condition_id);
+  const tick = await mkt.tickSize(intent.token_id);
   const raw = Number(intent.limit_price);
   const decimals = Math.max(0, Math.round(-Math.log10(tick)));
   const price = Number((Math.ceil(raw / tick) * tick).toFixed(decimals));
-  const shares = Number(pos.shares);
+  // Sized from what the wallet HOLDS, capped at the copied position: an exit
+  // that already part-filled, or shares sold by hand, must not leave a sell for
+  // shares that are gone. Floor to 2dp -- never more than held.
+  let shares = Number(pos.shares);
+  const held = await mkt.heldShares(wallets.trading, intent.condition_id, intent.token_id);
+  if (held !== null) shares = Math.min(shares, Math.floor(held * 100) / 100);
+  if (!(shares > 0)) {
+    await finish(orderId, { status: "skipped", skip_reason: "no_shares_held" });
+    return false;
+  }
+
+  if (intent.kind === "reprice" && !DRY_RUN) {
+    // The live exit may no longer be the id copy.orders remembers: the
+    // carry-over worker re-places it after kickoff under a new id. The shared
+    // order record knows the current one.
+    const live = await q(
+      `select id from public.pm_limit_orders
+        where user_id = $1 and token_id = $2 and side = 'sell' and status = 'live'
+          and meta->>'source' = 'copy'`,
+      [sub.privy_did, intent.token_id],
+    );
+    for (const r of live.rows) {
+      try { await client.cancelOrder({ orderId: r.id }); }
+      catch (e) { log.warn(`copy: cancel ${r.id} failed: ${e.message}`); }
+      await q(
+        `update public.pm_limit_orders set status = 'closed', closed_reason = 'edited',
+                closed_at = now(), updated_at = now() where id = $1 and status = 'live'`,
+        [r.id],
+      );
+    }
+  }
 
   if (intent.kind === "reprice") {
     const prev = await q(
@@ -382,6 +437,15 @@ async function copyExit(sub, intent, orderId) {
       size: shares,
       builderCode: process.env.POLYMARKET_BUILDER_CODE,
     });
+    if (res?.orderId) {
+      // Shared order record: the betslip shows it, the carry-over worker keeps
+      // it through kickoff (the model's exit rides the game), and the fill sync
+      // logs its fills to History.
+      await recordPmOrder(sub, intent, wallets, {
+        id: res.orderId, side: "sell", price, shares, live: true,
+      });
+      if (intent.kind === "exit") await notifyCopy(sub, intent, "limit", price, res.orderId);
+    }
   }
 
   await finish(orderId, {
@@ -405,6 +469,11 @@ async function copyExit(sub, intent, orderId) {
 async function runFanout() {
   const cur = await q(`select last_intent_id from copy.fanout_cursor where id = 1`);
   const from = Number(cur.rows[0]?.last_intent_id || 0);
+
+  if (!DRY_RUN && Date.now() - lastReconcile > RECONCILE_MS) {
+    lastReconcile = Date.now();
+    await reconcileSleeves().catch((e) => log.warn(`copy: reconcile failed: ${e.message}`));
+  }
 
   const { rows: intents } = await q(
     `select * from bots.trade_intents where id > $1 order by id asc limit 200`,
@@ -441,4 +510,146 @@ async function runFanout() {
   return { intents: intents.length, placed };
 }
 
-module.exports = { runFanout, sleeveNav };
+// ── Shared order record, notifications, sleeve P&L ──────────────────────────
+
+/**
+ * Write a copied order into public.pm_limit_orders (meta.source = 'copy'), the
+ * record every other piece already reads:
+ *   - the betslip shows a live exit as the position's limit row
+ *   - the carry-over worker re-places a pre-kickoff exit after Polymarket clears
+ *     the book at kickoff (the bot keeps its exit through the game)
+ *   - the fill sync writes each fill to user_trade_events (History, fees, ROI)
+ * A buy is a FAK that fills at once: recorded closed, with a short window for
+ * its fill to land in the venue's feed.
+ */
+async function recordPmOrder(sub, intent, wallets, o) {
+  try {
+    const info = await mkt.marketInfo(intent.condition_id, intent.line);
+    const idx = mkt.outcomeIndexOf(info, intent.token_id);
+    if (!info || idx === null || !info.gameId) {
+      log.warn(`copy: no market record for ${intent.condition_id} -- order ${o.id} not recorded`);
+      return;
+    }
+    const start = info.gameStartSec;
+    const carry = o.live && o.side === "sell" && start && start > Date.now() / 1000;
+    await q(
+      `insert into public.pm_limit_orders
+         (id, user_id, owner_address, market_id, outcome_index, side, price, shares,
+          token_id, signer_address, game_start_at, carry_over, carry_status,
+          game_id, meta, status, closed_reason, closed_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, to_timestamp($11), $12,
+               case when $12 then 'pending' end, $13, $14::jsonb,
+               case when $15 then 'live' else 'closed' end,
+               case when $15 then null else 'copy_fak' end,
+               case when $15 then null else now() + interval '2 minutes' end)
+       on conflict (id) do nothing`,
+      [o.id, sub.privy_did, wallets.owner, info.conditionId, idx, o.side,
+       Number(o.price), Number(o.shares), String(intent.token_id),
+       String(sub.wallet_address).toLowerCase(), start, !!carry, info.gameId,
+       JSON.stringify({ ...(info.meta || {}), source: "copy", botId: intent.bot_id }),
+       !!o.live],
+    );
+  } catch (e) {
+    log.warn(`copy: recording order ${o.id} failed: ${e.message}`);
+  }
+}
+
+const botNames = new Map();
+async function botName(botId) {
+  if (!botNames.has(botId)) {
+    const { rows } = await q(`select name from bots.bot where id = $1`, [botId]);
+    botNames.set(botId, rows[0]?.name || botId);
+  }
+  return botNames.get(botId);
+}
+
+/** "Copied: Adam-7 bought Broncos at 44%" in the subscriber's notifications. */
+async function notifyCopy(sub, intent, event, price, orderId) {
+  try {
+    const info = await mkt.marketInfo(intent.condition_id, intent.line);
+    await q(
+      `insert into public.notifications (recipient_id, type, actor_id, payload, dedupe_key)
+       values ($1, 'model_trade', null, $2::jsonb, $3)
+       on conflict do nothing`,
+      [sub.privy_did, JSON.stringify({
+        copied: true,
+        event,
+        botId: intent.bot_id,
+        botName: await botName(intent.bot_id),
+        position: mkt.positionLabel(info, intent.token_id),
+        pricePct: Number.isFinite(price) ? Math.round(price * 100) : null,
+      }), `copy:${orderId}`],
+    );
+  } catch (e) {
+    log.warn(`copy: notify failed: ${e.message}`);
+  }
+}
+
+const RECONCILE_MS = 60_000;
+let lastReconcile = 0;
+
+/**
+ * Close finished sleeve positions and bank their P&L into the subscription, so
+ * the sleeve's NAV -- and with it every later trade size -- follows results.
+ *
+ * A position is finished when its copied exits have sold it (filled shares from
+ * the shared order record, at the exit price), or when its market has resolved
+ * (what was left pays $1 or $0). Settlement itself is Polymarket's auto-redeem;
+ * this only does the sleeve's books.
+ */
+async function reconcileSleeves() {
+  const { rows } = await q(
+    `select p.id, p.subscription_id, p.token_id, p.shares, p.cost_usd, p.opened_at, s.privy_did,
+            i.condition_id, i.line
+       from copy.positions p
+       join copy.subscriptions s on s.id = p.subscription_id
+       left join lateral (
+         select condition_id, line from bots.trade_intents
+          where token_id = p.token_id order by id desc limit 1
+       ) i on true
+      where not p.dry_run and p.closed_at is null and p.shares > 0`);
+  for (const p of rows) {
+    if (!p.condition_id) continue;
+    const sold = await q(
+      `select coalesce(sum(filled_shares), 0) as sh, coalesce(sum(filled_shares * price), 0) as usd
+         from public.pm_limit_orders
+        where user_id = $1 and token_id = $2 and side = 'sell'
+          and meta->>'source' = 'copy' and created_at >= $3`,
+      [p.privy_did, p.token_id, p.opened_at]);
+    const soldSh = Number(sold.rows[0].sh), soldUsd = Number(sold.rows[0].usd);
+    const shares = Number(p.shares), cost = Number(p.cost_usd);
+
+    let pnl = null;
+    const info = await mkt.marketInfo(p.condition_id, p.line);
+    const idx = mkt.outcomeIndexOf(info, p.token_id);
+    const px = idx === null ? NaN : info.outcomePrices[idx];
+    if (info?.closed && (px >= 0.99 || px <= 0.01)) {
+      pnl = soldUsd + Math.max(shares - soldSh, 0) * (px >= 0.99 ? 1 : 0) - cost;
+    } else if (soldSh >= shares - Math.max(0.01, shares * 0.001)) {
+      pnl = soldUsd - cost;
+    }
+    if (pnl === null) continue;
+
+    const c = await pool.connect();
+    try {
+      await c.query("begin");
+      const upd = await c.query(
+        `update copy.positions set closed_at = now(), realized_usd = $2, updated_at = now()
+          where id = $1 and closed_at is null`, [p.id, pnl.toFixed(6)]);
+      if (upd.rowCount) {
+        await c.query(
+          `update copy.subscriptions set realized_pnl = realized_pnl + $2, updated_at = now()
+            where id = $1`, [p.subscription_id, pnl.toFixed(6)]);
+      }
+      await c.query("commit");
+      if (upd.rowCount) log(`  copy: sleeve ${p.subscription_id} closed position ${p.id}: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`);
+    } catch (e) {
+      await c.query("rollback").catch(() => {});
+      throw e;
+    } finally {
+      c.release();
+    }
+  }
+}
+
+module.exports = { runFanout, sleeveNav, reconcileSleeves };

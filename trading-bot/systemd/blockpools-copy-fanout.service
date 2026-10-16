@@ -1,0 +1,22 @@
+[Unit]
+Description=BlockPools -- copy trading fan-out (mirror model trades for subscribers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Runs on the ALLOWED-REGION order host (Panama), never the main VPS: the CLOB
+# geoblocks the VPS IP. Single instance -- systemd keeps exactly one.
+# COPY_DRY_RUN in .env: 1 = simulate (no orders), 0 = live.
+Type=simple
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+ExecStart=/usr/bin/node trading-bot/run/copy-fanout.js
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-copy-fanout
+
+[Install]
+WantedBy=multi-user.target

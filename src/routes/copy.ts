@@ -142,6 +142,15 @@ router.post("/subscribe", authPrivy, async (req: AuthedRequest, res: Response) =
   const termsVersion = String(req.body?.termsVersion || "");
 
   if (!botId) return res.status(400).json({ error: "bot_required" });
+  // Region. Orders for a subscriber are placed by OUR server, so the venue's
+  // own check on the subscriber's location never runs -- the app's check does,
+  // here. The client sends Polymarket's geoblock answer for the subscriber's
+  // own connection (the same check the trade button uses); a blocked region is
+  // refused, and the country is kept with the consent.
+  const geo = req.body?.geo && typeof req.body.geo === "object" ? req.body.geo : null;
+  if (geo?.blocked === true) return res.status(451).json({ error: "region_blocked" });
+  const geoCountry = typeof geo?.country === "string" ? geo.country.slice(0, 8) : null;
+  const geoRegion = typeof geo?.region === "string" ? geo.region.slice(0, 16) : null;
   if (basisUsd === null || basisUsd < MIN_BASIS_USD || basisUsd > MAX_BASIS_USD) {
     return res.status(400).json({ error: "basis_out_of_range", minBasisUsd: MIN_BASIS_USD, maxBasisUsd: MAX_BASIS_USD });
   }
@@ -183,11 +192,12 @@ router.post("/subscribe", authPrivy, async (req: AuthedRequest, res: Response) =
       // Appended every time, including on a sleeve edit. Cheap, and it means the
       // record answers "what had they agreed to when they set this size".
       await client.query(
-        `insert into copy.consents (privy_did, bot_id, terms_version, ip, user_agent)
-         values ($1,$2,$3,$4,$5)`,
+        `insert into copy.consents (privy_did, bot_id, terms_version, ip, user_agent, country, region)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
         [did, botId, TERMS_VERSION,
          String(req.headers["x-forwarded-for"] || req.ip || "").slice(0, 200),
-         String(req.headers["user-agent"] || "").slice(0, 400)],
+         String(req.headers["user-agent"] || "").slice(0, 400),
+         geoCountry, geoRegion],
       );
       await client.query("commit");
     } catch (e) {
@@ -312,6 +322,8 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
               p.avg_price,
               p.detached,
               p.dry_run,
+              p.closed_at,
+              p.realized_usd,
               p.opened_at,
               p.updated_at,
               s.bot_id,
@@ -351,7 +363,7 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
             limit 1
          ) sell on true
         where s.privy_did = $1
-        order by (p.shares > 0 and not p.detached) desc, p.updated_at desc
+        order by (p.shares > 0 and not p.detached and p.closed_at is null) desc, p.updated_at desc
         limit $2`,
       [did, limit],
     );
@@ -368,7 +380,9 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
         avgPrice: num(r.avg_price),
         entryPrice: num(r.entry_price),
         // Open means the fan-out still manages it: shares left, not detached.
-        open: Number(r.shares) > 0 && !r.detached,
+        open: Number(r.shares) > 0 && !r.detached && !r.closed_at,
+        // Banked into the sleeve once the position exited or settled.
+        realizedUsd: r.realized_usd == null ? null : num(r.realized_usd),
         detached: Boolean(r.detached),
         // Simulated by a dry run, never placed on an exchange. Surfaced rather
         // than filtered: a hidden fake position is how a fake position ends up

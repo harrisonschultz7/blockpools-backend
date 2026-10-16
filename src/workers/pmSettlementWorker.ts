@@ -174,6 +174,7 @@ async function loadOpenGames(): Promise<OpenGame[]> {
     SELECT g.game_id, g.league, g.lock_time, g.team_a_code, g.team_b_code, g.team_a_name, g.team_b_name
     FROM public.games g
     WHERE g.game_id ILIKE '%-pm-%'
+      AND g.game_id NOT LIKE '%::%'
       AND COALESCE(g.is_final, false) = false
       AND g.lock_time IS NOT NULL
       AND g.lock_time < $1
@@ -288,10 +289,50 @@ function mapWinner(
 
 let running = false;
 
+/**
+ * Games that are one market among several on a matchup -- "<game>::ou-<line>",
+ * written by copy trading for a model's totals bets -- settle by THAT market's
+ * own result, never by the moneyline. The market is found through the order
+ * record (pm_limit_orders.game_id -> market_id); outcome 0/1 maps to team A/B
+ * codes (OVER/UNDER for a total). Clean 1/0 resolution only.
+ */
+async function settleMarketGames(): Promise<number> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const { rows } = await pool.query(
+    `SELECT g.game_id, g.league, g.lock_time, g.team_a_code, g.team_b_code, g.team_a_name, g.team_b_name,
+            (SELECT o.market_id FROM public.pm_limit_orders o WHERE o.game_id = g.game_id LIMIT 1) AS market_id
+       FROM public.games g
+      WHERE g.game_id ILIKE '%-pm-%::%'
+        AND COALESCE(g.is_final, false) = false
+        AND g.lock_time IS NOT NULL AND g.lock_time < $1`,
+    [nowSec],
+  );
+  let settled = 0;
+  for (const g of rows) {
+    if (!g.market_id) continue;
+    try {
+      const list = await fetch(`${GAMMA}/markets?condition_ids=${g.market_id}&closed=true`).then((r) => r.json());
+      const m = Array.isArray(list) ? list[0] : null;
+      if (!m?.closed) continue;
+      const px = parseArr(m.outcomePrices).map(Number);
+      const idx = px[0] >= 0.99 && px[1] <= 0.01 ? 0 : px[1] >= 0.99 && px[0] <= 0.01 ? 1 : null;
+      if (idx === null) continue;
+      const code = String((idx === 0 ? g.team_a_code : g.team_b_code) || "");
+      const r = await settleGame(g as OpenGame, idx, code, idx === 0 ? "A" : "B");
+      console.log(`[pm-settle] ${g.game_id} -> ${code} (idx ${idx}); ${r.claimed} claim(s), ${r.payoutTotal.toFixed(2)} paid`);
+      settled += 1;
+    } catch (e: any) {
+      console.error(`[pm-settle] failed to settle ${g.game_id}: ${e?.message || e}`);
+    }
+  }
+  return settled;
+}
+
 export async function runPmSettlementOnce(): Promise<void> {
   if (running) return;
   running = true;
   try {
+    await settleMarketGames();
     const open = await loadOpenGames();
     if (!open.length) return;
 
