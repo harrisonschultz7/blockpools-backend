@@ -62,6 +62,14 @@ function privyClient() {
  * failure three layers away from the cause.
  */
 function privyProvider(address) {
+  // Privy finds the wallet by an EXACT, case-sensitive match on the address it
+  // stores -- the EIP-55 checksummed form. A lowercase address (how we store
+  // them) is "No wallet account found", so every signing call sends this.
+  let checksummed = null;
+  const privyAddress = async () => {
+    if (!checksummed) checksummed = (await import("viem")).getAddress(address);
+    return checksummed;
+  };
   return {
     async request({ method, params }) {
       const api = privyClient().walletApi;
@@ -76,7 +84,7 @@ function privyProvider(address) {
         const raw = params[1];
         const typedData = typeof raw === "string" ? JSON.parse(raw) : raw;
         const { signature } = await api.ethereum.signTypedData({
-          address,
+          address: await privyAddress(),
           chainType: "ethereum",
           typedData,
         });
@@ -86,7 +94,7 @@ function privyProvider(address) {
       if (method === "personal_sign") {
         // params: [messageHex, address]
         const { signature } = await api.ethereum.signMessage({
-          address,
+          address: await privyAddress(),
           chainType: "ethereum",
           message: params[0],
         });
