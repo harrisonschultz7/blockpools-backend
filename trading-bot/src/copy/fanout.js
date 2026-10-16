@@ -378,21 +378,7 @@ async function copyExit(sub, intent, orderId) {
     // The live exit may no longer be the id copy.orders remembers: the
     // carry-over worker re-places it after kickoff under a new id. The shared
     // order record knows the current one.
-    const live = await q(
-      `select id from public.pm_limit_orders
-        where user_id = $1 and token_id = $2 and side = 'sell' and status = 'live'
-          and meta->>'source' = 'copy'`,
-      [sub.privy_did, intent.token_id],
-    );
-    for (const r of live.rows) {
-      try { await client.cancelOrder({ orderId: r.id }); }
-      catch (e) { log.warn(`copy: cancel ${r.id} failed: ${e.message}`); }
-      await q(
-        `update public.pm_limit_orders set status = 'closed', closed_reason = 'edited',
-                closed_at = now(), updated_at = now() where id = $1 and status = 'live'`,
-        [r.id],
-      );
-    }
+    await cancelLiveCopySells(client, sub, intent.token_id, "edited");
   }
 
   if (intent.kind === "reprice") {
@@ -491,7 +477,9 @@ async function runFanout() {
       try {
         const ok = intent.kind === "enter"
           ? await copyEnter(sub, intent, orderId)
-          : await copyExit(sub, intent, orderId);
+          : intent.kind === "stop"
+            ? await copyStop(sub, intent, orderId)
+            : await copyExit(sub, intent, orderId);
         if (ok) placed++;
       } catch (e) {
         log.err(`copy: sub ${sub.id} intent ${intent.id}: ${e.message}`);
@@ -508,6 +496,112 @@ async function runFanout() {
   );
   if (placed) log(`  copy: ${placed} order(s) placed across ${intents.length} intent(s)`);
   return { intents: intents.length, placed };
+}
+
+/** Cancel every live copied sell on this token (venue + shared record). */
+async function cancelLiveCopySells(client, sub, tokenId, reason) {
+  const live = await q(
+    `select id from public.pm_limit_orders
+      where user_id = $1 and token_id = $2 and side = 'sell' and status = 'live'
+        and meta->>'source' = 'copy'`,
+    [sub.privy_did, tokenId],
+  );
+  for (const r of live.rows) {
+    try { await client.cancelOrder({ orderId: r.id }); }
+    catch (e) { log.warn(`copy: cancel ${r.id} failed: ${e.message}`); }
+    await q(
+      `update public.pm_limit_orders set status = 'closed', closed_reason = $2,
+              closed_at = now(), updated_at = now() where id = $1 and status = 'live'`,
+      [r.id, reason],
+    );
+  }
+}
+
+/** Accept this far below the bot's stop price: a stop fires into a falling
+ *  book, and a FAK that refuses the next tick down leaves the position open. */
+const STOP_SLIPPAGE = 0.05;
+
+/**
+ * The bot stopped out: sell everything this subscriber holds, now.
+ *
+ * Cancel the resting exit first (its shares are locked by the venue), then a
+ * FAK market sell of what the wallet holds, floored at the bot's stop price
+ * less STOP_SLIPPAGE. Logged to the shared order record so the fill sync puts
+ * it in History and the sleeve banks the result.
+ */
+async function copyStop(sub, intent, orderId) {
+  const { rows } = await q(
+    `select shares, detached from copy.positions
+      where subscription_id = $1 and token_id = $2 and dry_run = $3 and closed_at is null`,
+    [sub.id, intent.token_id, DRY_RUN],
+  );
+  const pos = rows[0];
+  if (!pos || Number(pos.shares) <= 0) {
+    await finish(orderId, { status: "skipped", skip_reason: "no_position" });
+    return false;
+  }
+  if (pos.detached) {
+    await finish(orderId, { status: "skipped", skip_reason: "detached" });
+    return false;
+  }
+
+  const client = await getPmClient(sub.wallet_address);
+  const wallets = await mkt.userWallets(sub.privy_did);
+  if (!DRY_RUN) await cancelLiveCopySells(client, sub, intent.token_id, "stop_loss");
+
+  let shares = Number(pos.shares);
+  const held = await mkt.heldShares(wallets.trading, intent.condition_id, intent.token_id);
+  if (held !== null) shares = Math.min(shares, Math.floor(held * 100) / 100);
+  if (!(shares > 0)) {
+    await finish(orderId, { status: "skipped", skip_reason: "no_shares_held" });
+    return false;
+  }
+
+  const tick = await mkt.tickSize(intent.token_id);
+  const minPrice = Math.max(tick, floorToTick(Number(intent.limit_price) * (1 - STOP_SLIPPAGE), tick));
+
+  let res;
+  if (DRY_RUN) {
+    res = { orderId: dryOrderId("stop"), makingAmount: shares, takingAmount: shares * Number(intent.limit_price) };
+    log(`copy[dry] stop sub=${sub.id} ${shares.toFixed(2)} sh min=${minPrice}`);
+  } else {
+    const { OrderSide, OrderType } = await import("@polymarket/client");
+    try {
+      res = await client.placeMarketOrder({
+        assetId: intent.token_id,
+        side: OrderSide.SELL,
+        shares,
+        minPrice,
+        orderType: OrderType.FAK,
+        builderCode: process.env.POLYMARKET_BUILDER_CODE,
+      });
+    } catch (e) {
+      await finish(orderId, {
+        status: "rejected", limit_price: minPrice, error: String(e.message || e).slice(0, 400),
+      }).catch(() => {});
+      throw e;
+    }
+  }
+
+  // A SELL gives shares (making) for dollars (taking).
+  const sold = Number(res?.makingAmount || 0);
+  const got = Number(res?.takingAmount || 0);
+  if (!DRY_RUN && res?.orderId && sold > 0) {
+    // Recorded at the floor: every fill at or above it is this order's.
+    await recordPmOrder(sub, intent, wallets, {
+      id: res.orderId, side: "sell", price: minPrice, shares: sold, live: false,
+    });
+    await notifyCopy(sub, intent, "sell", got > 0 ? got / sold : minPrice, res.orderId);
+  }
+  await finish(orderId, {
+    status: sold > 0 ? "filled" : "rejected",
+    limit_price: minPrice,
+    clob_order_id: res?.orderId || null,
+    filled_shares: sold || null,
+    avg_price: sold > 0 && got > 0 ? got / sold : null,
+    error: sold > 0 ? null : (res?.message || "no fill"),
+  });
+  return sold > 0;
 }
 
 // ── Shared order record, notifications, sleeve P&L ──────────────────────────
@@ -610,11 +704,18 @@ async function reconcileSleeves() {
       where not p.dry_run and p.closed_at is null and p.shares > 0`);
   for (const p of rows) {
     if (!p.condition_id) continue;
+    // Proceeds are what the fill sync recorded for each copied sell (its rows'
+    // ids end in the order's id prefix), net of fees; the order's own price is
+    // the fallback for a fill the sync has not written yet.
     const sold = await q(
-      `select coalesce(sum(filled_shares), 0) as sh, coalesce(sum(filled_shares * price), 0) as usd
-         from public.pm_limit_orders
-        where user_id = $1 and token_id = $2 and side = 'sell'
-          and meta->>'source' = 'copy' and created_at >= $3`,
+      `select coalesce(sum(o.filled_shares), 0) as sh,
+              coalesce(sum(coalesce(
+                (select sum(e.net_out_dec) from public.user_trade_events e
+                  where e.id like 'pmfill-%-' || lower(substr(o.id, 3, 12))),
+                o.filled_shares * o.price)), 0) as usd
+         from public.pm_limit_orders o
+        where o.user_id = $1 and o.token_id = $2 and o.side = 'sell'
+          and o.meta->>'source' = 'copy' and o.created_at >= $3`,
       [p.privy_did, p.token_id, p.opened_at]);
     const soldSh = Number(sold.rows[0].sh), soldUsd = Number(sold.rows[0].usd);
     const shares = Number(p.shares), cost = Number(p.cost_usd);

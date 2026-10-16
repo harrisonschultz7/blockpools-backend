@@ -322,6 +322,9 @@ async function tryStop(botId, order, floorPrice, bookTs) {
     if (!cur || cur.status !== "open") { await client.query("rollback"); return false; }
     await settleStop(botId, { ...order, shares: cur.shares }, floorPrice, bookTs, client);
     await client.query("commit");
+    // Copy-trading signal: subscribers sell what they hold now. After commit,
+    // so a rolled-back stop never tells anyone to sell.
+    await emitExit({ botId, kind: "stop", order, limitPrice: floorPrice });
     return true;
   } catch (e) {
     await client.query("rollback").catch(() => {});
