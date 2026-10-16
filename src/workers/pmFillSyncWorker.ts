@@ -269,9 +269,9 @@ async function syncGroup(wallet: string, marketId: string, orders: Order[]) {
     await pool.query(
       `UPDATE public.pm_limit_orders
           SET filled_shares = $2,
-              status = CASE WHEN status = 'live' AND $2 >= shares - 0.005 THEN 'closed' ELSE status END,
-              closed_reason = CASE WHEN status = 'live' AND $2 >= shares - 0.005 THEN 'filled' ELSE closed_reason END,
-              closed_at = CASE WHEN status = 'live' AND $2 >= shares - 0.005 THEN now() ELSE closed_at END,
+              status = CASE WHEN status = 'live' AND $2 >= shares - GREATEST(0.01, shares * 0.001) THEN 'closed' ELSE status END,
+              closed_reason = CASE WHEN status = 'live' AND $2 >= shares - GREATEST(0.01, shares * 0.001) THEN 'filled' ELSE closed_reason END,
+              closed_at = CASE WHEN status = 'live' AND $2 >= shares - GREATEST(0.01, shares * 0.001) THEN now() ELSE closed_at END,
               updated_at = CASE WHEN filled_shares IS DISTINCT FROM $2 THEN now() ELSE updated_at END
         WHERE id = $1`,
       [o.id, f.toFixed(6)]);
