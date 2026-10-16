@@ -2,6 +2,8 @@
 Description=BlockPools -- re-place "Keep after kickoff" Polymarket limit orders
 After=network-online.target
 Wants=network-online.target
+# Never give up restarting (newer systemd reads this in [Unit], not [Service]).
+StartLimitIntervalSec=0
 
 [Service]
 # Runs on the ALLOWED-REGION order host, not the main VPS (geoblocked by the
@@ -12,7 +14,6 @@ WorkingDirectory=/opt/blockpools/backend
 ExecStart=/usr/bin/node trading-bot/run/limit-carryover.js
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=bp-limit-carryover
