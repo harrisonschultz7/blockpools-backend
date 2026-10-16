@@ -35,7 +35,7 @@ const privy = new PrivyClient(
  * agreed to, which is the entire point of recording it -- and a bump is how you
  * find who needs to re-consent.
  */
-export const TERMS_VERSION = "2026-09-29.1";
+export const TERMS_VERSION = "2026-10-16.1"; // risk disclosure rewritten (own risk, no guarantee, no liability)
 
 /** Sleeve size is the one number a subscriber must not be able to fat-finger. */
 const MIN_BASIS_USD = 25;
