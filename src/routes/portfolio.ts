@@ -15,6 +15,7 @@
 import { Router, Response } from "express";
 import { pool } from "../db";
 import { authPrivy, AuthedRequest } from "../middleware/authPrivy";
+import { walletValueSeries } from "../services/pmWalletValue";
 
 const router = Router();
 
@@ -29,6 +30,23 @@ const num = (v: any) => {
 // POST /api/portfolio/:address/snapshot — record one net-worth point.
 // Owner-only (you can only snapshot your own wallet) + throttled so a user
 // refreshing their profile doesn't spam the series.
+// GET /api/portfolio/me/value -- the signed-in user's PORTFOLIO VALUE over time
+// (deposits − withdrawals + settled results; open bets at cost). Owner-only:
+// it is their wallet balance, which a public profile must not reveal.
+router.get("/me/value", authPrivy, async (req: AuthedRequest, res: Response) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT lower(trading_address) AS w FROM public.users WHERE id = $1`, [req.user!.id]);
+    const w = rows[0]?.w;
+    if (!w) return res.json({ current: null, points: [] });
+    res.set("Cache-Control", "no-store");
+    return res.json(await walletValueSeries(w));
+  } catch (e: any) {
+    console.error("[GET /api/portfolio/me/value] error", e?.message || e);
+    return res.status(500).json({ error: "value_failed" });
+  }
+});
+
 router.post("/:address/snapshot", authPrivy, async (req: AuthedRequest, res: Response) => {
   const address = normAddr(req.params.address);
   const owner = normAddr(req.user?.primaryAddress);

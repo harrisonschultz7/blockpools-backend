@@ -40,6 +40,7 @@ import settlementResultRouter from "./routes/settlementResult";
 // ✅ Standings proxy + background cron (Goalserve — UCL, EPL, NBA, NHL, MLB etc.)
 import standingsRouter, { startStandingsCron } from "./routes/standings";
 import { startPortfolioSnapshotCron } from "./workers/portfolioSnapshotWorker";
+import { startPmWalletScanCron } from "./services/pmWalletValue";
 import { startPmSettlementCron } from "./workers/pmSettlementWorker";
 import { startPmFillSyncCron } from "./workers/pmFillSyncWorker";
 import { startModelAlertCron } from "./workers/modelAlertWorker";
@@ -249,6 +250,7 @@ if (require.main === module) {
     console.log(`BlockPools backend listening on port ${PORT}`);
     startStandingsCron();
     startPortfolioSnapshotCron();
+    startPmWalletScanCron();
     startPmSettlementCron();
     startPmFillSyncCron();
     startModelAlertCron();
