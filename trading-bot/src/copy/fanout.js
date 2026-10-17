@@ -211,6 +211,9 @@ async function copyEnter(sub, intent, orderId) {
   // balance at THIS moment can say what is spendable.
   const balance = await mkt.spendableUsd(wallets.trading);
   if (balance !== null && usd > balance) {
+    // The wallet cannot cover the model's size -- the user's own trades or a
+    // withdrawal spent what the allocation assumed. Never silent: tell them.
+    if (!DRY_RUN) await notifyUnderfunded(sub, intent.bot_id, usd, balance);
     if (balance < MIN_ORDER_USD) {
       await finish(orderId, {
         status: "skipped", skip_reason: "insufficient_funds", requested_usd: usd,
@@ -706,6 +709,28 @@ async function notifyBelowMin(sub, botId, nav) {
     );
   } catch (e) {
     log.warn(`copy: below-min notify failed: ${e.message}`);
+  }
+}
+
+/**
+ * "Argo-7 couldn't place a full trade: your wallet has $3 for a $7 trade."
+ * Once per sleeve per day, like the below-minimum notice.
+ */
+async function notifyUnderfunded(sub, botId, needUsd, haveUsd) {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    await q(
+      `insert into public.notifications (recipient_id, type, actor_id, payload, dedupe_key)
+       values ($1, 'model_trade', null, $2::jsonb, $3)
+       on conflict do nothing`,
+      [sub.privy_did, JSON.stringify({
+        copied: true, event: 'underfunded', botId, botName: await botName(botId),
+        needUsd: Math.round(Number(needUsd) * 100) / 100,
+        haveUsd: Math.round(Number(haveUsd) * 100) / 100,
+      }), `copy-funds:${sub.id}:${day}`],
+    );
+  } catch (e) {
+    log.warn(`copy: underfunded notify failed: ${e.message}`);
   }
 }
 
