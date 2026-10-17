@@ -197,6 +197,9 @@ async function copyEnter(sub, intent, orderId) {
     await finish(orderId, {
       status: "skipped", skip_reason: "below_min_order", requested_usd: usd,
     });
+    // Never silent: the sleeve is too small for the venue minimum, so this
+    // model has stopped trading for them until they top up.
+    if (!DRY_RUN) await notifyBelowMin(sub, intent.bot_id, nav);
     return false;
   }
 
@@ -681,6 +684,31 @@ async function notifyCopy(sub, intent, event, price, orderId) {
   }
 }
 
+/** Smallest sleeve whose ~7% trades clear the $5 venue minimum (the Copy flow
+ *  asks for at least this much). Below it every entry is skipped. */
+const MIN_SLEEVE_USD = Math.ceil(MIN_ORDER_USD / 0.07);
+
+/**
+ * "Argo-7 paused: portfolio $70, below the $72 minimum." One per sleeve per
+ * day (dedupe key), so a run of skipped signals does not spam the bell.
+ */
+async function notifyBelowMin(sub, botId, nav) {
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    await q(
+      `insert into public.notifications (recipient_id, type, actor_id, payload, dedupe_key)
+       values ($1, 'model_trade', null, $2::jsonb, $3)
+       on conflict do nothing`,
+      [sub.privy_did, JSON.stringify({
+        copied: true, event: 'paused', botId, botName: await botName(botId),
+        sleeveUsd: Math.round(Number(nav) * 100) / 100, minUsd: MIN_SLEEVE_USD,
+      }), `copy-min:${sub.id}:${day}`],
+    );
+  } catch (e) {
+    log.warn(`copy: below-min notify failed: ${e.message}`);
+  }
+}
+
 const RECONCILE_MS = 60_000;
 let lastReconcile = 0;
 
@@ -746,6 +774,13 @@ async function reconcileSleeves() {
       }
       await c.query("commit");
       if (upd.rowCount) log(`  copy: sleeve ${p.subscription_id} closed position ${p.id}: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`);
+      if (upd.rowCount) {
+        const { rows: subRows } = await q(
+          `select id, privy_did, bot_id, basis_usd, realized_pnl from copy.subscriptions where id = $1 and status = 'active'`,
+          [p.subscription_id]);
+        const sub = subRows[0];
+        if (sub && sleeveNav(sub) < MIN_SLEEVE_USD) await notifyBelowMin(sub, sub.bot_id, sleeveNav(sub));
+      }
     } catch (e) {
       await c.query("rollback").catch(() => {});
       throw e;
