@@ -37,6 +37,14 @@ const privy = new PrivyClient(
  */
 export const TERMS_VERSION = "2026-10-16.1"; // risk disclosure rewritten (own risk, no guarantee, no liability)
 
+// Publish the current version to the database, so copy.subscriber_overview can
+// flag subscribers still on older wording. Best-effort, once per boot.
+pool.query(
+  `insert into copy.settings (key, value) values ('current_terms_version', $1)
+   on conflict (key) do update set value = excluded.value, updated_at = now()`,
+  [TERMS_VERSION],
+).catch((e) => console.warn("[copy] could not record terms version:", e?.message || e));
+
 /** Sleeve size is the one number a subscriber must not be able to fat-finger. */
 const MIN_BASIS_USD = 25;
 const MAX_BASIS_USD = 100_000;
@@ -177,8 +185,8 @@ router.post("/subscribe", authPrivy, async (req: AuthedRequest, res: Response) =
       await client.query(
         `insert into copy.subscriptions
            (privy_did, wallet_address, bot_id, status, basis_usd, multiplier,
-            max_trade_usd, delegated_at)
-         values ($1,$2,$3,'active',$4,$5,$6, now())
+            max_trade_usd, delegated_at, terms_version, terms_accepted_at)
+         values ($1,$2,$3,'active',$4,$5,$6, now(), $7, now())
          on conflict (privy_did, bot_id) do update set
            wallet_address = excluded.wallet_address,
            status         = 'active',
@@ -186,8 +194,10 @@ router.post("/subscribe", authPrivy, async (req: AuthedRequest, res: Response) =
            multiplier     = excluded.multiplier,
            max_trade_usd  = excluded.max_trade_usd,
            delegated_at   = now(),
+           terms_version  = excluded.terms_version,
+           terms_accepted_at = now(),
            updated_at     = now()`,
-        [did, wallet, botId, basisUsd, multiplier, maxTradeUsd],
+        [did, wallet, botId, basisUsd, multiplier, maxTradeUsd, TERMS_VERSION],
       );
       // Appended every time, including on a sleeve edit. Cheap, and it means the
       // record answers "what had they agreed to when they set this size".

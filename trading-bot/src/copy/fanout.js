@@ -130,7 +130,9 @@ async function subscribersOf(botId) {
     `select id, privy_did, wallet_address, basis_usd, multiplier, max_trade_usd,
             realized_pnl
        from copy.subscriptions
-      where bot_id = $1 and status = 'active' and delegated_at is not null`,
+      where bot_id = $1 and status = 'active' and delegated_at is not null
+        -- never trade for someone with no recorded agreement to the terms
+        and terms_accepted_at is not null`,
     [botId],
   );
   return rows;
