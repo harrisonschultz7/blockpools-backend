@@ -357,6 +357,10 @@ async function tryStop(botId, order, floorPrice, bookTs) {
 async function sweepFills(botId) {
   const { rows: orders } = await q(
     `select o.id, o.trade_id, o.token_id, o.shares, o.limit_price, o.game_id,
+            -- side/market/line: a stop here emits a copy-trading intent, whose
+            -- side and market_type are NOT NULL. Without them the insert failed,
+            -- was only logged, and copiers never got the stop.
+            o.side, o.condition_id, o.market_type, o.line,
             t.fill_price as entry_price, bk.bids, bk.mid, bk.ts as book_ts
        from bots.limit_orders o
        join sports.nfl_games g on g.game_id = o.game_id
