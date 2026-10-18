@@ -713,6 +713,8 @@ async function notifyCopy(sub, intent, event, price, orderId) {
         botId: intent.bot_id,
         botName: await botName(intent.bot_id),
         position: mkt.positionLabel(info, intent.token_id),
+        // The game it is on: the notification names it and links its page.
+        gameId: info?.gameId || null,
         pricePct: Number.isFinite(price) ? Math.round(price * 100) : null,
       }), `copy:${orderId}`],
     );
