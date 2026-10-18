@@ -15,6 +15,7 @@ const { cfg } = require("../src/config");
 const pm = require("../src/ingest/polymarket");
 const { q } = require("../src/db");
 const { sleep } = require("../src/http");
+const { sweepFills } = require("../src/exec/limits");
 const log = require("../src/log");
 
 let stopping = false;
@@ -39,10 +40,25 @@ async function main() {
       log.err(`tick failed: ${e.message}`);
     }
 
+    // FILL AGAINST THE BOOK JUST WRITTEN -- every poll, as the totals recorder
+    // does for Argo-7. Left to the 15-minute tick, an in-play spike through the
+    // limit (BUF @ LV, 2026-10-18: 0.46 printed for a minute) is never seen.
+    try {
+      const res = await sweepFills(c.botId);
+      if (res && res.filled) log(`  sweep: ${res.filled} exit(s) filled`);
+    } catch (e) { log.err(`exit sweep: ${e.message}`); }
+
+    // Fast while a game is near kickoff OR in play with a position on it: the
+    // old test went false the instant a game started -- exactly when the price
+    // moves most and a resting exit is most likely to be lifted.
     const { rows } = await q(
       `select count(*)::int n from sports.nfl_games g
         join sports.pm_markets m on m.game_id = g.game_id and m.closed = false
-       where g.kickoff between now() and now() + ($1 || ' hours')::interval`,
+       where g.kickoff between now() and now() + ($1 || ' hours')::interval
+          or (g.home_score is null
+              and g.kickoff between now() - interval '6 hours' and now()
+              and exists (select 1 from bots.positions p
+                           where p.game_id = g.game_id and p.shares > 0))`,
       [String(c.ingest.nearKickoffHours)],
     ).catch(() => ({ rows: [{ n: 0 }] }));
 

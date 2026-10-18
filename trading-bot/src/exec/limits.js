@@ -354,13 +354,83 @@ async function tryStop(botId, order, floorPrice, bookTs) {
  * anyway, and moving a resting order 45 times an hour on no new information would
  * be churn dressed up as responsiveness.
  */
+const DATA_API = "https://data-api.polymarket.com";
+const printChecked = new Map(); // order id -> last check (ms)
+const PRINT_CHECK_MS = 30_000;
+
+async function tradesFor(conditionId, takerOnly) {
+  const out = [];
+  for (let off = 0; off < 3000; off += 500) {
+    const r = await fetch(
+      `${DATA_API}/trades?market=${conditionId}&takerOnly=${takerOnly}&limit=500&offset=${off}`,
+      { headers: { accept: "application/json" } });
+    if (!r.ok) throw new Error(`trades ${r.status}`);
+    const page = await r.json();
+    if (!Array.isArray(page) || !page.length) break;
+    out.push(...page);
+    if (page.length < 500) break;
+  }
+  return out;
+}
+
+/**
+ * A fill from REAL TRADES at or above the order's limit since it rested, capped
+ * at the volume that actually traded there (less what the order already sold).
+ *
+ * Volume is counted once per match: the taker's row when the taker traded this
+ * token, otherwise the largest maker row on it (a taker on the other outcome
+ * merges or mints against makers here). Conservative on purpose -- paper size is
+ * far larger than a copier's, and a 10-share print must not "fill" 2,000.
+ */
+async function printedFill(o) {
+  const cid = o.market_cid;
+  if (!cid) return null;
+  const last = printChecked.get(o.id) || 0;
+  if (Date.now() - last < PRINT_CHECK_MS) return null;
+  printChecked.set(o.id, Date.now());
+
+  const limit = Number(o.limit_price);
+  const since = Math.floor(new Date(o.created_at).getTime() / 1000);
+  const tok = String(o.token_id);
+  const at = (t) => String(t.asset) === tok && Number(t.timestamp) >= since && Number(t.price) >= limit - 1e-9;
+
+  const [takers, all] = await Promise.all([tradesFor(cid, true), tradesFor(cid, false)]);
+  const perTx = new Map();
+  for (const t of takers) if (at(t)) perTx.set(t.transactionHash, { size: Number(t.size), taker: true });
+  for (const t of all) {
+    if (!at(t)) continue;
+    const cur = perTx.get(t.transactionHash);
+    if (cur && cur.taker) continue;
+    if (!cur || Number(t.size) > cur.size) perTx.set(t.transactionHash, { size: Number(t.size), taker: false });
+  }
+  let traded = 0;
+  for (const v of perTx.values()) traded += v.size;
+
+  const remaining = Number(o.shares);
+  const alreadySold = Math.max(0, Number(o.trade_shares || remaining) - remaining);
+  const take = Math.min(remaining, traded - alreadySold);
+  if (!(take > 0.01)) return null;
+  return {
+    filledShares: take,
+    unfilledShares: Math.max(0, remaining - take),
+    avgPrice: limit,
+    proceedsUsd: take * limit,
+    consumed: [["prints", +take.toFixed(4)]],
+  };
+}
+
 async function sweepFills(botId) {
   const { rows: orders } = await q(
     `select o.id, o.trade_id, o.token_id, o.shares, o.limit_price, o.game_id,
             -- side/market/line: a stop here emits a copy-trading intent, whose
             -- side and market_type are NOT NULL. Without them the insert failed,
             -- was only logged, and copiers never got the stop.
-            o.side, o.condition_id, o.market_type, o.line,
+            o.side, o.condition_id, o.market_type, o.line, o.created_at,
+            -- Moneyline orders carry no condition id; the market registry does.
+            coalesce(o.condition_id,
+              (select m.condition_id from sports.pm_markets m
+                where o.token_id in (m.home_token_id, m.away_token_id) limit 1)) as market_cid,
+            t.shares as trade_shares,
             t.fill_price as entry_price, bk.bids, bk.mid, bk.ts as book_ts
        from bots.limit_orders o
        join sports.nfl_games g on g.game_id = o.game_id
@@ -390,10 +460,22 @@ async function sweepFills(botId) {
     if (floor !== null && mid !== null && mid <= floor + 1e-9) {
       if (await tryStop(botId, o, Math.max(0.001, Math.min(floor, mid)), o.book_ts)) { stopped++; continue; }
     }
-    if (!o.bids) continue;
-    const hit = walkBids(o.bids, Number(o.shares), Number(o.limit_price));
-    if (!hit.filledShares) continue;
-    if (await tryFill(botId, o, hit, o.book_ts)) filled++;
+    const hit = o.bids ? walkBids(o.bids, Number(o.shares), Number(o.limit_price)) : { filledShares: 0 };
+    if (hit.filledShares) {
+      if (await tryFill(botId, o, hit, o.book_ts)) filled++;
+      continue;
+    }
+    // No bid at the limit right now -- but did the market TRADE there since the
+    // order rested? A resting sell is filled by a buyer lifting it, which the
+    // bid side never shows; a 20s snapshot of bids misses every such lift.
+    const printed = await printedFill(o).catch((e) => {
+      log.warn(`  print check ${o.game_id}: ${e.message}`);
+      return null;
+    });
+    if (printed && await tryFill(botId, o, printed, o.book_ts)) {
+      filled++;
+      log(`  sweep: ${o.game_id} filled ${printed.filledShares.toFixed(0)} sh on trades printed at/above ${Number(o.limit_price).toFixed(3)}`);
+    }
   }
   if (stopped) log(`  sweep: ${stopped} stop-loss exit(s)`);
   return { filled, stopped, checked: orders.length };
