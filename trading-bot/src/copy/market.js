@@ -7,7 +7,7 @@
 //                and the app's game id for this market (so copied trades land in
 //                the same History / settlement rows as trades made in the app)
 //   tickSize     the CLOB's price grid for a token (orders off it are rejected)
-//   heldShares   what the wallet actually holds of a token, from the venue
+//   heldShares   what the wallet actually holds of a token, read on-chain
 //   spendableUsd the wallet's pUSD -- the collateral an order spends
 //   userWallets  a subscriber's app identity + Polymarket trading wallet
 
@@ -18,6 +18,8 @@ const GAMMA = "https://gamma-api.polymarket.com";
 const CLOB = "https://clob.polymarket.com";
 const DATA_API = "https://data-api.polymarket.com";
 const PUSD = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
+// Conditional Tokens (ERC-1155): outcome shares live here, 6 decimals.
+const CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
 const POLYGON_RPCS = [
   process.env.POLYGON_RPC_URL || "",
   "https://polygon-bor-rpc.publicnode.com",
@@ -139,9 +141,36 @@ async function userWallets(privyDid) {
   return { owner: rows[0]?.owner || null, trading: rows[0]?.trading || null };
 }
 
-/** Shares of a token the trading wallet holds now; null when unreadable. */
+async function ethCall(to, data) {
+  for (const rpc of POLYGON_RPCS) {
+    try {
+      const r = await fetch(rpc, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to, data }, "latest"] }),
+      });
+      const j = await r.json();
+      if (j?.result) return BigInt(j.result);
+    } catch { /* next rpc */ }
+  }
+  return null;
+}
+
+/**
+ * Shares of a token the trading wallet holds now; null when unreadable.
+ *
+ * Read from the CTF contract, not the data-api: the data-api positions feed
+ * lags a fill, and an exit placed seconds after its entry read 0 there and was
+ * skipped -- leaving the position with no sell at all. The data-api is only
+ * the fallback when every RPC is down.
+ */
 async function heldShares(tradingWallet, conditionId, tokenId) {
   if (!tradingWallet) return null;
+  const data = "0x00fdd58e"
+    + tradingWallet.toLowerCase().replace(/^0x/, "").padStart(64, "0")
+    + BigInt(tokenId).toString(16).padStart(64, "0");
+  const bal = await ethCall(CTF, data);
+  if (bal !== null) return Number(bal) / 1e6;
   try {
     const list = await getJson(
       `${DATA_API}/positions?user=${tradingWallet}&market=${conditionId}&sizeThreshold=0`);

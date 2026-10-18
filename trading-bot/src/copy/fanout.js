@@ -334,6 +334,29 @@ async function walletUsd(client) {
 }
 
 /**
+ * Shares this subscriber can sell now: the copied position, capped at what the
+ * wallet holds so an exit that part-filled, or shares sold by hand, never
+ * leaves a sell for shares that are gone. Floored to 2dp.
+ *
+ * The exit intent lands seconds after the entry, often before the buy has
+ * settled on-chain. A fresh position that reads short is therefore waited on
+ * (up to ~45s) instead of skipped -- skipping it is how copied positions ended
+ * up with no resting sell at all.
+ */
+async function sellableShares(pos, wallets, intent) {
+  const want = Number(pos.shares);
+  const fresh = Date.now() - new Date(pos.updated_at || 0).getTime() < 10 * 60 * 1000;
+  let held = null;
+  for (let attempt = 0; attempt < (fresh ? 10 : 1); attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 5000));
+    held = await mkt.heldShares(wallets.trading, intent.condition_id, intent.token_id);
+    if (held === null || held >= want * 0.99) break;
+  }
+  const shares = held === null ? want : Math.min(want, held);
+  return Math.floor(shares * 100) / 100;
+}
+
+/**
  * The bot posted or moved a resting sell; mirror it on whatever this subscriber
  * actually holds.
  *
@@ -347,7 +370,7 @@ async function walletUsd(client) {
  */
 async function copyExit(sub, intent, orderId) {
   const { rows } = await q(
-    `select shares, detached from copy.positions
+    `select shares, detached, updated_at from copy.positions
       where subscription_id = $1 and token_id = $2 and dry_run = $3
         and closed_at is null`,
     [sub.id, intent.token_id, DRY_RUN],
@@ -374,9 +397,7 @@ async function copyExit(sub, intent, orderId) {
   // Sized from what the wallet HOLDS, capped at the copied position: an exit
   // that already part-filled, or shares sold by hand, must not leave a sell for
   // shares that are gone. Floor to 2dp -- never more than held.
-  let shares = Number(pos.shares);
-  const held = await mkt.heldShares(wallets.trading, intent.condition_id, intent.token_id);
-  if (held !== null) shares = Math.min(shares, Math.floor(held * 100) / 100);
+  const shares = await sellableShares(pos, wallets, intent);
   if (!(shares > 0)) {
     await finish(orderId, { status: "skipped", skip_reason: "no_shares_held" });
     return false;
@@ -478,6 +499,21 @@ async function runFanout() {
   let placed = 0;
   let lastId = from;
   for (const intent of intents) {
+    // Moneyline exits and reprices are written without a condition id (the
+    // game id is unambiguous to the bot). The copy side needs it to record the
+    // sell -- unrecorded, the carry-over worker never sees it and Polymarket's
+    // kickoff wipe leaves the position with no sell -- so take it from the
+    // entry on the same token.
+    if (!intent.condition_id) {
+      const e = await q(
+        `select condition_id, line from bots.trade_intents
+          where token_id = $1 and condition_id is not null order by id desc limit 1`,
+        [intent.token_id]);
+      if (e.rows[0]) {
+        intent.condition_id = e.rows[0].condition_id;
+        if (intent.line == null) intent.line = e.rows[0].line;
+      }
+    }
     const subs = await subscribersOf(intent.bot_id);
     for (const sub of subs) {
       const orderId = await claim(sub.id, intent);
@@ -539,7 +575,7 @@ const STOP_SLIPPAGE = 0.05;
  */
 async function copyStop(sub, intent, orderId) {
   const { rows } = await q(
-    `select shares, detached from copy.positions
+    `select shares, detached, updated_at from copy.positions
       where subscription_id = $1 and token_id = $2 and dry_run = $3 and closed_at is null`,
     [sub.id, intent.token_id, DRY_RUN],
   );
@@ -557,9 +593,7 @@ async function copyStop(sub, intent, orderId) {
   const wallets = await mkt.userWallets(sub.privy_did);
   if (!DRY_RUN) await cancelLiveCopySells(client, sub, intent.token_id, "stop_loss");
 
-  let shares = Number(pos.shares);
-  const held = await mkt.heldShares(wallets.trading, intent.condition_id, intent.token_id);
-  if (held !== null) shares = Math.min(shares, Math.floor(held * 100) / 100);
+  const shares = await sellableShares(pos, wallets, intent);
   if (!(shares > 0)) {
     await finish(orderId, { status: "skipped", skip_reason: "no_shares_held" });
     return false;
@@ -754,7 +788,8 @@ async function reconcileSleeves() {
        join copy.subscriptions s on s.id = p.subscription_id
        left join lateral (
          select condition_id, line from bots.trade_intents
-          where token_id = p.token_id order by id desc limit 1
+          where token_id = p.token_id and condition_id is not null
+          order by id desc limit 1
        ) i on true
       where not p.dry_run and p.closed_at is null and p.shares > 0`);
   for (const p of rows) {
@@ -815,4 +850,4 @@ async function reconcileSleeves() {
   }
 }
 
-module.exports = { runFanout, sleeveNav, reconcileSleeves };
+module.exports = { runFanout, sleeveNav, reconcileSleeves, copyExit };
