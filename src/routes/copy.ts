@@ -354,7 +354,10 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
               -- because only the newest matters: a reprice supersedes the order
               -- before it, and the superseded one is already marked skipped.
               sell.limit_price as sell_price,
-              sell.kind        as sell_kind
+              sell.kind        as sell_kind,
+              pl.market_id     as pm_market_id,
+              pl.outcome_index as pm_outcome_index,
+              pl.game_id       as app_game_id
          from copy.positions p
          join copy.subscriptions s on s.id = p.subscription_id
          join bots.bot b           on b.id = s.bot_id
@@ -372,6 +375,17 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
             order by o.id desc
             limit 1
          ) sell on true
+         -- Where the position sits in the app: the market + outcome the wallet
+         -- position carries, so the betslip rail can tell a copied position
+         -- from one the user placed (Solo vs Model) on the same wallet.
+         left join lateral (
+           select l.market_id, l.outcome_index, l.game_id
+             from public.pm_limit_orders l
+            where l.user_id = s.privy_did and l.token_id = p.token_id
+              and l.meta->>'source' = 'copy'
+            order by l.created_at
+            limit 1
+         ) pl on true
         where s.privy_did = $1
         order by (p.shares > 0 and not p.detached and p.closed_at is null) desc, p.updated_at desc
         limit $2`,
@@ -399,6 +413,10 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
         // in somebody's P&L.
         dryRun: Boolean(r.dry_run),
         gameId: r.game_id,
+        /** App market (Polymarket condition id), outcome index and game id. */
+        marketId: r.pm_market_id ? String(r.pm_market_id).toLowerCase() : null,
+        outcomeIndex: r.pm_outcome_index == null ? null : Number(r.pm_outcome_index),
+        appGameId: r.app_game_id ?? null,
         side: r.side,
         question: r.question,
         line: num(r.line),
