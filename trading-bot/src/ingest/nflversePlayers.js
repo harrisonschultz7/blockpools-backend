@@ -1,7 +1,7 @@
 // trading-bot/src/ingest/nflversePlayers.js
 //
 // Weekly player box scores from nflverse -> sports.nfl_player_week. Powers
-// Cash-7 (NFL QB passing yards): the QB's own recent form, the opponent's
+// Bruno-7 (NFL QB passing yards): the QB's own recent form, the opponent's
 // pass-defense ALLOWED (pass-only, derived from the opposing QBs' rows, so a
 // bad run defense never leaks into a passing matchup), and each receiver's
 // target share for the WR-injury factor. One row per player per finished game;

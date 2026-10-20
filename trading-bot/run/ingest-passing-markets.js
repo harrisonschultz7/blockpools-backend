@@ -8,7 +8,7 @@
 //   node trading-bot/run/ingest-passing-markets.js
 //
 // Runs under Argo-7's config for now: it reuses that config's ingest.* recorder
-// params (plus the two passing* keys added there). The standalone Cash-7 config
+// params (plus the two passing* keys added there). The standalone Bruno-7 config
 // is created when the trading half of the bot is built.
 
 const { selectConfig } = require("../src/config");

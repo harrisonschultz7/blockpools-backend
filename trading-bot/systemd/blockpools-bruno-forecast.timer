@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the Cash-7 shadow passing forecaster hourly
+Description=Run the Bruno-7 shadow passing forecaster hourly
 
 [Timer]
 # Hourly logs a forecast-vs-line time series through the game-day window; that

@@ -1,5 +1,5 @@
 [Unit]
-Description=BlockPools Cash-7 -- Polymarket PASSING-YARDS depth recorder (liquidity probe)
+Description=BlockPools Bruno-7 -- Polymarket PASSING-YARDS depth recorder (liquidity probe)
 After=network-online.target
 Wants=network-online.target
 
@@ -18,7 +18,7 @@ RestartSec=5
 StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=bp-cash-recorder
+SyslogIdentifier=bp-bruno-recorder
 
 [Install]
 WantedBy=multi-user.target

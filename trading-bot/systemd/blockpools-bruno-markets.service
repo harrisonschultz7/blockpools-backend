@@ -1,5 +1,5 @@
 [Unit]
-Description=BlockPools Cash-7 -- discover NFL passing-yards prop markets
+Description=BlockPools Bruno-7 -- discover NFL passing-yards prop markets
 After=network-online.target
 
 [Service]
@@ -10,4 +10,4 @@ Environment=TRADING_BOT_CONFIG=config.argo-7.json
 ExecStart=/usr/bin/node trading-bot/run/ingest-passing-markets.js
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=bp-cash-markets
+SyslogIdentifier=bp-bruno-markets

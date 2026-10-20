@@ -27,7 +27,7 @@ const log = require("../src/log");
 async function main() {
   await ingestAll();
   // Weekly player box scores -> sports.nfl_player_week. Upserts, so a finalised
-  // week overwrites its in-progress numbers; feeds Cash-7 (QB passing yards):
+  // week overwrites its in-progress numbers; feeds Bruno-7 (QB passing yards):
   // QB recent form, opponent pass-D allowed (pass-only), WR target share.
   await ingestPlayerWeekAll();
   await ingestWeather();

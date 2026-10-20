@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // trading-bot/run/record-passing-books.js
 //
-// THE PASSING-YARDS DEPTH RECORDER (Cash-7 liquidity probe). Long-running: polls
+// THE PASSING-YARDS DEPTH RECORDER (Bruno-7 liquidity probe). Long-running: polls
 // every bookPollSeconds, faster inside nearKickoffHours. Records only -- no fills
 // -- because the question this answers is whether the central-line books ever get
 // real two-sided depth, not whether an order fills against them.

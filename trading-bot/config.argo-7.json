@@ -233,7 +233,7 @@
     "_comment_ftn_lag": "FTN charting lags the schedule. On 2026-09-26 the 2026 file held weeks 1-2 complete and one week-3 game. The scheme factor must therefore lean on the prior season for most of the first half of the year, which is what data.schemePriorSeason is for.",
     "pmNflTagId": 450,
 
-    "_comment_passing": "Cash-7 passing-yards prop probe reuses this ingest block. passingLinesRecordedPerPlayer records the N lines nearest the ladder centre per QB (liquidityNum is 0 on every prop, so the deepest-line rule totals use does not apply). passingRecordWindowHours is kept tighter than totals because props seed near kickoff.",
+    "_comment_passing": "Bruno-7 passing-yards prop probe reuses this ingest block. passingLinesRecordedPerPlayer records the N lines nearest the ladder centre per QB (liquidityNum is 0 on every prop, so the deepest-line rule totals use does not apply). passingRecordWindowHours is kept tighter than totals because props seed near kickoff.",
 
     "passingLinesRecordedPerPlayer": 3,
 

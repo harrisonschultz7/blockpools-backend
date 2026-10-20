@@ -1,7 +1,7 @@
 // trading-bot/src/ingest/polymarketPassing.js
 //
 // QB PASSING-YARDS prop discovery + the passing DEPTH RECORDER. This is the
-// Cash-7 liquidity probe: before trusting a prop model, prove the central-line
+// Bruno-7 liquidity probe: before trusting a prop model, prove the central-line
 // books actually get tradeable depth, because Polymarket's CLOB serves current
 // state only and an unrecorded hour of depth can never be bought back.
 //

@@ -1,6 +1,6 @@
 // trading-bot/src/model/forecastPassing.js
 //
-// THE RESIDUAL MODEL, IN YARDS (Cash-7, QB passing yards). Same shape as
+// THE RESIDUAL MODEL, IN YARDS (Bruno-7, QB passing yards). Same shape as
 // forecastTotals.js:
 //
 //   implied_mean = line + sigma * Phi^-1(p_market)       <- invert the price
@@ -15,7 +15,7 @@
 // line-residual calibration once ~3-4 weeks of recorded prop closing lines exist.
 // Logging f_* now is exactly what makes that calibration possible later.
 //
-// Weights (config.cash-7.json passingModel.weights) are the backtest coefficients:
+// Weights (config.bruno-7.json passingModel.weights) are the backtest coefficients:
 //   form 0.238 (t=4.19, the only factor clearing 2sigma), matchup 0.102 (t=1.5),
 //   weather 0.62 yds/mph (t=-1.5, sign baked in via -wind). injury/script are
 //   priors with low confidence -- untested in the backtest.
@@ -28,27 +28,29 @@ const FACTORS = ["form", "matchup", "weather", "injury", "script"];
 const DEFAULT_ATT = 33;   // league-ish attempts when a QB has no trailing history
 
 /**
- * Market P(over) for a prop book. NOT the mid: an unseeded prop quotes bid 0.01 /
- * ask 0.99, so the mid is a fake coin flip. The live information is the inner
- * quotes -- the over ASK and the under BID, which on a real market sum to ~1 --
- * so P(over) is their agreement: avg(over_ask, 1 - under_bid).
+ * Market P(over) for a prop book, or null when there is no real market. An
+ * unseeded prop quotes bid 0.01 / ask 0.99, so its mid is a fake coin flip; a
+ * single resting order is one person's price, not the market's. P(over) is the
+ * midpoint of the combined over-side book, and only when it is two-sided within
+ * MAX_PROP_SPREAD.
  */
 function marketProbOverProp(over, under) {
-  const vals = [];
-  const oa = over && over.best_ask != null ? Number(over.best_ask) : null;
-  const ub = under && under.best_bid != null ? Number(under.best_bid) : null;
-  if (oa != null && oa > 0.01 && oa < 0.99) vals.push(oa);
-  if (ub != null && ub > 0.01 && ub < 0.99) vals.push(1 - ub);
-  if (!vals.length) {
-    // fall back to whichever mid is usable
-    const om = over && over.mid != null ? Number(over.mid) : null;
-    const um = under && under.mid != null ? Number(under.mid) : null;
-    if (om != null && om > 0.02 && om < 0.98) return om;
-    if (um != null && um > 0.02 && um < 0.98) return 1 - um;
-    return null;
-  }
-  return vals.reduce((s, v) => s + v, 0) / vals.length;
+  // A REAL TWO-SIDED BOOK OR NOTHING. Combine both tokens into one over-side
+  // book (an under bid at b is an over ask at 1-b) and require the best ask and
+  // best bid within MAX_PROP_SPREAD. Without this the fallback below read a
+  // 0.01/0.99 placeholder as a 50% market, and a lone resting order (ask 0.46,
+  // no bid within 45c) as the price: of 768 pre-game week-6 forecasts only 93
+  // had a spread <= 0.12, and the bot's largest "edges" were those fake prices
+  // (Geno Smith 199.5 AND 249.5 both "50%"; edge >= 3c traded -38%).
+  const num = (x) => (x != null && Number(x) > 0 && Number(x) < 1 ? Number(x) : null);
+  const asks = [num(over?.best_ask), under?.best_bid != null && num(under.best_bid) != null ? 1 - Number(under.best_bid) : null].filter((x) => x != null);
+  const bids = [num(over?.best_bid), under?.best_ask != null && num(under.best_ask) != null ? 1 - Number(under.best_ask) : null].filter((x) => x != null);
+  if (!asks.length || !bids.length) return null;
+  const ask = Math.min(...asks), bid = Math.max(...bids);
+  if (!(ask - bid <= MAX_PROP_SPREAD + 1e-9) || ask <= bid - 1e-9) return null;
+  return (ask + bid) / 2;
 }
+const MAX_PROP_SPREAD = 0.12;
 
 /**
  * Per-tick context shared by every game in one week: league Y/A, each defense's
@@ -239,7 +241,7 @@ function forecastPassing(game, market, books, playerId, asOf, ctx) {
       },
       market: { slug: market.slug, player_name: market.player_name, fee_type: market.fee_type, fee_rate: market.fee_rate, tick_size: market.tick_size },
     },
-    model_version: pm.modelVersion || "cash-7-shadow",
+    model_version: pm.modelVersion || "bruno-7-shadow",
   };
 
   const bad = [];

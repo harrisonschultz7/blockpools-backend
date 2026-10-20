@@ -1,13 +1,13 @@
 [Unit]
-Description=BlockPools Cash-7 -- QB passing-yards SHADOW forecaster (writes features_passing, trades nothing)
+Description=BlockPools Bruno-7 -- QB passing-yards SHADOW forecaster (writes features_passing, trades nothing)
 After=network-online.target
 
 [Service]
 Type=oneshot
 User=bp
 WorkingDirectory=/opt/blockpools/backend
-Environment=TRADING_BOT_CONFIG=config.cash-7.json
+Environment=TRADING_BOT_CONFIG=config.bruno-7.json
 ExecStart=/usr/bin/node trading-bot/run/forecast-passing.js
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=bp-cash-forecast
+SyslogIdentifier=bp-bruno-forecast

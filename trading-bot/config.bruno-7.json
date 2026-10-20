@@ -1,6 +1,6 @@
 {
   "_comment": "Argo-7. NFL GAME TOTALS (over/under) only -- no spreads, no moneylines. Second bot, same infrastructure as Adam-7: same feature store, same depth recorder, same paper filler, same NAV accounting. Select it with TRADING_BOT_CONFIG=config.argo-7.json. Every tuned number lives here; feature code reads it and hardcodes nothing. Edits apply on the next tick.",
-  "botId": "argo-7",
+  "botId": "bruno-7",
   "botName": "Argo-7",
   "league": "NFL",
   "marketScope": "totals",
@@ -232,7 +232,7 @@
     "_comment_recorder": "totalsLinesRecordedPerGame is the single most important number in this block. There are 2028 open NFL totals markets, so recording every one would be 4056 book calls per poll. Only the top few lines per game by liquidity are recorded -- the bot trades the deepest, and the neighbours are kept so a later version can compare lines without having lost the history. Historical depth cannot be backfilled from anywhere at any price, so an unrecorded line is gone for good.",
     "_comment_ftn_lag": "FTN charting lags the schedule. On 2026-09-26 the 2026 file held weeks 1-2 complete and one week-3 game. The scheme factor must therefore lean on the prior season for most of the first half of the year, which is what data.schemePriorSeason is for.",
     "pmNflTagId": 450,
-    "_comment_passing": "Cash-7 passing-yards prop probe reuses this ingest block. passingLinesRecordedPerPlayer records the N lines nearest the ladder centre per QB (liquidityNum is 0 on every prop, so the deepest-line rule totals use does not apply). passingRecordWindowHours is kept tighter than totals because props seed near kickoff.",
+    "_comment_passing": "Bruno-7 passing-yards prop probe reuses this ingest block. passingLinesRecordedPerPlayer records the N lines nearest the ladder centre per QB (liquidityNum is 0 on every prop, so the deepest-line rule totals use does not apply). passingRecordWindowHours is kept tighter than totals because props seed near kickoff.",
     "passingLinesRecordedPerPlayer": 3,
     "passingRecordWindowHours": 30,
     "totalsLinesRecordedPerGame": 1,
@@ -256,8 +256,8 @@
   "_comment_display": "marketScopeLabel and description are written to bots.bot by ensureBot and are what the leaderboard card shows. marketScope (totals) stays the machine value the policy reads; this is the human label, matching the Game markets wording already used for Adam-7.",
   "_comment_riskTier": "riskTier below is a SEED only. run/risk-tier.js derives the live value from the sizing policy and the prices actually traded, and writes bots.bot.risk_tier. Editing it here does not change what users see.",
   "passingModel": {
-    "_comment": "Cash-7 QB passing yards. SHADOW ONLY -- writes features_passing, trades nothing. Weights are PROVISIONAL, seeded from the 2025-26 factor backtest (n=624): form is the only factor clearing 2sigma (coef 0.238, t=4.19); matchup weak (0.102, t=1.5); weather -0.62 yds/mph (t=-1.5, sign baked via -wind points). injury/script are untested priors (low confidence). These coefs are fitted vs a NAIVE BASELINE, not vs the market line, so they OVERSTATE tradeable edge; provisionalScale haircuts the lot until line-residual calibration (needs ~3-4 weeks of recorded prop closing lines).",
-    "modelVersion": "cash-7-shadow-0.1",
+    "_comment": "Bruno-7 QB passing yards. SHADOW ONLY -- writes features_passing, trades nothing. Weights are PROVISIONAL, seeded from the 2025-26 factor backtest (n=624): form is the only factor clearing 2sigma (coef 0.238, t=4.19); matchup weak (0.102, t=1.5); weather -0.62 yds/mph (t=-1.5, sign baked via -wind points). injury/script are untested priors (low confidence). These coefs are fitted vs a NAIVE BASELINE, not vs the market line, so they OVERSTATE tradeable edge; provisionalScale haircuts the lot until line-residual calibration (needs ~3-4 weeks of recorded prop closing lines).",
+    "modelVersion": "bruno-7-shadow-0.2",
     "sigmaPassingYards": 54,
     "provisionalScale": 0.3,
     "maxYardsDelta": 30,

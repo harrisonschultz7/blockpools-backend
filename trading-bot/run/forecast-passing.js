@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // trading-bot/run/forecast-passing.js
 //
-// Cash-7 SHADOW forecaster. For each starting QB with an open prop in the window,
+// Bruno-7 SHADOW forecaster. For each starting QB with an open prop in the window,
 // pick the central line (latest recorded book nearest P(over)=0.5), build the
 // residual forecast, and write it to sports.features_passing. Trades nothing.
 //
@@ -12,7 +12,7 @@
 //   node trading-bot/run/forecast-passing.js
 
 const { selectConfig, cfg } = require("../src/config");
-selectConfig("config.cash-7.json");
+selectConfig("config.bruno-7.json");
 
 const { q, close } = require("../src/db");
 const log = require("../src/log");
@@ -58,17 +58,31 @@ async function latestBooksByToken(tokenIds) {
   for (const m of markets) { tokens.push(m.over_token_id); if (m.under_token_id) tokens.push(m.under_token_id); }
   const books = await latestBooksByToken(tokens);
 
-  // Per QB (player_id, else player_name), choose the central line: a real book
-  // (an inner quote exists) whose P(over) is nearest 0.5.
+  // ONE LINE PER QB PER GAME, and it STAYS that line. Re-picking "nearest 0.5"
+  // every run let the choice wander across a QB's alt lines as their books moved,
+  // so one game produced three Geno Smith forecasts (199.5, 224.5, 249.5) that
+  // all win or lose together -- three bets on one outcome. The line forecast
+  // first for this QB in this game is kept while it still has a real book.
+  const { rows: prior } = await q(
+    `select distinct on (f.player_id, f.game_id) f.player_id, f.game_id, f.condition_id
+       from sports.features_passing f
+      where f.game_id = any($1::text[])
+      order by f.player_id, f.game_id, f.asof_ts asc`,
+    [Array.from(new Set(markets.map((m) => m.game_id)))],
+  );
+  const sticky = new Map(prior.map((r) => [`${r.player_id}|${r.game_id}`, r.condition_id]));
+
+  // Per QB (player_id, else player_name): the sticky line if it still has a real
+  // two-sided book, else the real book whose P(over) is nearest 0.5.
   const byQb = new Map();
   for (const m of markets) {
     const over = books.get(m.over_token_id);
     const under = m.under_token_id ? books.get(m.under_token_id) : null;
     const p = marketProbOverProp(over, under);
     if (p === null) continue;
-    const key = m.player_id || m.player_name;
+    const key = `${m.player_id || m.player_name}|${m.game_id}`;
     const cur = byQb.get(key);
-    const dist = Math.abs(p - 0.5);
+    const dist = sticky.get(key) === m.condition_id ? -1 : Math.abs(p - 0.5);
     if (!cur || dist < cur.dist) byQb.set(key, { m, over, under, p, dist });
   }
   if (!byQb.size) { log("forecast-passing: no central line with a real book yet"); await close(); return; }

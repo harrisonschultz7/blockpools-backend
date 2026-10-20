@@ -1,6 +1,6 @@
 -- trading-bot/sql/005_passing_schema.sql
 --
--- Cash-7 (working name): NFL QB PASSING YARDS props. Additive to 001/004 --
+-- Bruno-7 (working name): NFL QB PASSING YARDS props. Additive to 001/004 --
 -- nothing here changes a table Adam-7 (moneyline) or Argo-7 (totals) reads, so
 -- all three run off one feature store, one depth recorder and one bot ledger.
 --
