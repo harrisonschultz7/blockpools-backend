@@ -216,7 +216,13 @@ async function passingLinesToRecord() {
                  order by abs(line - ctr_line), line) as rnk
          from laddered
      )
-     select * from ranked where rnk <= $1
+     -- ALWAYS record a line Bruno-7 holds. The ladder centre can move as lines
+     -- are added, and a held line that drifted out of the top N would leave its
+     -- resting exit and stop-loss watching a frozen book.
+     select * from ranked
+      where rnk <= $1
+         or condition_id in (select o.condition_id from bots.limit_orders o
+                              where o.status = 'open' and o.market_type = 'passing')
       order by kickoff, player_name, line`,
     [perPlayer, String(hours)],
   );

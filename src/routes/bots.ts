@@ -18,6 +18,17 @@ import { authPrivy, type AuthedRequest } from "../middleware/authPrivy";
 
 const botsRouter = Router();
 
+// HIDDEN BOTS. A bot whose config carries hidden=true (Bruno-7 while it paper
+// trades) is registered, snapshotted and settled like any other, but no public
+// surface lists it, serves its trades, or lets anyone follow it. Flip the flag in
+// its config file to publish it.
+const NOT_HIDDEN_SQL = `coalesce((config->>'hidden')::boolean, false) = false`;
+async function isHiddenBot(botId: string): Promise<boolean> {
+  const { rows } = await pg.query(
+    `select 1 from bots.bot where id = $1 and not (${NOT_HIDDEN_SQL})`, [botId]);
+  return rows.length > 0;
+}
+
 const CACHE_MS = 60_000;
 let cache: { at: number; body: any } | null = null;
 
@@ -31,7 +42,7 @@ botsRouter.get("/", async (_req, res) => {
       // to every bot, which is right today and wrong the moment one changes.
       `select id, name, league, risk_tier, mode, enabled, starting_nav, created_at,
               market_scope, description, config
-         from bots.bot where enabled = true order by created_at`,
+         from bots.bot where enabled = true and ${NOT_HIDDEN_SQL} order by created_at`,
     );
 
     const out = [];
@@ -398,6 +409,7 @@ function buildNavSeries(
 
 botsRouter.get("/:botId/trades", async (req, res) => {
   try {
+    if (await isHiddenBot(String(req.params.botId))) return res.status(404).json({ error: "bot_not_found" });
     const limit = Math.min(200, Number(req.query.limit) || 50);
 
     // The exit policy of THIS bot, for reconstructing its resting sell price.
@@ -584,7 +596,7 @@ botsRouter.post("/:botId/follow", authPrivy, async (req: AuthedRequest, res: Res
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
     const botId = String(req.params.botId);
-    const exists = await pg.query(`SELECT 1 FROM bots.bot WHERE id=$1`, [botId]);
+    const exists = await pg.query(`SELECT 1 FROM bots.bot WHERE id=$1 AND ${NOT_HIDDEN_SQL}`, [botId]);
     if (!exists.rows.length) return res.status(404).json({ error: "Model not found" });
     await pg.query(
       `INSERT INTO public.model_follows (follower_id, bot_id) VALUES ($1,$2)

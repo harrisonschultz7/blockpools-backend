@@ -1,5 +1,5 @@
 [Unit]
-Description=BlockPools Bruno-7 -- Polymarket PASSING-YARDS depth recorder (liquidity probe)
+Description=BlockPools Bruno-7 -- Polymarket PASSING-YARDS depth recorder + Bruno-7 exit/stop sweep
 After=network-online.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ Wants=network-online.target
 Type=simple
 User=bp
 WorkingDirectory=/opt/blockpools/backend
-Environment=TRADING_BOT_CONFIG=config.argo-7.json
+Environment=TRADING_BOT_CONFIG=config.bruno-7.json
 ExecStart=/usr/bin/node trading-bot/run/record-passing-books.js
 Restart=always
 RestartSec=5

@@ -37,8 +37,11 @@ export async function runModelAlertsOnce(): Promise<void> {
   running = true;
   try {
     // Only models with at least one follower are worth scanning.
+    // Hidden bots (config.hidden) never alert, even if someone followed them.
     const { rows: followed } = await pg.query(
-      `SELECT DISTINCT bot_id FROM public.model_follows`,
+      `SELECT DISTINCT f.bot_id FROM public.model_follows f
+         JOIN bots.bot b ON b.id = f.bot_id
+        WHERE coalesce((b.config->>'hidden')::boolean, false) = false`,
     );
     if (!followed.length) return;
     const botIds = followed.map((r: any) => r.bot_id);

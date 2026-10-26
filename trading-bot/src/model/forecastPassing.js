@@ -7,9 +7,9 @@
 //   model_mean   = implied_mean + scale * sum(w_k * points_k)
 //   p_fair       = 1 - Phi((line - model_mean) / sigma)  <- back to P(over)
 //
-// SHADOW ONLY. It writes sports.features_passing and trades nothing. Two reasons
-// it cannot trade yet: (1) the trading half (policy/exec for props) is unbuilt,
-// and (2) the factor weights are PROVISIONAL -- fitted vs a naive baseline in the
+// PAPER TRADED since 2026-10-26: run/tick-passing.js feeds these forecasts to
+// policy/passing.js, and every forecast is still written to
+// sports.features_passing whether it trades or not. The factor weights are PROVISIONAL -- fitted vs a naive baseline in the
 // 2025-26 backtest, NOT vs the market line, so they overstate tradeable edge. A
 // global provisionalScale haircuts them, and the real per-factor scales come from
 // line-residual calibration once ~3-4 weeks of recorded prop closing lines exist.
@@ -94,8 +94,28 @@ async function buildPassingContext(season, week) {
   for (const g of qb.values()) g.last3 = g.last3.sort((a, b) => b.week - a.week).slice(0, 3);
   const leagueYA = lAtt > 0 ? lYds / lAtt : 7.0;
 
+  // WHO IS STARTING. The team's starter in its most recent game = its QB with the
+  // most attempts that week; `starters` is every QB who has started for the team
+  // this season. Week 6 forecast Jalen Hurts while Tanner McKee threw 45 passes --
+  // a prop on a QB who does not play is a bet on nothing.
+  const lastStarter = new Map();   // team -> { player_id, week, att }
+  const starters = new Map();      // team -> Set(player_id)
+  const byTeamWeek = new Map();    // `${team}|${week}` -> { player_id, att }
+  for (const r of rows) {
+    if (r.position !== "QB" || !(r.att >= 1)) continue;
+    const k = `${r.team}|${r.week}`;
+    const cur = byTeamWeek.get(k);
+    if (!cur || r.att > cur.att) byTeamWeek.set(k, { team: r.team, week: r.week, player_id: r.player_id, att: r.att });
+  }
+  for (const s of byTeamWeek.values()) {
+    const set = starters.get(s.team) || new Set(); set.add(s.player_id); starters.set(s.team, set);
+    const prev = lastStarter.get(s.team);
+    if (!prev || s.week > prev.week) lastStarter.set(s.team, s);
+  }
+
   // This week's OUT / Doubtful players, latest report per player.
   const inj = new Map();     // team -> Set(gsis_id)
+  const status = new Map();  // gsis_id -> latest report_status ('' when listed with none)
   const { rows: ir } = await q(
     `select distinct on (gsis_id) gsis_id, team, report_status
        from sports.nfl_injuries
@@ -105,11 +125,65 @@ async function buildPassingContext(season, week) {
   );
   for (const r of ir) {
     const st = String(r.report_status || "").toLowerCase();
+    status.set(r.gsis_id, st);
     if (st.includes("out") || st.includes("doubtful")) {
       const s = inj.get(r.team) || new Set(); s.add(r.gsis_id); inj.set(r.team, s);
     }
   }
-  return { leagueYA, def, qb, wr, inj, season, week };
+  return { leagueYA, def, qb, wr, inj, status, lastStarter, starters, season, week };
+}
+
+/**
+ * Is this QB expected to start? Returns null when yes, else a skip reason.
+ *
+ *   - listed Out / Doubtful (or Questionable, when skipQuestionable) -> skip
+ *   - started his team's most recent game                            -> starts
+ *   - started for the team earlier this season AND that most recent
+ *     starter is now listed Out / Doubtful (the starter returning)    -> starts
+ *   - anything else (backup, unknown, no history)                    -> skip
+ *
+ * Conservative by design: a starter returning from injury with no report on the
+ * fill-in is skipped rather than guessed at. Missing a trade costs nothing.
+ */
+function starterCheck(playerId, team, ctx, { skipQuestionable = true } = {}) {
+  if (!playerId) return "no_player_id";
+  const st = ctx.status.get(playerId) || "";
+  if (st.includes("out") || st.includes("doubtful")) return `qb_listed_${st.split(/\s+/)[0]}`;
+  if (skipQuestionable && st.includes("questionable")) return "qb_listed_questionable";
+  const last = ctx.lastStarter.get(team);
+  if (!last) return "no_starter_history";
+  if (last.player_id === playerId) return null;
+  const lastSt = ctx.status.get(last.player_id) || "";
+  const lastOut = lastSt.includes("out") || lastSt.includes("doubtful");
+  if (lastOut && ctx.starters.get(team)?.has(playerId)) return null;
+  return "not_confirmed_starter";
+}
+
+/**
+ * ONE CENTRAL LINE PER QB PER GAME, sticky once chosen. Shared by the shadow
+ * forecaster and the trading tick so both look at the same market.
+ *
+ * `markets` are pm_passing_markets rows joined to nfl_games; `books` is
+ * Map<token_id, latest odds_history row>; `sticky` is Map<`${player}|${game}`,
+ * condition_id> of the first line forecast for that QB in that game.
+ * Re-picking "nearest 0.5" every run let the choice wander across a QB's alt
+ * lines as their books moved, so one game produced three Geno Smith forecasts
+ * (199.5, 224.5, 249.5) that all win or lose together -- three bets on one
+ * outcome. The sticky line is kept while it still has a real two-sided book.
+ */
+function selectCentralLines(markets, books, sticky) {
+  const byQb = new Map();
+  for (const m of markets) {
+    const over = books.get(m.over_token_id);
+    const under = m.under_token_id ? books.get(m.under_token_id) : null;
+    const p = marketProbOverProp(over, under);
+    if (p === null) continue;
+    const key = `${m.player_id || m.player_name}|${m.game_id}`;
+    const cur = byQb.get(key);
+    const dist = sticky.get(key) === m.condition_id ? -1 : Math.abs(p - 0.5);
+    if (!cur || dist < cur.dist) byQb.set(key, { m, over, under, p, dist });
+  }
+  return byQb;
 }
 
 /** Compute the five factor signals in yards for one QB on one game. */
@@ -226,7 +300,8 @@ function forecastPassing(game, market, books, playerId, asOf, ctx) {
     model_mean_yards: model_mean,
     delta, p_fair, confidence,
     inputs: {
-      mode: "shadow",
+      mode: cfg().mode || "paper",
+      team, opp,
       provisionalScale: scale,
       weights: w,
       rawDelta: +rawDelta.toFixed(3),
@@ -269,5 +344,5 @@ async function saveForecastPassing(f) {
 
 module.exports = {
   forecastPassing, saveForecastPassing, buildPassingContext,
-  computeFactors, marketProbOverProp, FACTORS,
+  computeFactors, marketProbOverProp, starterCheck, selectCentralLines, FACTORS,
 };

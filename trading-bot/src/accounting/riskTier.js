@@ -113,7 +113,9 @@ async function priceProfile(botId, marketType) {
     return { prices: own.map((r) => Number(r.p)), source: "own fills", n: own.length };
   }
 
-  const sides = marketType === "totals" ? ["over", "under"] : ["home", "away"];
+  // Props quote over/under exactly like totals.
+  const sides = marketType === "totals" || marketType === "passing"
+    ? ["over", "under"] : ["home", "away"];
   const { rows: mkt } = await q(
     `select mid p from sports.odds_history
       where side = any($1) and mid between 0.05 and 0.95
@@ -247,7 +249,8 @@ async function computeRiskTier(botId) {
   const openCap = Number(cfg?.policy?.maxOpenExposurePctNav);
   if (!Number.isFinite(openCap)) throw new Error(`${botId}: no policy.maxOpenExposurePctNav`);
   const perPosition = Number(cfg?.policy?.maxPositionPctNav) || openCap;
-  const marketType = cfg?.marketScope === "totals" ? "totals" : "moneyline";
+  const marketType = ["totals", "passing"].includes(cfg?.marketScope)
+    ? cfg.marketScope : "moneyline";
 
   // Concurrent legs the cap allows. Drives the correlation penalty only.
   const legs = Math.max(1, Math.round(openCap / perPosition));

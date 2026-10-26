@@ -437,6 +437,7 @@ async function sweepFills(botId) {
        join bots.trades t on t.id = o.trade_id
        left join sports.pm_markets        ml on ml.condition_id = o.condition_id
        left join sports.pm_totals_markets tm on tm.condition_id = o.condition_id
+       left join sports.pm_passing_markets pm on pm.condition_id = o.condition_id
        left join lateral (
          select h.bids, h.mid, h.ts from sports.odds_history h
           where h.token_id = o.token_id and h.bids is not null
@@ -447,7 +448,7 @@ async function sweepFills(botId) {
         -- closed market has nothing left to trade against; the tick owns CANCELLING
         -- those, this sweep merely declines to fill them.
         and not (g.home_score is not null and g.away_score is not null)
-        and coalesce(ml.closed, tm.closed, false) = false`,
+        and coalesce(ml.closed, tm.closed, pm.closed, false) = false`,
     [botId],
   );
 
@@ -489,7 +490,7 @@ async function manageExits(botId, forecasts, now) {
   const { rows: orders } = await q(
     `select o.*, g.kickoff,
             (g.home_score is not null and g.away_score is not null) as game_final,
-            coalesce(ml.closed, tm.closed, false) as market_closed,
+            coalesce(ml.closed, tm.closed, pm.closed, false) as market_closed,
             t.fill_price as entry_price
        from bots.limit_orders o
        join sports.nfl_games g on g.game_id = o.game_id
@@ -500,6 +501,7 @@ async function manageExits(botId, forecasts, now) {
        -- moneyline, which is right by coincidence until the two close apart.
        left join sports.pm_markets        ml on ml.condition_id = o.condition_id
        left join sports.pm_totals_markets tm on tm.condition_id = o.condition_id
+       left join sports.pm_passing_markets pm on pm.condition_id = o.condition_id
       where o.bot_id = $1 and o.status = 'open'`,
     [botId],
   );

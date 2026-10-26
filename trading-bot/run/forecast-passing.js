@@ -5,7 +5,9 @@
 // pick the central line (latest recorded book nearest P(over)=0.5), build the
 // residual forecast, and write it to sports.features_passing. Trades nothing.
 //
-// Run on a timer alongside the recorder. Every row it logs pairs the factor
+// SUPERSEDED ON THE TIMER by run/tick-passing.js (2026-10-26), which writes the
+// same rows every 15 minutes and then trades on them. Kept for manual runs; do
+// not enable both timers. Every row it logs pairs the factor
 // signals with the live line, which is the raw material for the line-residual
 // calibration that will eventually replace the provisional backtest weights.
 //
@@ -17,7 +19,7 @@ selectConfig("config.bruno-7.json");
 const { q, close } = require("../src/db");
 const log = require("../src/log");
 const {
-  buildPassingContext, forecastPassing, saveForecastPassing, marketProbOverProp,
+  buildPassingContext, forecastPassing, saveForecastPassing, selectCentralLines,
 } = require("../src/model/forecastPassing");
 
 async function latestBooksByToken(tokenIds) {
@@ -73,18 +75,9 @@ async function latestBooksByToken(tokenIds) {
   const sticky = new Map(prior.map((r) => [`${r.player_id}|${r.game_id}`, r.condition_id]));
 
   // Per QB (player_id, else player_name): the sticky line if it still has a real
-  // two-sided book, else the real book whose P(over) is nearest 0.5.
-  const byQb = new Map();
-  for (const m of markets) {
-    const over = books.get(m.over_token_id);
-    const under = m.under_token_id ? books.get(m.under_token_id) : null;
-    const p = marketProbOverProp(over, under);
-    if (p === null) continue;
-    const key = `${m.player_id || m.player_name}|${m.game_id}`;
-    const cur = byQb.get(key);
-    const dist = sticky.get(key) === m.condition_id ? -1 : Math.abs(p - 0.5);
-    if (!cur || dist < cur.dist) byQb.set(key, { m, over, under, p, dist });
-  }
+  // two-sided book, else the real book whose P(over) is nearest 0.5. Shared with
+  // run/tick-passing.js so the shadow log and the trader pick the same market.
+  const byQb = selectCentralLines(markets, books, sticky);
   if (!byQb.size) { log("forecast-passing: no central line with a real book yet"); await close(); return; }
 
   // Context per distinct (season, week).

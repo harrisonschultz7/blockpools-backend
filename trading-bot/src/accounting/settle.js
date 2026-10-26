@@ -93,10 +93,16 @@ async function settleTrades() {
             and (t2.market_type = 'totals'
                  or g.home_score <> g.away_score)
             and (t2.market_type <> 'totals' or t2.line is not null)
+            -- Passing props settle on the QB's yards, not the score: without this
+            -- an 'over' prop would fall through to the away-moneyline branch
+            -- above -- the exact failure the totals branch was added to stop.
+            -- settlePassingTrades() below owns them.
+            and coalesce(t2.market_type, 'moneyline') <> 'passing'
        ) w
       where t.id = w.id
       returning t.id, t.won, t.pnl_usd`,
   );
+  rows.push(...await settlePassingTrades());
 
   if (rows.length) {
     // Clear the settled positions so NAV stops marking them.
@@ -114,6 +120,59 @@ async function settleTrades() {
 }
 
 /**
+ * Settle passing-yards props (Bruno-7) from the QB's box score.
+ *
+ * The QB is found through the forecast the trade was made on (feature_passing_id
+ * -> sports.features_passing.player_id); bots.trades carries no player column.
+ * Lines are half-yards (224.5), so there is no push. A QB with NO box-score row
+ * after a final is left open and reported: that is a did-not-play, which the
+ * exchange may void rather than grade, and guessing a loss would be wrong.
+ * settleFromMarkets() settles these sooner when Polymarket resolves first.
+ */
+async function settlePassingTrades() {
+  const { rows } = await q(
+    `update bots.trades t
+        set settled = true,
+            closed_at = now(),
+            won = w.won,
+            pnl_usd = case when w.won then t.shares - t.notional_usd
+                           else -t.notional_usd end
+       from (
+         select t2.id,
+                case when t2.side = 'over' then pw.passing_yards > t2.line
+                     else pw.passing_yards < t2.line end as won
+           from bots.trades t2
+           join sports.nfl_games g on g.game_id = t2.game_id
+           join sports.features_passing f on f.id = t2.feature_passing_id
+           join sports.nfl_player_week pw
+             on pw.game_id = t2.game_id and pw.player_id = f.player_id
+          where t2.market_type = 'passing'
+            and t2.settled = false and t2.exited = false
+            and t2.line is not null and pw.passing_yards is not null
+            and g.home_score is not null and g.away_score is not null
+       ) w
+      where t.id = w.id
+      returning t.id, t.won, t.pnl_usd`,
+  );
+
+  const { rows: dnp } = await q(
+    `select t.id, t.game_id, f.inputs->'market'->>'player_name' as qb
+       from bots.trades t
+       join sports.nfl_games g on g.game_id = t.game_id
+       left join sports.features_passing f on f.id = t.feature_passing_id
+      where t.market_type = 'passing' and t.settled = false and t.exited = false
+        and g.home_score is not null and g.kickoff < now() - interval '30 hours'
+        and not exists (select 1 from sports.nfl_player_week pw
+                         where pw.game_id = t.game_id and pw.player_id = f.player_id)`,
+  );
+  for (const d of dnp) {
+    log.warn(`passing trade ${d.id} (${d.qb} ${d.game_id}): game final but no box-score ` +
+             `row for the QB -- possible did-not-play/void; left open for review`);
+  }
+  return rows;
+}
+
+/**
  * Book one exchange-resolved trade: settle it, retire its resting exit, and mark
  * the market closed. Returns 1 if it settled, 0 if it was left alone.
  */
@@ -122,13 +181,22 @@ async function applyResolution(t, won) {
   // never disagree; if they do, the safe move is to settle nothing and say so,
   // because one of the two feeds is wrong and guessing which would be a coin flip
   // applied to real ledger rows.
-  if (t.home_score !== null && t.away_score !== null && t.line !== null) {
-    const total = Number(t.home_score) + Number(t.away_score);
-    const byScore = t.side === "over" ? total > Number(t.line) : total < Number(t.line);
+  //
+  // The quantity compared against the line depends on the market: the game total
+  // for a totals line, the QB's passing yards for a prop. Comparing a 224.5-yard
+  // prop line to a 45-point game total would "mismatch" every time and leave every
+  // prop unsettled.
+  const isPassing = t.market_type === "passing";
+  const measured = isPassing
+    ? (t.passing_yards === null || t.passing_yards === undefined ? null : Number(t.passing_yards))
+    : (t.home_score !== null && t.away_score !== null
+        ? Number(t.home_score) + Number(t.away_score) : null);
+  if (measured !== null && t.line !== null && (isPassing || t.market_type === "totals")) {
+    const byScore = t.side === "over" ? measured > Number(t.line) : measured < Number(t.line);
     if (byScore !== won) {
       log.err(
         `SETTLEMENT MISMATCH ${t.game_id} ${t.side} ${t.line}: exchange says ` +
-        `${won ? "won" : "lost"}, box score (${total}) says ` +
+        `${won ? "won" : "lost"}, box score (${measured}${isPassing ? " yds" : ""}) says ` +
         `${byScore ? "won" : "lost"} -- left unsettled for review`);
       return 0;
     }
@@ -160,6 +228,10 @@ async function applyResolution(t, won) {
   // unreachable. This only retires markets we actually held.
   await q(
     `update sports.pm_totals_markets set closed = true where condition_id = $1`,
+    [t.condition_id],
+  );
+  await q(
+    `update sports.pm_passing_markets set closed = true where condition_id = $1`,
     [t.condition_id],
   );
 
@@ -196,7 +268,13 @@ async function marketResolution(conditionId) {
 async function settleFromMarkets() {
   const { rows: pending } = await q(
     `select t.id, t.bot_id, t.condition_id, t.token_id, t.shares, t.notional_usd,
-            t.game_id, t.side, t.line, g.kickoff, g.home_score, g.away_score
+            t.game_id, t.side, t.line, t.market_type,
+            g.kickoff, g.home_score, g.away_score,
+            -- A prop's own measured quantity, for the cross-check.
+            (select pw.passing_yards from sports.features_passing f
+               join sports.nfl_player_week pw
+                 on pw.game_id = t.game_id and pw.player_id = f.player_id
+              where f.id = t.feature_passing_id) as passing_yards
        from bots.trades t
        join sports.nfl_games g on g.game_id = t.game_id
       where t.settled = false

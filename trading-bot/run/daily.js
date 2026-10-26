@@ -21,6 +21,7 @@ const { ingestFtnAll } = require("../src/ingest/ftn");
 const { gradeClv, settleTrades, settleFromMarkets, botSummary } = require("../src/accounting/settle");
 const { snapshotNav, pruneNavIntraday } = require("../src/accounting/nav");
 const { applyRiskTiers } = require("../src/accounting/riskTier");
+const { prunePassingBooks } = require("../src/ingest/prunePassing");
 const { q, close } = require("../src/db");
 const log = require("../src/log");
 
@@ -59,15 +60,26 @@ async function main() {
   // largest table. A finished game's books are never read again (its fills are
   // done), and the recorders now skip finished games -- this clears any stragglers
   // plus trims old click analytics. Keeps the DB flat instead of growing weekly.
+  //
+  // EXCEPT PASSING PROPS. Bruno-7 is still proving whether prop books are deep
+  // enough to fill its exits, and that question is answered from finished games'
+  // books -- the old blanket delete erased every week-6/7 prop book the morning
+  // after. Prop rows are routed to prunePassingBooks() instead, which keeps the
+  // lines that were forecast or traded (thinned, full resolution near kickoff)
+  // for passingBookRetentionDays.
   try {
     const oh = await q(
       `delete from sports.odds_history o using sports.nfl_games g
-         where g.game_id = o.game_id and g.home_score is not null`,
+         where g.game_id = o.game_id and g.home_score is not null
+           and not exists (select 1 from sports.pm_passing_markets m
+                            where o.token_id in (m.over_token_id, m.under_token_id))`,
     );
     const ae = await q(
       `delete from public.analytics_events where created_at < now() - interval '60 days'`,
     );
-    log(`storage prune: odds_history -${oh.rowCount}, analytics_events -${ae.rowCount}`);
+    const pp = await prunePassingBooks();
+    log(`storage prune: odds_history -${oh.rowCount}, analytics_events -${ae.rowCount}, ` +
+        `prop books -${pp.unused} unused / -${pp.thinned} thinned / -${pp.expired} expired`);
   } catch (e) {
     log.warn(`storage prune failed: ${e.message}`);
   }

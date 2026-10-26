@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Bruno-7 passing-props tick every 15 minutes
+
+[Timer]
+# Replaces blockpools-bruno-forecast.timer (hourly shadow forecaster): the tick
+# writes the same features_passing rows, then trades on them. Disable the old
+# timer when enabling this one, or every QB gets two forecasts an hour.
+OnBootSec=4min
+OnUnitActiveSec=15min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

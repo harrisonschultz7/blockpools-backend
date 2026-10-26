@@ -173,7 +173,10 @@ router.post("/subscribe", authPrivy, async (req: AuthedRequest, res: Response) =
   }
 
   try {
-    const bot = await pool.query(`select id from bots.bot where id = $1 and enabled`, [botId]);
+    // Hidden bots (config.hidden, e.g. Bruno-7 while it paper trades) cannot be copied.
+    const bot = await pool.query(
+      `select id from bots.bot where id = $1 and enabled
+          and coalesce((config->>'hidden')::boolean, false) = false`, [botId]);
     if (!bot.rows.length) return res.status(404).json({ error: "bot_not_found" });
 
     const wallet = await delegatedWallet(did);
