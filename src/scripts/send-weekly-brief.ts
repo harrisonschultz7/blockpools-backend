@@ -48,7 +48,7 @@ const TEST_EMAIL = "harrisonschultz1240@gmail.com";
 // (e.g. Eastern: "2026-10-11T13:00:00-04:00"; Central/CDMX: "2026-10-11T12:00:00-06:00")
 // or natural language in UTC ("in 2 hours"). Resend holds each email and delivers
 // it at that time, so the script can be run now and exit. Max ~72 hours ahead.
-const SCHEDULED_AT = "2026-10-24T20:00:00-04:00";
+const SCHEDULED_AT = "";
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Per-send exclusions only. Durable opt-outs live in users.email_unsubscribed
