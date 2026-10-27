@@ -83,7 +83,7 @@ async function main() {
   // The DEEPEST line per game, chosen in SQL so the bot cannot accidentally look
   // at several lines on one game. Verified live: the deepest line is always the
   // one nearest 50/50, so this is also the closest-to-a-coin-flip rule.
-  const { rows: games } = await q(
+  const { rows: slate } = await q(
     `select g.*, t.condition_id, t.line, t.over_token_id, t.under_token_id,
             t.liquidity_num, t.slug, t.fee_type, t.fee_rate, t.tick_size, t.min_order_usd
        from sports.nfl_games g
@@ -97,10 +97,20 @@ async function main() {
       order by g.kickoff`,
     [season, week],
   );
-  log(`tick-totals: evaluating ${season} week ${week} slate (${games.length} games with a totals book)`);
-  if (!games.length) { log("tick-totals: no mapped totals markets for this week yet"); return; }
+  if (!slate.length) { log("tick-totals: no mapped totals markets for this week yet"); return; }
 
-  // Contexts are expensive and identical across games -- build once.
+  // ONLY GAMES INSIDE THE TRADING WINDOW -- see run/tick.js. Pricing the whole
+  // slate every 15 minutes all week (ratings since 2022, scheme, pace, a book and
+  // a decision row per game) was most of this bot's Supabase egress on days with
+  // no game near, for decisions the policy then refused as outside_window.
+  // Exits and settlement below still run every tick.
+  const windowHours = WINDOW_ARG || c.policy.openWindowHoursBeforeKickoff;
+  const games = slate.filter(
+    (g) => (new Date(g.kickoff).getTime() - now.getTime()) / 3600000 <= windowHours + 0.5);
+  log(`tick-totals: ${season} week ${week} -- ${games.length} of ${slate.length} games with a totals book inside the ${windowHours}h window`);
+
+  // Contexts are expensive and identical across games -- build once, and only
+  // when there is something to price.
   //
   // Ratings use model.absolute.fitStartSeason, the SAME window the base model was
   // fitted on. Mismatching them would apply coefficients to inputs on a different
@@ -108,11 +118,13 @@ async function main() {
   // rating anyway -- a game 40 back carries ~0.001 of last week's weight.
   const independent = c.model.priceMode === "independent";
   const ratingsFrom = c.model.absolute.fitStartSeason || c.data.startSeason;
-  const [scheme, pace, ratings] = await Promise.all([
-    loadSchemeContext(season, week),
-    loadPace(asOf, c.data.startSeason),
-    independent ? solveRatings(asOf, { fromSeason: ratingsFrom }) : Promise.resolve(new Map()),
-  ]);
+  const [scheme, pace, ratings] = games.length
+    ? await Promise.all([
+        loadSchemeContext(season, week),
+        loadPace(asOf, c.data.startSeason),
+        independent ? solveRatings(asOf, { fromSeason: ratingsFrom }) : Promise.resolve(new Map()),
+      ])
+    : [null, null, new Map()];
 
   const absoluteFit = loadAbsoluteFit();
   if (independent && !absoluteFit.fitted) {

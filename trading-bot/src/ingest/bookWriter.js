@@ -62,6 +62,30 @@ async function latestByToken(tokenIds) {
   return new Map(rows.map((r) => [r.token_id, r]));
 }
 
+/**
+ * The last snapshot THIS PROCESS wrote per token, so the change test does not
+ * have to read it back. Reading it back was the recorders' biggest Supabase cost:
+ * every poll pulled the full stored ladder (bids + asks as text, ~8 KB) for every
+ * tracked token, every minute, all week -- egress spent to learn what the process
+ * had itself written a minute earlier. The database is read only for tokens this
+ * process has not written yet (first poll after a restart).
+ *
+ * Only this process writes a given token's rows (each recorder owns its market
+ * type), so the in-memory copy cannot go stale behind its back.
+ */
+const lastWritten = new Map();
+
+async function previousByToken(tokenIds) {
+  const missing = tokenIds.filter((t) => !lastWritten.has(t));
+  if (missing.length) {
+    const fromDb = await latestByToken(missing);
+    for (const [t, row] of fromDb) lastWritten.set(t, row);
+  }
+  const out = new Map();
+  for (const t of tokenIds) if (lastWritten.has(t)) out.set(t, lastWritten.get(t));
+  return out;
+}
+
 /** Numeric compare that treats 0.5 and "0.50000" as the same price. */
 const sameNum = (a, b) => {
   if (a === null || a === undefined) return b === null || b === undefined;
@@ -165,14 +189,18 @@ async function writeBooks(snapshots, label = "books") {
   if (!snapshots.length) { log(`${label}: nothing to record`); return { written: 0, skipped: 0 }; }
 
   const heartbeatSeconds = cfg().ingest.bookHeartbeatSeconds ?? 600;
-  const previous = await latestByToken([...new Set(snapshots.map((s) => s.token_id))]);
+  const previous = await previousByToken([...new Set(snapshots.map((s) => s.token_id))]);
   const ing = cfg().ingest;
   const { keep, unchanged, heartbeat } = selectChanged(
     snapshots, previous, heartbeatSeconds, Date.now(),
     { compareLevels: ing.bookCompareLevels ?? 4,
       sizeTolerancePct: ing.bookSizeTolerancePct ?? 0.1 });
 
-  if (keep.length) await bulkInsert("sports.odds_history", COLS, keep);
+  if (keep.length) {
+    await bulkInsert("sports.odds_history", COLS, keep);
+    const ts = new Date().toISOString();
+    for (const s of keep) lastWritten.set(s.token_id, { ...s, ts });
+  }
 
   const pct = snapshots.length ? Math.round((100 * unchanged) / snapshots.length) : 0;
   log(`${label}: ${keep.length} written (${heartbeat} heartbeat), ` +

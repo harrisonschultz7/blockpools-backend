@@ -154,6 +154,23 @@ async function snapshotNavIntraday(botId, at) {
   const ts = at || new Date();
   ts.setSeconds(0, 0);
 
+  // FLAT AND EMPTY -> NO NEW POINT. With nothing open the NAV cannot move until
+  // something settles, and a point every 15 minutes all week was ~670 identical
+  // rows per bot that /api/bots then shipped on every request. A point is still
+  // written when the NAV moved (a settlement), when positions are open, or every
+  // 6 hours as a heartbeat; the API replaces today's point with the live NAV, so
+  // the chart's right edge is unaffected.
+  if (!at && openPositions === 0) {
+    const last = await q(
+      `select ts, nav_usd, open_positions from bots.nav_intraday
+        where bot_id = $1 order by ts desc limit 1`, [botId]);
+    const l = last.rows[0];
+    if (l && Number(l.open_positions) === 0 && Math.abs(Number(l.nav_usd) - nav) < 0.005 &&
+        ts.getTime() - new Date(l.ts).getTime() < 6 * 3600 * 1000) {
+      return { nav, cash, positionValue, openPositions, ts, skipped: true };
+    }
+  }
+
   await q(
     `insert into bots.nav_intraday
        (bot_id, ts, nav_usd, cash_usd, position_value_usd, open_positions)

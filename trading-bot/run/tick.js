@@ -68,7 +68,7 @@ async function main() {
   if (!weekRows.rows.length) { log("tick: no upcoming games"); return; }
   const { season, week } = weekRows.rows[0];
 
-  const { rows: games } = await q(
+  const { rows: slate } = await q(
     `select g.*, m.condition_id
        from sports.nfl_games g
        join sports.pm_markets m on m.game_id = g.game_id and m.closed = false
@@ -76,12 +76,25 @@ async function main() {
       order by g.kickoff`,
     [season, week],
   );
-  log(`tick: evaluating ${season} week ${week} slate (${games.length} games)`);
+  if (!slate.length) { log("tick: no mapped markets for this week yet"); return; }
 
-  if (!games.length) { log("tick: no mapped markets for this week yet"); return; }
+  // ONLY GAMES INSIDE THE TRADING WINDOW. The policy refuses everything else as
+  // outside_window anyway, but pricing them first cost a full ratings solve
+  // (every team-game since the fit season), a book read per game and a decision
+  // row per game, every 15 minutes, all week -- most of this bot's Supabase
+  // egress on days with no game near. Selectivity stats only count in-window
+  // games, so nothing that reads decisions loses anything. Exits and settlement
+  // below still run every tick.
+  const windowHours = WINDOW_ARG || c.policy.openWindowHoursBeforeKickoff;
+  const games = slate.filter(
+    (g) => (new Date(g.kickoff).getTime() - now.getTime()) / 3600000 <= windowHours + 0.5);
+  log(`tick: ${season} week ${week} -- ${games.length} of ${slate.length} games inside the ${windowHours}h window`);
 
-  // Ratings and profiles are expensive and identical across games -- solve once.
-  const [ratings, profiles] = await Promise.all([solveRatings(asOf), loadProfiles(asOf)]);
+  // Ratings and profiles are expensive and identical across games -- solve once,
+  // and only when there is something to price.
+  const [ratings, profiles] = games.length
+    ? await Promise.all([solveRatings(asOf), loadProfiles(asOf)])
+    : [new Map(), new Map()];
   const ctx = { ratings, profiles };
 
   const nav = await currentNav(c.botId);
