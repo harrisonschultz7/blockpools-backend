@@ -104,10 +104,19 @@ async function main() {
   // a decision row per game) was most of this bot's Supabase egress on days with
   // no game near, for decisions the policy then refused as outside_window.
   // Exits and settlement below still run every tick.
+  // Once a day the whole slate is priced as a preview -- see run/tick.js.
   const windowHours = WINDOW_ARG || c.policy.openWindowHoursBeforeKickoff;
-  const games = slate.filter(
-    (g) => (new Date(g.kickoff).getTime() - now.getTime()) / 3600000 <= windowHours + 0.5);
-  log(`tick-totals: ${season} week ${week} -- ${games.length} of ${slate.length} games with a totals book inside the ${windowHours}h window`);
+  const inWindow = (g) => (new Date(g.kickoff).getTime() - now.getTime()) / 3600000 <= windowHours + 0.5;
+  const previewDue = !DRY && slate.some((g) => !inWindow(g)) && !(await q(
+    `select 1 from bots.decisions d
+       join sports.nfl_games g on g.game_id = d.game_id
+      where d.bot_id = $1 and d.asof_ts >= date_trunc('day', now())
+        and g.kickoff > d.asof_ts + make_interval(hours => $2) limit 1`,
+    [c.botId, Math.ceil(windowHours)])).rows.length;
+  const games = previewDue ? slate : slate.filter(inWindow);
+  log(`tick-totals: ${season} week ${week} -- ` + (previewDue
+    ? `daily slate preview: pricing all ${slate.length} games`
+    : `${games.length} of ${slate.length} games with a totals book inside the ${windowHours}h window`));
 
   // Contexts are expensive and identical across games -- build once, and only
   // when there is something to price.

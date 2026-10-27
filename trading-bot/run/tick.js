@@ -85,10 +85,24 @@ async function main() {
   // egress on days with no game near. Selectivity stats only count in-window
   // games, so nothing that reads decisions loses anything. Exits and settlement
   // below still run every tick.
+  //
+  // ONCE A DAY, THE WHOLE SLATE. The first tick of each UTC day still prices
+  // every game, so the model's early view of the week (any decision on a game beyond the window)
+  // stays on record -- one preview per game per day instead of one per 15
+  // minutes. "Already done today" is read from the decisions table itself, so a
+  // restart or a drifting timer can neither skip it nor repeat it.
   const windowHours = WINDOW_ARG || c.policy.openWindowHoursBeforeKickoff;
-  const games = slate.filter(
-    (g) => (new Date(g.kickoff).getTime() - now.getTime()) / 3600000 <= windowHours + 0.5);
-  log(`tick: ${season} week ${week} -- ${games.length} of ${slate.length} games inside the ${windowHours}h window`);
+  const inWindow = (g) => (new Date(g.kickoff).getTime() - now.getTime()) / 3600000 <= windowHours + 0.5;
+  const previewDue = !DRY && slate.some((g) => !inWindow(g)) && !(await q(
+    `select 1 from bots.decisions d
+       join sports.nfl_games g on g.game_id = d.game_id
+      where d.bot_id = $1 and d.asof_ts >= date_trunc('day', now())
+        and g.kickoff > d.asof_ts + make_interval(hours => $2) limit 1`,
+    [c.botId, Math.ceil(windowHours)])).rows.length;
+  const games = previewDue ? slate : slate.filter(inWindow);
+  log(`tick: ${season} week ${week} -- ` + (previewDue
+    ? `daily slate preview: pricing all ${slate.length} games`
+    : `${games.length} of ${slate.length} games inside the ${windowHours}h window`));
 
   // Ratings and profiles are expensive and identical across games -- solve once,
   // and only when there is something to price.
