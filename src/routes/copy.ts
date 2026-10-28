@@ -64,6 +64,32 @@ async function delegatedWallet(did: string): Promise<string | null> {
   return wallets.length ? String((wallets[0] as any).address) : null;
 }
 
+/**
+ * Countries where copy subscriptions are refused: Polymarket's full-block and
+ * close-only lists plus BlockPools' own restrictions. MIRRORS the frontend's
+ * lib/geo.ts (HARD_ + SOFT_BLOCKED_COUNTRY_CODES / _REGIONS) -- change both.
+ * Close-only users may still close positions; they just cannot start a sleeve
+ * that would open new ones.
+ */
+const RESTRICTED_COUNTRIES = new Set<string>([
+  // full block / sanctioned
+  "CU", "IR", "KP", "SY", "BY", "BI", "CF", "CD", "ET", "IQ", "LB", "LY", "MM",
+  "NI", "SO", "SD", "SS", "TH", "VE", "YE", "ZW",
+  // close-only
+  "US", "GB", "AU", "SG", "BE", "FR", "DE", "IT", "PL", "BR", "RU", "NL", "IE",
+  "JP", "MT", "NZ", "SK", "TW", "CN",
+]);
+/** Region-level restrictions inside otherwise-allowed countries. */
+const RESTRICTED_REGIONS = new Set<string>([
+  "CA-AB", "CA-BC", "CA-ON", "CA-QC", // Canadian provinces (close-only)
+  "UA-43", "UA-40", "UA-14", "UA-09", "UA-9", // occupied Ukraine (full block)
+]);
+
+function isRestrictedRegion(country: string, region: string | null): boolean {
+  if (RESTRICTED_COUNTRIES.has(country)) return true;
+  return Boolean(region) && RESTRICTED_REGIONS.has(`${country}-${String(region).toUpperCase()}`);
+}
+
 function num(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -157,8 +183,18 @@ router.post("/subscribe", authPrivy, async (req: AuthedRequest, res: Response) =
   // refused, and the country is kept with the consent.
   const geo = req.body?.geo && typeof req.body.geo === "object" ? req.body.geo : null;
   if (geo?.blocked === true) return res.status(451).json({ error: "region_blocked" });
-  const geoCountry = typeof geo?.country === "string" ? geo.country.slice(0, 8) : null;
+  const geoCountry = typeof geo?.country === "string" && geo.country.trim()
+    ? geo.country.trim().slice(0, 8).toUpperCase() : null;
   const geoRegion = typeof geo?.region === "string" ? geo.region.slice(0, 16) : null;
+  // FAIL CLOSED (2026-10-27): Polymarket's browser check cannot even load in
+  // Brazil, so a Brazilian arrived with blocked=false and no country and was
+  // subscribed. No country = refuse; a restricted country = refuse, whatever
+  // the venue check said. The app sends our own /api/geo country as fallback,
+  // so allowed visitors always have one.
+  if (!geoCountry) return res.status(451).json({ error: "region_unverified" });
+  if (isRestrictedRegion(geoCountry, geoRegion)) {
+    return res.status(451).json({ error: "region_blocked" });
+  }
   if (basisUsd === null || basisUsd < MIN_BASIS_USD || basisUsd > MAX_BASIS_USD) {
     return res.status(400).json({ error: "basis_out_of_range", minBasisUsd: MIN_BASIS_USD, maxBasisUsd: MAX_BASIS_USD });
   }
