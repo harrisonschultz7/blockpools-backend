@@ -531,6 +531,10 @@ async function runFanout() {
           .catch(() => {});
       }
     }
+    if (intent.kind === "stop") {
+      try { placed += await ticketStops(intent); }
+      catch (e) { log.err(`copy: ticket stops for intent ${intent.id}: ${e.message}`); }
+    }
     lastId = intent.id;
   }
 
@@ -646,6 +650,91 @@ async function copyStop(sub, intent, orderId) {
   return sold > 0;
 }
 
+/**
+ * QUEUE TICKETS FOLLOW THE MODEL'S STOP TOO.
+ *
+ * A user who approved a model's alert ticket (the Queue) bought the position and
+ * rested the model's exit themselves. Polymarket has no stop order, so the
+ * model's stop-loss can only be executed by a server holding the user's session
+ * signer -- the same thing copyStop does for subscribers.
+ *
+ * Who qualifies, and why that is the consent: the ticket's exit is still LIVE
+ * and was carried over (or flagged to carry), which only happens when the user
+ * ticked "keep the exit after kickoff" on the ticket AND granted the signer --
+ * the backend verifies the grant with Privy before setting carry_over. A user
+ * who cancelled the exit, or never granted the signer, is left alone.
+ *
+ * Returns the number of positions sold.
+ */
+async function ticketStops(intent) {
+  const { rows } = await q(
+    `select distinct on (user_id) user_id, signer_address
+       from public.pm_limit_orders
+      where token_id = $1 and side = 'sell' and status = 'live'
+        and (carry_over or carried_from is not null)
+        and signer_address is not null
+        and meta->>'source' = 'queue' and meta->>'botId' = $2
+      order by user_id, created_at desc`,
+    [intent.token_id, intent.bot_id],
+  );
+  let sold = 0;
+  for (const r of rows) {
+    const who = { privy_did: r.user_id, wallet_address: r.signer_address };
+    try {
+      const client = await getPmClient(r.signer_address);
+      const wallets = await mkt.userWallets(r.user_id);
+
+      // Release the resting exit first -- the venue locks its shares.
+      const live = await q(
+        `select id from public.pm_limit_orders
+          where user_id = $1 and token_id = $2 and side = 'sell' and status = 'live'
+            and meta->>'source' = 'queue'`,
+        [r.user_id, intent.token_id]);
+      for (const o of live.rows) {
+        if (!DRY_RUN) {
+          try { await client.cancelOrder({ orderId: o.id }); }
+          catch (e) { log.warn(`ticket stop: cancel ${o.id} failed: ${e.message}`); }
+        }
+        await q(
+          `update public.pm_limit_orders set status = 'closed', closed_reason = 'stop_loss',
+                  closed_at = now(), updated_at = now() where id = $1 and status = 'live'`,
+          [o.id]);
+      }
+
+      const held = await mkt.heldShares(wallets.trading, intent.condition_id, intent.token_id);
+      const shares = held === null ? 0 : Math.floor(held * 100) / 100;
+      if (!(shares > 0)) { log(`ticket stop: ${r.user_id} holds nothing on ${intent.game_id}`); continue; }
+
+      const tick = await mkt.tickSize(intent.token_id);
+      const minPrice = Math.max(tick, floorToTick(Number(intent.limit_price) * (1 - STOP_SLIPPAGE), tick));
+      if (DRY_RUN) {
+        log(`copy[dry] ticket stop ${r.user_id} ${shares.toFixed(2)} sh min=${minPrice}`);
+        continue;
+      }
+      const { OrderSide, OrderType } = await import("@polymarket/client");
+      const res = await client.placeMarketOrder({
+        assetId: intent.token_id, side: OrderSide.SELL, shares, minPrice,
+        orderType: OrderType.FAK, builderCode: process.env.POLYMARKET_BUILDER_CODE,
+      });
+      const out = Number(res?.makingAmount || 0);
+      const got = Number(res?.takingAmount || 0);
+      if (res?.orderId && out > 0) {
+        await recordPmOrder(who, intent, wallets, {
+          id: res.orderId, side: "sell", price: minPrice, shares: out, live: false, source: "queue",
+        });
+        await notifyCopy(who, intent, "sell", got > 0 ? got / out : minPrice, res.orderId);
+        sold++;
+        log(`ticket stop: sold ${out.toFixed(2)} sh for ${r.user_id} on ${intent.game_id}`);
+      } else {
+        log.warn(`ticket stop: no fill for ${r.user_id} on ${intent.game_id} (${res?.message || "no fill"})`);
+      }
+    } catch (e) {
+      log.err(`ticket stop ${r.user_id} intent ${intent.id}: ${e.message}`);
+    }
+  }
+  return sold;
+}
+
 // ── Shared order record, notifications, sleeve P&L ──────────────────────────
 
 /**
@@ -682,7 +771,10 @@ async function recordPmOrder(sub, intent, wallets, o) {
       [o.id, sub.privy_did, wallets.owner, info.conditionId, idx, o.side,
        Number(o.price), Number(o.shares), String(intent.token_id),
        String(sub.wallet_address).toLowerCase(), start, !!carry, info.gameId,
-       JSON.stringify({ ...(info.meta || {}), source: "copy", botId: intent.bot_id }),
+       // serverPlaced: no app logged this order, so the fill sync must (see
+       // src/workers/pmFillSyncWorker.ts). A queue-ticket stop is placed here too.
+       JSON.stringify({ ...(info.meta || {}), source: o.source || "copy", botId: intent.bot_id,
+                        serverPlaced: true }),
        !!o.live],
     );
   } catch (e) {

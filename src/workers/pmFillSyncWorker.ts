@@ -303,9 +303,11 @@ export async function runPmFillSyncOnce(): Promise<void> {
         outcome_index: Number(r.outcome_index), side: r.side, price: Number(r.price), shares: Number(r.shares),
         token_id: r.token_id, game_id: r.game_id, meta: r.meta, status: r.status,
         created: Number(r.created), closed: r.closed == null ? null : Number(r.closed),
-        // Server-placed orders (carried over, or copy trading) have no app that
-        // logged their placement fill, so every fill from creation counts.
-        carried: !!r.carried_from || r.meta?.source === "copy", wallet: r.wallet,
+        // Server-placed orders (carried over, copy trading, or a queue-ticket
+        // stop the copy worker sold) have no app that logged their placement
+        // fill, so every fill from creation counts.
+        carried: !!r.carried_from || r.meta?.source === "copy" || r.meta?.serverPlaced === true,
+        wallet: r.wallet,
       };
       const k = `${o.wallet}|${o.market_id}`;
       (groups.get(k) || groups.set(k, []).get(k)!).push(o);

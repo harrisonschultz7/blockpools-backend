@@ -134,6 +134,12 @@ router.post("/", authPrivyOptionalWallet, async (req: AuthedRequest, res: Respon
       teamACode: str(m.teamACode), teamBCode: str(m.teamBCode),
       teamAName: str(m.teamAName), teamBName: str(m.teamBName),
       marketType: str(m.marketType), marketQuestion: str(m.marketQuestion),
+      // Which flow placed it, and for a Queue ticket which model it follows:
+      // the copy worker uses these to execute that model's stop-loss for
+      // ticket holders who granted the signer (trading-bot copy/fanout.js
+      // ticketStops). "copy" is reserved for the worker itself.
+      source: m.source === "queue" ? "queue" : null,
+      botId: typeof m.botId === "string" && /^[a-z0-9-]{1,40}$/.test(m.botId) ? m.botId : null,
     } : null;
     let carryOver = false;
     if (CARRY_ENABLED && b.carryOver === true && tokenId && signer && gameStartAt && gameStartAt.getTime() > Date.now()) {
