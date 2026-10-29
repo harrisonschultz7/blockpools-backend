@@ -20,7 +20,7 @@ const DRY = process.argv.includes("--dry");
 
 applyRiskTiers({ write: !DRY })
   .then((rows) => {
-    log(`risk tiers${DRY ? " (DRY RUN)" : ""}   [low <10% | medium 10-20% | high 20%+]`);
+    log(`risk tiers${DRY ? " (DRY RUN)" : ""}   [low <25% | medium 25-45% | high 45%+]`);
     for (const r of rows) {
       log(`  ${r.name.padEnd(8)} ${r.tier.toUpperCase().padEnd(7)} score ` +
           `${(100 * r.riskScore).toFixed(1)}%  =  turnover ${(100 * r.basisPctNav).toFixed(1)}%` +
