@@ -76,7 +76,7 @@ const RESTRICTED_COUNTRIES = new Set<string>([
   "CU", "IR", "KP", "SY", "BY", "BI", "CF", "CD", "ET", "IQ", "LB", "LY", "MM",
   "NI", "SO", "SD", "SS", "TH", "VE", "YE", "ZW",
   // close-only
-  "US", "GB", "AU", "SG", "BE", "FR", "DE", "IT", "PL", "BR", "RU", "NL", "IE",
+  "US", "GB", "AU", "SG", "BE", "FR", "DE", "IT", "PL", "BR", "AR", "RU", "NL", "IE",
   "JP", "MT", "NZ", "SK", "TW", "CN",
 ]);
 /** Region-level restrictions inside otherwise-allowed countries. */
