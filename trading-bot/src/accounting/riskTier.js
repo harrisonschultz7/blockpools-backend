@@ -193,6 +193,13 @@ async function weeklyTurnover(botId, lookbackDays) {
  * to run the same position.
  */
 async function exitFactor(botId, cfg) {
+  // A bot whose CURRENT policy holds to settlement is a full binary, whatever it
+  // used to do. Averaging its old resting sells would rate it as though it still
+  // exits early -- Bruno-7 switched to hold-to-settlement with one old sell on
+  // record, which alone dragged its factor to 0.57 and its tier down two bands.
+  if (cfg?.policy?.exitAtFairValue === false) {
+    return { factor: 1, source: "holds to settlement (policy.exitAtFairValue is off)", n: 0 };
+  }
   const { rows } = await q(
     `select t.fill_price AS entry, o.limit_price AS target
        from bots.limit_orders o
