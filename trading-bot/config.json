@@ -107,6 +107,8 @@
     "pregameOnly": true,
     "evaluationMode": "week",
     "exitAtFairValue": true,
+    "holdFavoritesToSettlement": true,
+    "_comment_holdFavorites": "2026-10-31: no resting exit on a side bought at 0.50+. The exit caps a favourite's win (CIN 0.87: +6.4c at the 0.934 exit vs +13c at settlement) with the same full-stake loss, and on 472 Polymarket NFL games favourites with take-profit exits did slightly worse than held (-8 to -9.7% vs -7.3%). Underdogs keep their exits.",
     "exitBufferCents": 0.005,
     "exitHoldThroughKickoff": true,
     "exitVolatilityAlphaLogit": 0.45,

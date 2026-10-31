@@ -128,6 +128,17 @@ function walkBids(bids, sharesWanted, limitPrice) {
 /** Post the resting exit for a freshly opened position. */
 async function createExitOrder(args) {
   const { botId, tradeId, game, decision, forecast, fill } = args;
+
+  // A FAVOURITE IS HELD TO SETTLEMENT (policy.holdFavoritesToSettlement). On a
+  // side bought at 0.50+ the resting sell caps the win (CIN at 0.87: +6.4c at
+  // the exit vs +13c at settlement) while the loss is the full stake either way,
+  // and the edge on a favourite the model thinks is underpriced is only paid at
+  // settlement. No exit order also means no exit intent, so copiers hold too.
+  if (cfg().policy.holdFavoritesToSettlement && Number(fill.avgPrice) >= 0.5) {
+    log(`    exit: none -- favourite bought at ${Number(fill.avgPrice).toFixed(3)}, held to settlement`);
+    return null;
+  }
+
   const price = exitPriceFor(forecast, decision.side);
   // Nothing to capture if fair is already at or below what we paid.
   if (price <= fill.avgPrice) return null;
