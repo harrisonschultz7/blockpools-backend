@@ -40,6 +40,9 @@ const { situationalSignal } = require("../features/situational");
 
 const CALIB_PATH = path.join(__dirname, "calibration.json");
 
+/** The scales calibrate.js fits its betas at (its scale0) -- keep the two equal. */
+const PROVISIONAL_SCALE = { momentum: 0.55, matchup: 0.55, injury: 1, situational: 1 };
+
 /** Fitted betas/scales, or safe defaults when calibrate.js has not run. */
 function loadCalibration() {
   try {
@@ -96,7 +99,23 @@ async function forecastGame(game, books, asOf, ctx) {
   let weighted = 0;
   for (const k of ["momentum", "matchup", "injury", "situational"]) {
     const scaled = raw[k].signal * (cal.scale[k] ?? 1);
-    const residual = scaled - (cal.beta[k] ?? 0) * (p_market - 0.5);
+    // RESIDUAL = keep x (signal at its provisional scale - beta x market lean).
+    //
+    // calibrate.js measures beta on the signal at PROVISIONAL_SCALE, then damps
+    // the whole residual by keep = scale / PROVISIONAL_SCALE. The old line
+    // applied the damping to the signal only and subtracted the FULL beta term
+    // regardless, so a factor damped to 0 (momentum, injury) still contributed
+    // -beta x (p - 0.5): a lean toward 50% on every game, i.e. a phantom
+    // underdog edge that produced most of Adam-7's trades (2026-10-19 review).
+    //
+    // model.factorKeep overrides the calibrated keep. Momentum and injury are
+    // kept at 1 by choice (2026-10-31): the user wants both priced, and with the
+    // correct residual they push toward whichever side the game warrants instead
+    // of always toward the underdog.
+    const prov = PROVISIONAL_SCALE[k] ?? 1;
+    const keep = Number.isFinite(m.factorKeep?.[k]) ? m.factorKeep[k]
+      : (cal.scale[k] ?? prov) / prov;
+    const residual = keep * (raw[k].signal * prov - (cal.beta[k] ?? 0) * (p_market - 0.5));
     const c = m.weights[k] * residual;
     contrib[k] = { signal: +raw[k].signal.toFixed(5), scaled: +scaled.toFixed(5),
                    residual: +residual.toFixed(5), weighted: +c.toFixed(5),

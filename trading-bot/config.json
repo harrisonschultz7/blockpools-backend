@@ -14,6 +14,11 @@
   "model": {
     "_comment": "RESIDUAL model. The market price is the ANCHOR, not a weighted factor -- blending p_market as a factor alongside team strength would double-count, because the market price already contains team strength. The model forecasts only the DEVIATION from the market. deltaCap is therefore the real 'how much may the bot disagree with the public' knob.",
     "deltaCap": 0.12,
+    "factorKeep": {
+      "_comment": "Overrides calibration.json for these factors (2026-10-31, by choice): the fit damped momentum and injury to 0 as non-predictive (resid corr -0.013 and -0.053 at n=300), but the user wants both priced. 1 = the factor's full market-residualised signal. Remove a key to fall back to the calibrated damping.",
+      "momentum": 1,
+      "injury": 1
+    },
     "weights": {
       "momentum": 0.3,
       "matchup": 0.25,
