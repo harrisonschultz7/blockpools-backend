@@ -59,7 +59,11 @@ async function mapNbaMarkets(markets) {
         [home, away, tip.toISOString()]);
       game_id = r.rows[0]?.game_id || null;
     }
-    if (!game_id) log.warn(`unmapped NBA market ${m.slug} (${away} @ ${home})`);
+    // Polymarket lists games ~2 weeks out; the schedule is only synced
+    // ingest.scheduleDaysAhead ahead, so a far game is unmapped by design and maps
+    // itself once it comes inside that horizon. Only a NEAR one is a real miss.
+    const horizon = Date.now() + (cfg().ingest.scheduleDaysAhead + 0.5) * 86_400_000;
+    if (!game_id && tip && tip.getTime() <= horizon) log.warn(`unmapped NBA market ${m.slug} (${away} @ ${home})`);
     const tokens = parseJsonField(m.clobTokenIds, []);
     const outcomes = parseJsonField(m.outcomes, []);
     rows.push({
