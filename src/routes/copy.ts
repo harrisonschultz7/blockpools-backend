@@ -403,7 +403,7 @@ router.get("/positions", authPrivy, async (req: AuthedRequest, res: Response) =>
          left join bots.trades t   on t.id = p.bot_trade_id
          left join sports.pm_totals_markets m
                 on m.condition_id = t.condition_id
-         left join sports.nfl_games g on g.game_id = t.game_id
+         left join sports.bot_games g on g.game_id = t.game_id
          left join lateral (
            select o.limit_price, o.kind
              from copy.orders o

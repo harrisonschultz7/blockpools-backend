@@ -56,7 +56,7 @@ export async function runModelAlertsOnce(): Promise<void> {
               g.away_team, g.home_team
          FROM bots.trades t
          JOIN bots.bot b ON b.id = t.bot_id
-         JOIN sports.nfl_games g ON g.game_id = t.game_id
+         JOIN sports.bot_games g ON g.game_id = t.game_id
         WHERE t.bot_id = ANY($1)
           AND (t.opened_at > now() - ($2)::interval
                OR (t.exit_at IS NOT NULL AND t.exit_at > now() - ($2)::interval))
@@ -96,7 +96,7 @@ export async function runModelAlertsOnce(): Promise<void> {
               g.away_team, g.home_team
          FROM bots.limit_orders o
          JOIN bots.bot b ON b.id = o.bot_id
-         JOIN sports.nfl_games g ON g.game_id = o.game_id
+         JOIN sports.bot_games g ON g.game_id = o.game_id
         WHERE o.bot_id = ANY($1) AND o.action = 'SELL'
           AND o.created_at > now() - ($2)::interval`,
       [botIds, WINDOW],

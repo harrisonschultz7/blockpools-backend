@@ -1,0 +1,148 @@
+{
+  "_comment": "Axis-3: NBA game winners (moneylines). Adam-7's structure in points of margin -- market price is the anchor, the model forecasts only the deviation. PAPER, HIDDEN. Data from ESPN's public API (src/ingest/espnNba.js). Created 2026-11-01.",
+  "botId": "axis-3",
+  "botName": "Axis-3",
+  "league": "NBA",
+  "riskTier": "medium",
+  "mode": "paper",
+  "modelVersion": "axis-nba-v1",
+  "hidden": true,
+  "_comment_hidden": "Off every public surface (GET /api/bots, copy subscribe, model alerts) while it paper trades. Flip to false and deploy the backend to show it.",
+  "marketScopeLabel": "Game Markets",
+  "description": "A proprietary BlockPools prediction model for NBA game markets. It prices each game in the last two hours before tip-off -- injuries and late scratches first, then form, rest and travel -- and trades only where the market has not caught up.",
+  "reporting": {
+    "_comment": "NBA plays every day, so ROI and selectivity are reported per Monday-Sunday week (US-Eastern), not per NFL week.",
+    "period": "isoWeek"
+  },
+  "model": {
+    "_comment": "UNCALIBRATED: weights follow the user's order of importance (injury > momentum > rest/travel > primetime > style), not a fit -- there is no NBA closing-line history yet. Every factor is in POINTS OF HOME MARGIN; points sum, then convert to a probability once through sigmaMarginPts.",
+    "sigmaMarginPts": 12.5,
+    "deltaCap": 0.1,
+    "weights": {
+      "injury": 0.35,
+      "momentum": 0.25,
+      "rest": 0.2,
+      "primetime": 0.1,
+      "style": 0.1
+    },
+    "injury": {
+      "_comment": "Counts CHANGES the market may not have absorbed: impact x (availability now - availability over the last recentGames) x freshness. freshnessHalfLifeHours=2: a status that changed 2h ago counts half, 6h ago an eighth -- the line has moved on it by then. A player out for weeks counts nothing (he was out lately too). returnFreshness is the share credited to a player BACK after missing games, whose return time ESPN does not stamp.",
+      "lookbackGames": 30,
+      "recentGames": 5,
+      "freshnessHalfLifeHours": 2,
+      "returnFreshness": 0.4,
+      "replacementMpg": 16,
+      "per48PerMpg": 0.4,
+      "pmShrinkMinutes": 600,
+      "shrinkGamesWithout": 6,
+      "measuredMinMpg": 20,
+      "maxPlayerPts": 8,
+      "minImpactPts": 0.4,
+      "maxSwingPts": 10,
+      "maxFeedAgeMinutes": 30,
+      "statusMultiplier": {
+        "_comment": "Probability he SITS. ESPN's fantasy status: OUT, OFS (out for season), GTD (game-time decision). The others are the NBA report's own words, kept in case ESPN surfaces them.",
+        "OUT": 1,
+        "OFS": 1,
+        "DOUBTFUL": 0.8,
+        "GTD": 0.5,
+        "QUESTIONABLE": 0.5,
+        "DAY-TO-DAY": 0.4,
+        "PROBABLE": 0.1,
+        "default": 0.5
+      }
+    },
+    "momentum": {
+      "_comment": "Win streaks plus recent margin (exp-weighted, halfLifeGames) against season margin, current season only. shrinkGames damps the early season, when 'recent' and 'season' are the same handful of games.",
+      "streakPtsPerGame": 0.35,
+      "maxStreak": 6,
+      "formGames": 10,
+      "halfLifeGames": 4,
+      "formWeight": 0.3,
+      "shrinkGames": 8,
+      "fullConfidenceGames": 8,
+      "maxSwingPts": 5
+    },
+    "rest": {
+      "_comment": "Second night of a back-to-back is the big one (~2 pts). Travel from the previous game's arena; eastward time zones only bite on a back-to-back.",
+      "backToBackPts": -2.0,
+      "threeInFourPts": -0.8,
+      "restAdvantagePtsPerDay": 0.4,
+      "travelPtsPer1000Miles": -0.5,
+      "maxTravelPts": -1.5,
+      "eastwardB2bPtsPerHour": -0.35,
+      "maxSwingPts": 5
+    },
+    "primetime": {
+      "_comment": "ESPN / ABC / NBC / Prime / TNT national games (NBA TV excluded): the better team (by season margin) gets betterTeamPts, the home side homeCrowdPts.",
+      "betterTeamPts": 0.6,
+      "homeCrowdPts": 0.3
+    },
+    "style": {
+      "_comment": "Variance, not quality: factor = sqrt(poss/league) / (1 + k x (3PA rate - league)); points = implied margin x (factor - 1). Fast inside games favour the favourite, slow three-point games the underdog.",
+      "games": 15,
+      "minGames": 4,
+      "threePointVarianceK": 1.5,
+      "maxSwingPts": 1.5
+    },
+    "confidence": {
+      "minToTrade": 0.45,
+      "staleBookSeconds": 300
+    },
+    "risk": {
+      "concurrentCorrelation": 0,
+      "observedLookbackDays": 60,
+      "roundsPerWeek": 5,
+      "_comment_rounds": "NBA recycles the book most days of the week (configs/risk note in config.json): 5, not NFL's 1.",
+      "minWeeksForObservedBasis": 4
+    }
+  },
+  "policy": {
+    "_comment": "Adam-7's exits and sizing. Prices from priceWindowHoursBeforeTip (2h) so the record shows the build-up, but TRADES only inside openWindowHoursBeforeKickoff (45 min) -- after most late scratches and starting lineups.",
+    "pregameOnly": true,
+    "evaluationMode": "rolling",
+    "priceWindowHoursBeforeTip": 2,
+    "openWindowHoursBeforeKickoff": 0.75,
+    "closeWindowMinutesBeforeKickoff": 5,
+    "exitAtFairValue": true,
+    "holdFavoritesToSettlement": true,
+    "exitBufferCents": 0.005,
+    "exitHoldThroughKickoff": true,
+    "exitVolatilityAlphaLogit": 0.45,
+    "exitInPlayMaxPrice": 0.97,
+    "_comment_stopLoss": "ON at 85% (user's choice at setup, 2026-11-01). NOTE Adam-7's own config has it OFF since 2026-10-11 after the NFL replay -- revisit once Axis-3 has a sample.",
+    "exitStopLossEnabled": true,
+    "exitStopLossMaxLossPct": 0.85,
+    "minEdge": 0.015,
+    "kellyFraction": 0.25,
+    "sizingMode": "flat",
+    "flatPositionPctNav": 0.07,
+    "maxPositionPctNav": 0.07,
+    "maxGameExposurePctNav": 0.07,
+    "maxOpenExposurePctNav": 0.6,
+    "minPrice": 0.05,
+    "maxPrice": 0.95,
+    "minBookDepthUsd": 50,
+    "maxSlippageCents": 0.01
+  },
+  "paper": {
+    "startingNavUsd": 10000,
+    "walkRealDepth": true,
+    "assumeTakerFeeBps": 0
+  },
+  "ingest": {
+    "pmNbaTagId": 745,
+    "recordWindowHours": 30,
+    "bookPollSeconds": 60,
+    "bookPollSecondsNearKickoff": 20,
+    "nearKickoffHours": 3,
+    "bookLevelsStored": 5,
+    "bookHeartbeatSeconds": 600,
+    "bookCompareLevels": 4,
+    "bookSizeTolerancePct": 0.1,
+    "midWindowHours": 24,
+    "farPollSeconds": 600,
+    "scheduleDaysAhead": 2,
+    "historyStart": "2025-10-01"
+  }
+}

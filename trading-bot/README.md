@@ -583,3 +583,56 @@ between them. Once the multi-sport bots exist this probably wants a fourth band 
 something like High 20–50% and Very High above — but splitting it now would be
 guessing at where those bots actually land.
 
+
+---
+
+# Axis-3 — NBA game winners (added 2026-11-01)
+
+PAPER, HIDDEN (`config.axis-3.json` → `hidden: true`). Same codebase, same
+paper filler, exits, settlement and NAV as Adam-7; NBA-specific pieces only:
+
+| piece | file |
+|---|---|
+| ESPN ingest (schedule, box scores, injury report) | `src/ingest/espnNba.js` |
+| Polymarket NBA moneylines + depth recorder | `src/ingest/polymarketNba.js` |
+| factor inputs, aggregated in SQL (egress) | `src/features/nba/context.js` |
+| the five factors | `src/features/nba/factors.js` |
+| forecast | `src/model/forecastNba.js` |
+| tick (5 min) / recorder / backfill | `run/tick-nba.js`, `run/record-books-nba.js`, `run/ingest-nba.js` |
+| schema | `sql/010_nba_schema.sql` |
+
+**Model.** Adam-7's anchor-on-the-market structure, in points of margin:
+`implied = 12.5·Φ⁻¹(p_market)`, add `Σ wₖ·ptsₖ`, back to a probability, cap the
+move at `deltaCap` and scale by confidence. Weights are the user's order —
+injury 0.35, momentum 0.25, rest/travel 0.20, primetime 0.10, style 0.10 —
+**uncalibrated** (no NBA closing-line history yet; `nba_games.closing_home_mid`
+is collecting it).
+
+**Injuries count CHANGES, not absences.** The market reads the same report. A
+player out for a month is in the price, and so is one ruled out this morning;
+counting either again double-counts it. Points = impact × (availability now −
+availability over the last 5 games) × 0.5^(hours since the status changed / 2).
+Coach's-decision DNPs are not "unavailable" (else bench players read as stars
+returning). A player's impact is minutes-based, with the team's with/without
+margin blended in only for 20+ mpg rotation players.
+
+**Windows.** Prices every game from 2h before tip (decision rows show the
+build-up); trades only in the last 45 minutes, after most late scratches.
+Exits = Adam-7's (resting sell, favourites held to settlement); stop-loss ON.
+
+**Reporting.** NBA "weeks" are Monday–Sunday (ET), week 1 = the week of Oct 20,
+computed in `sports.bot_games` so the NFL weekly-ROI code applies unchanged.
+
+**Shared-code change.** Settlement, CLV, the exit manager, model alerts, copy
+and `/api/bots` join `sports.bot_games` (NFL ∪ NBA) instead of
+`sports.nfl_games`. NFL feature code still reads `nfl_games` directly.
+
+## Deploy
+
+    node trading-bot/run/migrate.js                 # applies sql/010 (idempotent)
+    node trading-bot/run/ingest-nba.js --check      # live ESPN parse, writes nothing
+    node trading-bot/run/ingest-nba.js              # backfill 2025-26 + this season (~20 min)
+    node trading-bot/run/tick-nba.js --dry          # price the next 2h, trade nothing
+    sudo cp trading-bot/systemd/blockpools-axis-* /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now blockpools-axis-recorder blockpools-axis-tick.timer

@@ -444,7 +444,7 @@ async function sweepFills(botId) {
             t.shares as trade_shares,
             t.fill_price as entry_price, bk.bids, bk.mid, bk.ts as book_ts
        from bots.limit_orders o
-       join sports.nfl_games g on g.game_id = o.game_id
+       join sports.bot_games g on g.game_id = o.game_id   -- every league (NFL + NBA)
        join bots.trades t on t.id = o.trade_id
        left join sports.pm_markets        ml on ml.condition_id = o.condition_id
        left join sports.pm_totals_markets tm on tm.condition_id = o.condition_id
@@ -504,7 +504,7 @@ async function manageExits(botId, forecasts, now) {
             coalesce(ml.closed, tm.closed, pm.closed, false) as market_closed,
             t.fill_price as entry_price
        from bots.limit_orders o
-       join sports.nfl_games g on g.game_id = o.game_id
+       join sports.bot_games g on g.game_id = o.game_id   -- every league (NFL + NBA)
        join bots.trades t on t.id = o.trade_id
        -- Joined by condition_id, not game_id. A game has ONE moneyline but many
        -- totals lines, so game_id cannot identify a totals order's market: the

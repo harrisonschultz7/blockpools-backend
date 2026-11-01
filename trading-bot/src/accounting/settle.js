@@ -28,7 +28,7 @@ async function gradeClv() {
                   and o.ts <= g.kickoff
                 order by o.ts desc limit 1) close_mid
          from bots.trades t
-         join sports.nfl_games g on g.game_id = t.game_id
+         join sports.bot_games g on g.game_id = t.game_id   -- every league (NFL + NBA)
         where t.closing_price is null and g.kickoff <= now()
      )
      update bots.trades t
@@ -82,7 +82,7 @@ async function settleTrades() {
                    else g.away_score > g.home_score
                  end) won
            from bots.trades t2
-           join sports.nfl_games g on g.game_id = t2.game_id
+           join sports.bot_games g on g.game_id = t2.game_id   -- every league (NFL + NBA)
           where t2.settled = false
             and t2.exited = false   -- closed by a limit sell; paying it out again
                                     -- would double-count the same shares
@@ -276,7 +276,7 @@ async function settleFromMarkets() {
                  on pw.game_id = t.game_id and pw.player_id = f.player_id
               where f.id = t.feature_passing_id) as passing_yards
        from bots.trades t
-       join sports.nfl_games g on g.game_id = t.game_id
+       join sports.bot_games g on g.game_id = t.game_id   -- every league (NFL + NBA)
       where t.settled = false
         and t.exited = false
         and t.condition_id is not null

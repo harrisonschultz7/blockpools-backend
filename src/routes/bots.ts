@@ -107,7 +107,7 @@ botsRouter.get("/", async (_req, res) => {
                 coalesce(max(t.closed_at), max(t.exit_at),
                          min(g.kickoff) + interval '4 hours') as w_end
            from bots.trades t
-           join sports.nfl_games g on g.game_id = t.game_id
+           join sports.bot_games g on g.game_id = t.game_id
           where t.bot_id = $1
           group by g.game_id
           order by 1`,
@@ -155,15 +155,34 @@ botsRouter.get("/", async (_req, res) => {
       const windowHours = Number(
         (b.config as any)?.policy?.openWindowHoursBeforeKickoff ?? 24,
       );
-      const { rows: selRows } = await pg.query(
-        `select count(distinct d.game_id) as looks,
-                count(distinct d.game_id) filter (where d.acted) as acted
-           from bots.decisions d
-           join sports.nfl_games g on g.game_id = d.game_id
-          where d.bot_id = $1 and g.season = $2 and g.week = $3
-            and (d.acted or g.kickoff <= now() + ($4 || ' hours')::interval)`,
-        [b.id, cur?.season ?? 0, cur?.week ?? 0, windowHours],
-      );
+      // NBA plays every day, so its slate is the MONDAY-SUNDAY week (US-Eastern;
+      // Postgres weeks start on Monday) rather than an NFL week number.
+      const nba = String(b.league).toUpperCase() === "NBA";
+      const { rows: selRows } = nba
+        ? await pg.query(
+          `select count(distinct d.game_id) as looks,
+                  count(distinct d.game_id) filter (where d.acted) as acted,
+                  (date_trunc('week', now() at time zone 'America/New_York'))::date::text as week_start,
+                  -- Same numbering as sports.bot_games (week 1 = the week of Oct 20).
+                  (select g2.season from sports.nba_games g2 order by abs(extract(epoch from g2.kickoff - now())) limit 1) as season,
+                  (((date_trunc('week', now() at time zone 'America/New_York')::date
+                     - date_trunc('week', make_date((select g3.season from sports.nba_games g3
+                                                            order by abs(extract(epoch from g3.kickoff - now())) limit 1), 10, 20)::timestamp)::date) / 7) + 1)::int as week
+             from bots.decisions d
+             join sports.bot_games g on g.game_id = d.game_id
+            where d.bot_id = $1
+              and g.kickoff >= date_trunc('week', now() at time zone 'America/New_York') at time zone 'America/New_York'
+              and g.kickoff <  (date_trunc('week', now() at time zone 'America/New_York') + interval '7 days') at time zone 'America/New_York'
+              and (d.acted or g.kickoff <= now() + ($2 || ' hours')::interval)`,
+          [b.id, windowHours])
+        : await pg.query(
+          `select count(distinct d.game_id) as looks,
+                  count(distinct d.game_id) filter (where d.acted) as acted
+             from bots.decisions d
+             join sports.nfl_games g on g.game_id = d.game_id
+            where d.bot_id = $1 and g.season = $2 and g.week = $3
+              and (d.acted or g.kickoff <= now() + ($4 || ' hours')::interval)`,
+          [b.id, cur?.season ?? 0, cur?.week ?? 0, windowHours]);
 
       const startNav = Number(b.starting_nav);
 
@@ -225,8 +244,10 @@ botsRouter.get("/", async (_req, res) => {
           looks: Number(selRows[0].looks),
           acted: Number(selRows[0].acted),
           /** The slate those counts describe, so the UI can name it. */
-          season: cur ? Number(cur.season) : null,
-          week: cur ? Number(cur.week) : null,
+          season: nba ? (selRows[0].season == null ? null : Number(selRows[0].season)) : cur ? Number(cur.season) : null,
+          week: nba ? (selRows[0].week == null ? null : Number(selRows[0].week)) : cur ? Number(cur.week) : null,
+          /** NBA: the Monday (ET) the reported week starts on. */
+          weekStart: nba ? selRows[0].week_start ?? null : null,
         },
         // Today's point is replaced with the live NAV below, so the curve does
         // not flatten between daily runs.
@@ -418,7 +439,7 @@ botsRouter.get("/:botId/trades", async (req, res) => {
               t.p_fair, t.fill_price, t.shares, t.notional_usd,
               t.exit_price, t.exit_at, t.exit_reason,
               t.pnl_usd, t.clv_bps, t.opened_at, t.closed_at,
-              g.away_team, g.home_team, g.kickoff, g.week, g.season,
+              g.away_team, g.home_team, g.kickoff, g.week, g.season, g.league,
               -- Live mark for an OPEN position: the last price the depth
               -- recorder saw for this exact token. Lateral rather than a join on
               -- max(ts), which would fan out across every snapshot ever taken of
@@ -428,7 +449,7 @@ botsRouter.get("/:botId/trades", async (req, res) => {
               -- settlement: favourites, Bruno-7).
               lo.limit_price AS resting_price
          from bots.trades t
-         join sports.nfl_games g on g.game_id = t.game_id
+         join sports.bot_games g on g.game_id = t.game_id
          left join lateral (
            select o.mid, o.ts from sports.odds_history o
             where o.token_id = t.token_id and o.mid is not null
@@ -508,8 +529,10 @@ botsRouter.get("/:botId/trades", async (req, res) => {
         // nothing downstream can render a team code for an over/under position.
         team: isTotals ? null : (t.side === "home" ? t.home_team : t.away_team),
         side: t.side,
+        // NFL week number; null for NBA, which reports by Monday-Sunday week.
         week: t.week,
         season: t.season,
+        league: t.league,
         kickoff: t.kickoff,
         openedAt: t.opened_at,
         closedAt: t.closed_at,
