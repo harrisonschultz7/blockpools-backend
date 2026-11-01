@@ -43,7 +43,12 @@ async function latestBooksByToken(tokenIds) {
   const { rows: markets } = await q(
     `select m.condition_id, m.slug, m.player_id, m.player_name, m.line,
             m.over_token_id, m.under_token_id, m.fee_type, m.fee_rate, m.tick_size,
-            g.game_id, g.season, g.week, g.home_team, g.away_team, g.roof, g.wind,
+            g.game_id, g.season, g.week, g.home_team, g.away_team, g.roof,
+            -- nflverse fills wind only AFTER the game, so pre-game it was always
+            -- null and the weather factor read 0 mph for every QB (2026-11-01).
+            -- Fall back to the latest Open-Meteo forecast, as Argo-7 uses.
+            coalesce(g.wind, (select w.forecast_wind_mph from sports.nfl_weather w
+                               where w.game_id = g.game_id order by w.asof_ts desc limit 1)) as wind,
             g.spread_line, g.total_line, g.kickoff
        from sports.pm_passing_markets m
        join sports.nfl_games g on g.game_id = m.game_id
