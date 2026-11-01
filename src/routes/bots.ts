@@ -29,7 +29,11 @@ async function isHiddenBot(botId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-const CACHE_MS = 60_000;
+// 5 minutes, not 1 (2026-11-01, Supabase egress): the numbers on this payload
+// move when a tick runs (every 5-15 minutes), and every rebuild re-reads the
+// equity curves of every bot through the pooler. 99.5% of the project's egress
+// is pooler traffic, and this route was the largest recurring part of it.
+const CACHE_MS = 5 * 60_000;
 let cache: { at: number; body: any } | null = null;
 
 botsRouter.get("/", async (_req, res) => {
@@ -37,11 +41,14 @@ botsRouter.get("/", async (_req, res) => {
     if (cache && Date.now() - cache.at < CACHE_MS) return res.json(cache.body);
 
     const { rows: bots } = await pg.query(
-      // config is read for policy.openWindowHoursBeforeKickoff, which sets the
-      // selectivity denominator. Without it the ?? 24 fallback silently applies
-      // to every bot, which is right today and wrong the moment one changes.
+      // policy.openWindowHoursBeforeKickoff sets the selectivity denominator.
+      // Without it the ?? 24 fallback silently applies to every bot, which is
+      // right today and wrong the moment one changes. Only that ONE key is read:
+      // the whole config is ~24 KB of mostly comments per bot, and shipping it on
+      // every rebuild was a large share of the project's egress (2026-11-01).
       `select id, name, league, risk_tier, mode, enabled, starting_nav, created_at,
-              market_scope, description, config
+              market_scope, description,
+              (config->'policy'->>'openWindowHoursBeforeKickoff')::numeric as open_window_hours
          from bots.bot where enabled = true and ${NOT_HIDDEN_SQL} order by created_at`,
     );
 
@@ -81,11 +88,20 @@ botsRouter.get("/", async (_req, res) => {
       // Intraday points for the recent window. The daily series carries the long
       // run; these give the last fortnight shape, so a position moving all
       // afternoon is visible instead of appearing as one step at midnight.
+      //
+      // Full resolution for the last 2 days only; older intraday points come one
+      // per hour. The chart is ~300px wide, so 14 days of 5-minute points (up to
+      // ~4,000 per bot) drew the same line at ~10x the egress.
       const { rows: intraRows } = await pg.query(
-        `select ts, nav_usd, open_positions
-           from bots.nav_intraday
-          where bot_id = $1 and ts > now() - interval '14 days'
-          order by ts`,
+        `select ts, nav_usd, open_positions from (
+           select distinct on (case when ts > now() - interval '2 days' then ts
+                                    else date_trunc('hour', ts) end)
+                  ts, nav_usd, open_positions
+             from bots.nav_intraday
+            where bot_id = $1 and ts > now() - interval '14 days'
+            order by (case when ts > now() - interval '2 days' then ts
+                           else date_trunc('hour', ts) end), ts desc
+         ) x order by ts`,
         [b.id],
       );
 
@@ -152,9 +168,7 @@ botsRouter.get("/", async (_req, res) => {
       // Not skip_reason: the totals forecast emits exceeds_market_gap_rail and
       // no_weather_forecast BEFORE the window gate, so filtering on "not
       // outside_window" counted games three days out.
-      const windowHours = Number(
-        (b.config as any)?.policy?.openWindowHoursBeforeKickoff ?? 24,
-      );
+      const windowHours = Number(b.open_window_hours ?? 24);
       // NBA plays every day, so its slate is the MONDAY-SUNDAY week (US-Eastern;
       // Postgres weeks start on Monday) rather than an NFL week number.
       const nba = String(b.league).toUpperCase() === "NBA";
