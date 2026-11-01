@@ -412,15 +412,6 @@ botsRouter.get("/:botId/trades", async (req, res) => {
     if (await isHiddenBot(String(req.params.botId))) return res.status(404).json({ error: "bot_not_found" });
     const limit = Math.min(200, Number(req.query.limit) || 50);
 
-    // The exit policy of THIS bot, for reconstructing its resting sell price.
-    const { rows: cfgRows } = await pg.query(
-      `select (config->'policy'->>'exitVolatilityAlphaLogit')::numeric as alpha,
-              (config->'policy'->>'exitInPlayMaxPrice')::numeric as cap
-         from bots.bot where id = $1`,
-      [req.params.botId],
-    );
-    const exitAlpha = Number(cfgRows[0]?.alpha ?? 0);
-    const exitCap = Number(cfgRows[0]?.cap ?? 0.97);
     const { rows } = await pg.query(
       `select t.id, t.game_id, t.side, t.settled, t.won, t.exited,
               t.market_type, t.line,
@@ -432,7 +423,10 @@ botsRouter.get("/:botId/trades", async (req, res) => {
               -- recorder saw for this exact token. Lateral rather than a join on
               -- max(ts), which would fan out across every snapshot ever taken of
               -- the token -- one row per minute, per market, forever.
-              mk.mid AS mark_price, mk.ts AS mark_ts
+              mk.mid AS mark_price, mk.ts AS mark_ts,
+              -- The exit the bot ACTUALLY rests (null when it holds to
+              -- settlement: favourites, Bruno-7).
+              lo.limit_price AS resting_price
          from bots.trades t
          join sports.nfl_games g on g.game_id = t.game_id
          left join lateral (
@@ -440,6 +434,11 @@ botsRouter.get("/:botId/trades", async (req, res) => {
             where o.token_id = t.token_id and o.mid is not null
             order by o.ts desc limit 1
          ) mk on t.settled = false
+         left join lateral (
+           select l.limit_price from bots.limit_orders l
+            where l.trade_id = t.id and l.status = 'open'
+            order by l.id desc limit 1
+         ) lo on t.settled = false
         where t.bot_id = $1
         order by t.opened_at desc
         limit $2`,
@@ -472,33 +471,13 @@ botsRouter.get("/:botId/trades", async (req, res) => {
       const mark = t.mark_price === null || t.mark_price === undefined
         ? null : Number(t.mark_price);
       const isOpen = status === "open";
-      // Resting SELL the bot holds on an open position: fair value of the TOKEN
-      // it owns. p_fair is stored for the home/over side, so flip it for
-      // away/under to get the held token's fair.
-      const pFair = t.p_fair === null || t.p_fair === undefined ? null : Number(t.p_fair);
-      const heldFair = pFair === null
-        ? null
-        : (t.side === "home" || t.side === "over" ? pFair : 1 - pFair);
-
-      // THE RESTING SELL IS NOT AT FAIR VALUE. exec/limits.js sets it to
-      // sigmoid(logit(fair) + exitVolatilityAlphaLogit) -- fair pushed out in
-      // logit space, because the point of the resting order is to be paid for
-      // variance the model does not forecast, not to hand back the edge at the
-      // price the model already thinks is right.
-      //
-      // This surface reported plain fair value and called it the limit, which
-      // understated every open target badly: on 2026-10-08 Adam-7's TB position
-      // showed 0.24 against a real resting order at 0.3338, a +20% target
-      // displayed where the bot was actually holding out for +67%.
-      //
-      // The formula is duplicated rather than imported: the API is TypeScript
-      // under src/ and the executor is CommonJS under trading-bot/. If
-      // exitVolatilityAlphaLogit changes meaning, both move.
-      const restingSell = heldFair === null ? null : (() => {
-        const safe = Math.max(0.02, Math.min(0.98, heldFair));
-        const target = 1 / (1 + Math.exp(-(Math.log(safe / (1 - safe)) + exitAlpha)));
-        return Math.max(0.02, Math.min(exitCap, target));
-      })();
+      // The resting SELL the bot actually holds on an open position, read from
+      // bots.limit_orders. It used to be RECONSTRUCTED from p_fair and the exit
+      // policy, which advertised a sell on positions held to settlement
+      // (holdFavoritesToSettlement, Bruno-7) -- CIN at 0.934 on the Queue slip,
+      // 2026-11-01. No open order = no sell.
+      const restingSell = t.resting_price === null || t.resting_price === undefined
+        ? null : Number(t.resting_price);
       const markValueUsd = isOpen && mark !== null ? mark * shares : null;
       const unrealizedPnlUsd = isOpen && mark !== null ? (mark - entry) * shares : null;
       const unrealizedPct = isOpen && mark !== null && entry
