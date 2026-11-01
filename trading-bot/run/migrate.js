@@ -13,7 +13,12 @@ const log = require("../src/log");
 
 async function main() {
   const dir = path.join(__dirname, "../sql");
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+  // --only 010 applies just the files whose name starts with that prefix: a new
+  // migration on a live database, without re-running the ones already applied.
+  const i = process.argv.indexOf("--only");
+  const only = i >= 0 ? process.argv[i + 1] : null;
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".sql") && (!only || f.startsWith(only))).sort();
+  if (only && !files.length) throw new Error(`no migration matches --only ${only}`);
   for (const f of files) {
     const sql = fs.readFileSync(path.join(dir, f), "utf8");
     process.stdout.write(`applying ${f} ... `);

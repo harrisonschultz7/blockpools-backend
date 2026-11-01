@@ -629,7 +629,7 @@ and `/api/bots` join `sports.bot_games` (NFL ∪ NBA) instead of
 
 ## Deploy
 
-    node trading-bot/run/migrate.js                 # applies sql/010 (idempotent)
+    node trading-bot/run/migrate.js --only 010      # FIRST: shared settlement joins the new view
     node trading-bot/run/ingest-nba.js --check      # live ESPN parse, writes nothing
     node trading-bot/run/ingest-nba.js              # backfill 2025-26 + this season (~20 min)
     node trading-bot/run/tick-nba.js --dry          # price the next 2h, trade nothing
