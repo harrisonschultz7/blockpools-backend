@@ -618,7 +618,7 @@ margin blended in only for 20+ mpg rotation players.
 
 **Windows.** Prices every game from 2h before tip (decision rows show the
 build-up); trades only in the last 45 minutes, after most late scratches.
-Exits = Adam-7's (resting sell, favourites held to settlement); stop-loss ON.
+Exits = Adam-7's (resting sell, favourites held to settlement); stop-loss OFF.
 
 **Reporting.** NBA "weeks" are Monday–Sunday (ET), week 1 = the week of Oct 20,
 computed in `sports.bot_games` so the NFL weekly-ROI code applies unchanged.
