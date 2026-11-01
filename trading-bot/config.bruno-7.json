@@ -261,6 +261,17 @@
   "_comment_display": "marketScopeLabel and description are written to bots.bot by ensureBot and are what the leaderboard card shows. marketScope (totals) stays the machine value the policy reads; this is the human label, matching the Game markets wording already used for Adam-7.",
   "_comment_riskTier": "riskTier below is a SEED only. run/risk-tier.js derives the live value from the sizing policy and the prices actually traded, and writes bots.bot.risk_tier. Editing it here does not change what users see.",
   "passingModel": {
+    "_comment_weather": "WEATHER IN YARDS, set by the user 2026-11-01 (not a fitted weight: the backtest 0.62 yds/mph, after the 0.3 haircut, made a 15 mph wind worth only ~2.8 yds). wind: -yardsPerMphOver per mph above windThresholdMph (15 mph = -7.5, 20 mph = -11.25). rain/snow: -rainYards / -snowYards x the chance of precipitation above precipProbFloorPct (precip_prob is a PERCENT); snow when the forecast is at or below snowTempF. Capped at -maxYards. Listed in unscaledFactors, so provisionalScale does NOT haircut it. Domes and closed roofs are 0.",
+    "unscaledFactors": ["weather"],
+    "weather": {
+      "windThresholdMph": 5,
+      "yardsPerMphOver": 0.75,
+      "precipProbFloorPct": 30,
+      "rainYards": 8,
+      "snowYards": 15,
+      "snowTempF": 34,
+      "maxYards": 25
+    },
     "_comment": "Bruno-7 QB passing yards. PAPER TRADING since 2026-10-26 (run/tick-passing.js); still hidden from the UI. Weights are PROVISIONAL, seeded from the 2025-26 factor backtest (n=624): form is the only factor clearing 2sigma (coef 0.238, t=4.19); matchup weak (0.102, t=1.5); weather -0.62 yds/mph (t=-1.5, sign baked via -wind points). injury/script are untested priors (low confidence). These coefs are fitted vs a NAIVE BASELINE, not vs the market line, so they OVERSTATE tradeable edge; provisionalScale haircuts the lot until line-residual calibration (needs ~3-4 weeks of recorded prop closing lines).",
     "modelVersion": "bruno-7-paper-0.3",
     "sigmaPassingYards": 54,
@@ -273,7 +284,7 @@
     "weights": {
       "form": 0.238,
       "matchup": 0.102,
-      "weather": 0.62,
+      "weather": 1,
       "injury": 0.5,
       "script": 0.3
     }

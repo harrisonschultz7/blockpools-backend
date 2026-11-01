@@ -210,12 +210,26 @@ function computeFactors(game, playerId, team, opp, ctx) {
     matchupConf = Math.min(1, d.att / 120);
   }
 
-  // WEATHER -- wind only (dome = 0). Points carry the sign (-wind) so a positive
-  // weight means "wind costs yards"; the flat per-mph fit understates the tail.
+  // WEATHER -- in YARDS, set directly (user, 2026-11-01), not a fitted weight:
+  //   wind  : -yardsPerMphOver x (mph over a calm threshold)   15 mph ~ -7.5 yds
+  //   rain  : -rainYards x how likely it is to rain (above a floor)
+  //   snow  : the same at snowYards when it is at or below snowTempF
+  // Domes / closed roofs are 0. precip_prob is a PERCENT (0-100), as stored by
+  // ingest/weather.js. Applied OUTSIDE provisionalScale (see forecastPassing):
+  // the 0.3 haircut is for uncalibrated fitted coefficients, and these are not.
+  const wc = pm.weather || {};
   const dome = game.roof === "dome" || game.roof === "closed";
-  const wind = dome ? 0 : (Number.isFinite(Number(game.wind)) ? Number(game.wind) : 0);
-  const weatherPts = -wind;
-  const weatherConf = dome ? 1 : (Number.isFinite(Number(game.wind)) ? 0.8 : 0.2);
+  const windRaw = Number(game.wind);
+  const wind = dome || !Number.isFinite(windRaw) ? 0 : windRaw;
+  const pp = Number(game.precip_prob);
+  const tempF = Number(game.temp_f);
+  const precipShare = dome || !Number.isFinite(pp) || pp <= (wc.precipProbFloorPct ?? 30) ? 0
+    : (pp - (wc.precipProbFloorPct ?? 30)) / (100 - (wc.precipProbFloorPct ?? 30));
+  const snow = Number.isFinite(tempF) && tempF <= (wc.snowTempF ?? 34);
+  const windYds = -(wc.yardsPerMphOver ?? 0.75) * Math.max(0, wind - (wc.windThresholdMph ?? 5));
+  const precipYds = -precipShare * (snow ? (wc.snowYards ?? 15) : (wc.rainYards ?? 8));
+  const weatherPts = Math.max(-(wc.maxYards ?? 25), windYds + precipYds);
+  const weatherConf = dome ? 1 : (Number.isFinite(windRaw) || Number.isFinite(pp) ? 0.8 : 0.2);
 
   // INJURY -- target share of this team's OUT/Doubtful receivers -> yards lost.
   // Prior only (untested in the backtest), so low confidence.
@@ -239,7 +253,9 @@ function computeFactors(game, playerId, team, opp, ctx) {
   return {
     form: { points: formPts, confidence: formConf, detail: { expAtt, trailingAtt: form ? form.att : 0, trailingYA: form && form.att ? +(form.yds / form.att).toFixed(2) : null, leagueYA: +leagueYA.toFixed(2) } },
     matchup: { points: matchupPts, confidence: matchupConf, detail: { opp, oppAtt: d ? d.att : 0, oppYAallowed: d && d.att ? +(d.yds / d.att).toFixed(2) : null } },
-    weather: { points: weatherPts, confidence: weatherConf, detail: { wind, dome } },
+    weather: { points: weatherPts, confidence: weatherConf,
+               detail: { wind, dome, precipProb: Number.isFinite(pp) ? pp : null, tempF: Number.isFinite(tempF) ? tempF : null,
+                         snow, windYds: +windYds.toFixed(1), precipYds: +precipYds.toFixed(1) } },
     injury: { points: injuryPts, confidence: injuryConf, detail: { lostTargetShare: +lostTs.toFixed(3) } },
     script: { points: scriptPts, confidence: scriptConf, detail: { teamSpread: Number.isFinite(spread) ? (team === game.home_team ? spread : -spread) : null } },
     expAtt,
@@ -267,12 +283,21 @@ function forecastPassing(game, market, books, playerId, asOf, ctx) {
   const scale = Number(pm.provisionalScale);
   const weighted = {};
   let rawDelta = 0;
-  for (const k of FACTORS) { weighted[k] = (w[k] || 0) * f[k].points; rawDelta += weighted[k]; }
+  let fullDelta = 0;   // factors in yards as set, outside the provisional haircut
+  const unscaled = new Set(pm.unscaledFactors || []);
+  for (const k of FACTORS) {
+    // f_* stores weight x points: pre-haircut for the fitted factors (as
+    // before), and the yards actually applied for an unscaled one (weather).
+    const v = (w[k] || 0) * f[k].points;
+    weighted[k] = v;
+    if (unscaled.has(k)) fullDelta += v; else rawDelta += v;
+  }
 
-  // Global provisional haircut + a hard yards cap, so a hot-form QB cannot run the
-  // projection away from the market while the weights are still uncalibrated.
+  // Global provisional haircut on the FITTED factors + a hard yards cap, so a
+  // hot-form QB cannot run the projection away from the market while the weights
+  // are still uncalibrated.
   const maxYards = Number(pm.maxYardsDelta) || 30;
-  let yardsDelta = scale * rawDelta;
+  let yardsDelta = scale * rawDelta + fullDelta;
   yardsDelta = Math.max(-maxYards, Math.min(maxYards, yardsDelta));
 
   const model_mean = implied_mean + yardsDelta;

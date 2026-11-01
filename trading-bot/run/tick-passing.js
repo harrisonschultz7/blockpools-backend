@@ -86,11 +86,17 @@ async function main() {
             -- nflverse fills wind only AFTER the game, so pre-game it was always
             -- null and the weather factor read 0 mph for every QB (2026-11-01).
             -- Fall back to the latest Open-Meteo forecast, as Argo-7 uses.
-            coalesce(g.wind, (select w.forecast_wind_mph from sports.nfl_weather w
-                               where w.game_id = g.game_id order by w.asof_ts desc limit 1)) as wind,
+            coalesce(g.wind, wx.forecast_wind_mph) as wind,
+            -- Rain/snow for the weather factor: chance of precipitation (a
+            -- PERCENT, 0-100) and the forecast temperature that makes it snow.
+            wx.precip_prob, coalesce(g.temp, wx.forecast_temp_f) as temp_f,
             g.spread_line, g.total_line, g.kickoff
        from sports.pm_passing_markets m
        join sports.nfl_games g on g.game_id = m.game_id
+       left join lateral (
+         select w.forecast_wind_mph, w.forecast_temp_f, w.precip_prob from sports.nfl_weather w
+          where w.game_id = g.game_id order by w.asof_ts desc limit 1
+       ) wx on true
       where m.closed = false and m.over_token_id is not null
         and g.home_score is null
         and g.kickoff between now() and now() + ($1 || ' hours')::interval`,
