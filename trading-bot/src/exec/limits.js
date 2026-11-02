@@ -129,12 +129,17 @@ function walkBids(bids, sharesWanted, limitPrice) {
 async function createExitOrder(args) {
   const { botId, tradeId, game, decision, forecast, fill } = args;
 
-  // A FAVOURITE IS HELD TO SETTLEMENT (policy.holdFavoritesToSettlement). On a
-  // side bought at 0.50+ the resting sell caps the win (CIN at 0.87: +6.4c at
-  // the exit vs +13c at settlement) while the loss is the full stake either way,
-  // and the edge on a favourite the model thinks is underpriced is only paid at
-  // settlement. No exit order also means no exit intent, so copiers hold too.
-  if (cfg().policy.holdFavoritesToSettlement && Number(fill.avgPrice) >= 0.5) {
+  // A HEAVY FAVOURITE IS HELD TO SETTLEMENT (policy.holdFavoritesToSettlement,
+  // above policy.holdToSettlementMinPrice). Bought at 0.87, a resting sell caps
+  // the win (CIN: +6.4c at the exit vs +13c at settlement) for the same full-stake
+  // loss, so it rides. Below the threshold the position gets the same resting
+  // exit as an underdog -- fair value plus the volatility premium, the way Argo-7
+  // exits its ~0.50 totals. Was 0.50 until 2026-11-02, which held EVERY favourite:
+  // GSW bought at 0.55 rode a 0.32 low to settlement (user: too risky).
+  // No exit order also means no exit intent, so copiers hold the same positions.
+  const p = cfg().policy;
+  const holdFrom = Number.isFinite(Number(p.holdToSettlementMinPrice)) ? Number(p.holdToSettlementMinPrice) : 0.5;
+  if (p.holdFavoritesToSettlement && Number(fill.avgPrice) >= holdFrom) {
     log(`    exit: none -- favourite bought at ${Number(fill.avgPrice).toFixed(3)}, held to settlement`);
     return null;
   }

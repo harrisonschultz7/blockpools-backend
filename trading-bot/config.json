@@ -108,6 +108,8 @@
     "evaluationMode": "week",
     "exitAtFairValue": true,
     "holdFavoritesToSettlement": true,
+    "holdToSettlementMinPrice": 0.75,
+    "_comment_holdToSettlementMinPrice": "2026-11-02 (user): only positions bought at 0.75+ hold to settlement. Below that, favourites get a resting exit at fair value + the volatility premium (exitVolatilityAlphaLogit), the same as underdogs and Argo-7 totals. Was effectively 0.50, which held every favourite.",
     "_comment_holdFavorites": "2026-10-31: no resting exit on a side bought at 0.50+. The exit caps a favourite's win (CIN 0.87: +6.4c at the 0.934 exit vs +13c at settlement) with the same full-stake loss, and on 472 Polymarket NFL games favourites with take-profit exits did slightly worse than held (-8 to -9.7% vs -7.3%). Underdogs keep their exits.",
     "exitBufferCents": 0.005,
     "exitHoldThroughKickoff": true,
