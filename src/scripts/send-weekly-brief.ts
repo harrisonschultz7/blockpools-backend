@@ -34,7 +34,7 @@ const DELAY_MS = 700;
 
 // Resend tag for this send (see lib/emailTracking.ts). Keep in step with the
 // utm_campaign hardcoded in the template links.
-const CAMPAIGN = "week8_model_trades";
+const CAMPAIGN = "week8_models_update";
 
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send BOTH language versions only to TEST_EMAIL.
