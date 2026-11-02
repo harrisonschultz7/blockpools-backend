@@ -53,7 +53,10 @@ const SCHEDULED_AT = "2026-11-02T07:00:00-05:00";
 
 // Per-send exclusions only. Durable opt-outs live in users.email_unsubscribed
 // (honored by the query below), so this stays empty for a normal weekly blast.
-const ALREADY_SENT = new Set<string>([]);
+const ALREADY_SENT = new Set<string>([
+  "bptester1240@gmail.com",
+  "info@blockpools.io",
+]);
 
 type Recipient = { id: string | null; email: string; preferredLocale: string | null };
 
