@@ -263,6 +263,8 @@
   "passingModel": {
     "_comment_weather": "WEATHER IN YARDS, set by the user 2026-11-01 (not a fitted weight: the backtest 0.62 yds/mph, after the 0.3 haircut, made a 15 mph wind worth only ~2.8 yds). wind: -yardsPerMphOver per mph above windThresholdMph (15 mph = -7.5, 20 mph = -11.25). rain/snow: -rainYards / -snowYards x the chance of precipitation above precipProbFloorPct (precip_prob is a PERCENT); snow when the forecast is at or below snowTempF. Capped at -maxYards. Listed in unscaledFactors, so provisionalScale does NOT haircut it. Domes and closed roofs are 0.",
     "unscaledFactors": ["weather"],
+    "_comment_formShrink": "2026-11-02: form = (QB Y/A - league) x attempts, now weighted attempts / (attempts + formShrinkAttempts). At 150 a full-season starter (~300 att) counts 2/3, a two-game backup (80 att) about 1/3.",
+    "formShrinkAttempts": 150,
     "weather": {
       "windThresholdMph": 5,
       "yardsPerMphOver": 0.75,

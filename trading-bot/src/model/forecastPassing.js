@@ -70,6 +70,10 @@ async function buildPassingContext(season, week) {
   );
 
   let lYds = 0, lAtt = 0;
+  // Each team's most recent game week on record -- a receiver who did not play
+  // in it has already been missing, and the injury factor must not count him.
+  const teamLastWeek = new Map();
+  for (const r of rows) if (r.week > (teamLastWeek.get(r.team) || 0)) teamLastWeek.set(r.team, r.week);
   const def = new Map();     // defense -> {yds, att}
   const qb = new Map();      // player_id -> {yds, att, games, last3:[{week,yds,att}]}
   const wr = new Map();      // team -> Map(player_id -> {name, ts, week})
@@ -130,7 +134,7 @@ async function buildPassingContext(season, week) {
       const s = inj.get(r.team) || new Set(); s.add(r.gsis_id); inj.set(r.team, s);
     }
   }
-  return { leagueYA, def, qb, wr, inj, status, lastStarter, starters, season, week };
+  return { leagueYA, def, qb, wr, inj, status, lastStarter, starters, season, week, teamLastWeek };
 }
 
 /**
@@ -198,7 +202,12 @@ function computeFactors(game, playerId, team, opp, ctx) {
   // FORM -- QB trailing Y/A vs league, in yards over expected volume.
   let formPts = 0, formConf = 0;
   if (form && form.att >= minAtt) {
-    formPts = (form.yds / form.att - leagueYA) * expAtt;
+    // SHRUNK toward the league by sample size: attempts / (attempts + k). An
+    // 80-attempt backup (Tanner McKee, 2026-10) counted at full strength read two
+    // games as a settled rate and priced him ~5 yds under every week.
+    const k = Number(pm.formShrinkAttempts) || 0;
+    const shrink = k > 0 ? form.att / (form.att + k) : 1;
+    formPts = (form.yds / form.att - leagueYA) * expAtt * shrink;
     formConf = Math.min(1, form.att / 100);
   }
 
@@ -235,8 +244,19 @@ function computeFactors(game, playerId, team, opp, ctx) {
   // Prior only (untested in the backtest), so low confidence.
   const out = ctx.inj.get(team);
   const roster = ctx.wr.get(team);
+  // NEW absences only: a receiver Out this week who ALSO missed the team's most
+  // recent game is already in the QB's recent numbers and in the market price.
+  // Counting him again priced McKee ~9 yds under in week 8 for DeVonta Smith and
+  // Dontayvion Wicks, out since week 7 (2026-11-02).
+  const lastWk = ctx.teamLastWeek ? ctx.teamLastWeek.get(team) : null;
   let lostTs = 0;
-  if (out && roster) for (const [pid, v] of roster) if (out.has(pid)) lostTs += (v.ts || 0);
+  const lostNames = [];
+  if (out && roster) for (const [pid, v] of roster) {
+    if (!out.has(pid)) continue;
+    if (lastWk != null && v.week < lastWk) continue;
+    lostTs += (v.ts || 0);
+    lostNames.push(v.name);
+  }
   const injuryPts = -(lostTs * expAtt * leagueYA * (pm.injuryPassThrough || 0.5));
   const injuryConf = lostTs > 0 ? 0.3 : 0;
 
@@ -251,12 +271,12 @@ function computeFactors(game, playerId, team, opp, ctx) {
   }
 
   return {
-    form: { points: formPts, confidence: formConf, detail: { expAtt, trailingAtt: form ? form.att : 0, trailingYA: form && form.att ? +(form.yds / form.att).toFixed(2) : null, leagueYA: +leagueYA.toFixed(2) } },
+    form: { points: formPts, confidence: formConf, detail: { shrinkAttempts: Number(pm.formShrinkAttempts) || 0, expAtt, trailingAtt: form ? form.att : 0, trailingYA: form && form.att ? +(form.yds / form.att).toFixed(2) : null, leagueYA: +leagueYA.toFixed(2) } },
     matchup: { points: matchupPts, confidence: matchupConf, detail: { opp, oppAtt: d ? d.att : 0, oppYAallowed: d && d.att ? +(d.yds / d.att).toFixed(2) : null } },
     weather: { points: weatherPts, confidence: weatherConf,
                detail: { wind, dome, precipProb: Number.isFinite(pp) ? pp : null, tempF: Number.isFinite(tempF) ? tempF : null,
                          snow, windYds: +windYds.toFixed(1), precipYds: +precipYds.toFixed(1) } },
-    injury: { points: injuryPts, confidence: injuryConf, detail: { lostTargetShare: +lostTs.toFixed(3) } },
+    injury: { points: injuryPts, confidence: injuryConf, detail: { lostTargetShare: +lostTs.toFixed(3), newlyOut: lostNames } },
     script: { points: scriptPts, confidence: scriptConf, detail: { teamSpread: Number.isFinite(spread) ? (team === game.home_team ? spread : -spread) : null } },
     expAtt,
   };
