@@ -18,12 +18,13 @@
     "_comment": "UNCALIBRATED: weights follow the user's order of importance (injury > momentum > rest/travel > primetime > style), not a fit -- there is no NBA closing-line history yet. Every factor is in POINTS OF HOME MARGIN; points sum, then convert to a probability once through sigmaMarginPts.",
     "sigmaMarginPts": 12.5,
     "deltaCap": 0.1,
+    "_comment_weights_2026_11_02": "Calibrated on 1,088 2025-26 games vs the Polymarket tip price: no factor beat the market (all |t| < 0.6). Momentum fit at 0.08 of its points (was weighted 0.25, trimmed to 0.10); style pointed the wrong way (-0.57), set to 0. Heavier weights (x1.5, x2) made the model LESS accurate than the market. Injury is not backtestable (no historical ESPN reports) and stays at the user setting of 0.35.",
     "weights": {
       "injury": 0.35,
-      "momentum": 0.25,
+      "momentum": 0.1,
       "rest": 0.2,
       "primetime": 0.1,
-      "style": 0.1
+      "style": 0
     },
     "injury": {
       "_comment": "Counts CHANGES the market may not have absorbed: impact x (availability now - availability over the last recentGames) x freshness. freshnessHalfLifeHours=2: a status that changed 2h ago counts half, 6h ago an eighth -- the line has moved on it by then. A player out for weeks counts nothing (he was out lately too). returnFreshness is the share credited to a player BACK after missing games, whose return time ESPN does not stamp.",
@@ -115,7 +116,8 @@
     "_comment_stopLoss": "OFF (user, 2026-11-01): no stop-loss on moneyline winners, same as Adam-7 since 2026-10-11 -- on the NFL replay the trigger print gapped far below the floor and comebacks cost more than the stops saved.",
     "exitStopLossEnabled": false,
     "exitStopLossMaxLossPct": 0.85,
-    "minEdge": 0.015,
+    "_comment_minEdge": "0.01 (user, 2026-11-02): more paper trades while hidden. Backtest at current weights: 652 trades at 1c vs 456 at 1.5c, about the same return (+3.8% vs +3.6% per $ at the tip mid, before ~1c of spread). On 2026-11-02 it would have taken 4 of 15 games.",
+    "minEdge": 0.01,
     "kellyFraction": 0.25,
     "sizingMode": "flat",
     "flatPositionPctNav": 0.07,
