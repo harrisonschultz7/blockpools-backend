@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // trading-bot/run/record-books-nba.js
 //
-// Axis-3's depth recorder daemon: NBA moneyline books, plus the exit/stop
+// The NBA depth recorder daemon: moneyline books, plus each NBA bot's exit/stop
 // sweep against each book just written (an in-play spike through a resting
 // sell is only seen if something is watching every poll -- the 5-minute tick
 // would miss it). Same shape as run/record-books.js for Adam-7.
@@ -21,6 +21,10 @@ const espn = require("../src/ingest/espnNba");
 const pm = require("../src/ingest/polymarketNba");
 const log = require("../src/log");
 
+// Every NBA bot. One recorder, because the books are the same; the sweep runs
+// under each bot's own config, since sweepFills reads its policy from cfg().
+const NBA_CONFIGS = ["config.axis-3.json", "config.bain-3.json"];
+
 let stopping = false;
 process.on("SIGTERM", () => { log("SIGTERM -- finishing tick then exiting"); stopping = true; });
 process.on("SIGINT",  () => { log("SIGINT -- finishing tick then exiting");  stopping = true; });
@@ -38,15 +42,19 @@ async function main() {
         await pm.mapNbaMarkets(await pm.fetchNbaMarkets());
         lastDiscovery = Date.now();
       }
-      await pm.recordNbaBooks(c.botId);
+      await pm.recordNbaBooks();
     } catch (e) {
       log.err(`nba recorder tick failed: ${e.message}`);
     }
 
-    try {
-      const res = await sweepFills(c.botId);
-      if (res && res.filled) log(`  sweep: ${res.filled} exit(s) filled`);
-    } catch (e) { log.err(`nba exit sweep: ${e.message}`); }
+    for (const file of NBA_CONFIGS) {
+      try {
+        selectConfig(file);
+        const res = await sweepFills(cfg().botId);
+        if (res && res.filled) log(`  sweep ${cfg().botId}: ${res.filled} exit(s) filled`);
+      } catch (e) { log.err(`nba exit sweep ${file}: ${e.message}`); }
+    }
+    selectConfig(process.env.TRADING_BOT_CONFIG || "config.axis-3.json");
 
     // Fast near tip, or while Axis-3 holds a position in a live game.
     const { rows } = await q(

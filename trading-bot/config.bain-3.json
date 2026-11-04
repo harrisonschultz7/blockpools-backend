@@ -1,0 +1,172 @@
+{
+  "_comment": "Bain-3: the HIGHER-RISK NBA game-winner model (Axis-3 is the selective one). It forms its own price from opponent-adjusted team ratings and moves toward it, so it disagrees with the market on most games. PAPER, HIDDEN. Created 2026-11-04.",
+  "botId": "bain-3",
+  "botName": "Bain-3",
+  "league": "NBA",
+  "riskTier": "high",
+  "mode": "paper",
+  "modelVersion": "bain-nba-v1",
+  "hidden": true,
+  "_comment_hidden": "Off every public surface (GET /api/bots, copy subscribe, model alerts) while it paper trades. Flip to false and deploy the backend to show it.",
+  "marketScopeLabel": "Game Markets",
+  "description": "A proprietary BlockPools prediction model for NBA game markets. It builds its own price for every game from how each offense matches up with the defense it faces, and takes a position where it disagrees with the market.",
+  "reporting": {
+    "_comment": "NBA plays every day, so ROI and selectivity are reported per Monday-Sunday week (US-Eastern), not per NFL week.",
+    "period": "isoWeek"
+  },
+  "model": {
+    "_comment": "Weights by user decision (2026-11-04), deliberately NOT backtested: matchup first, because a late scratch is usually repriced before a 5-minute tick can act. matchup is a DISAGREEMENT (rating margin minus implied margin), so its weight is how far the model moves toward its own number. Judge it on closing-line value.",
+    "sigmaMarginPts": 12.5,
+    "deltaCap": 0.12,
+    "weights": {
+      "matchup": 0.45,
+      "style": 0.15,
+      "injury": 0.2,
+      "rest": 0.1,
+      "momentum": 0.05,
+      "primetime": 0.05
+    },
+    "injury": {
+      "_comment": "Counts CHANGES the market may not have absorbed: impact x (availability now - availability over the last recentGames) x freshness. freshnessHalfLifeHours=2: a status that changed 2h ago counts half, 6h ago an eighth -- the line has moved on it by then. A player out for weeks counts nothing (he was out lately too). returnFreshness is the share credited to a player BACK after missing games, whose return time ESPN does not stamp.",
+      "lookbackGames": 30,
+      "recentGames": 5,
+      "freshnessHalfLifeHours": 2,
+      "returnFreshness": 0.4,
+      "replacementMpg": 16,
+      "per48PerMpg": 0.4,
+      "pmShrinkMinutes": 600,
+      "shrinkGamesWithout": 6,
+      "measuredMinMpg": 20,
+      "maxPlayerPts": 8,
+      "minImpactPts": 0.4,
+      "maxSwingPts": 10,
+      "maxFeedAgeMinutes": 30,
+      "statusMultiplier": {
+        "_comment": "Probability he SITS. ESPN's fantasy status: OUT, OFS (out for season), GTD (game-time decision). The others are the NBA report's own words, kept in case ESPN surfaces them.",
+        "OUT": 1,
+        "OFS": 1,
+        "DOUBTFUL": 0.8,
+        "GTD": 0.5,
+        "QUESTIONABLE": 0.5,
+        "DAY-TO-DAY": 0.4,
+        "PROBABLE": 0.1,
+        "default": 0.5
+      }
+    },
+    "momentum": {
+      "_comment": "Win streaks plus recent margin (exp-weighted, halfLifeGames) against season margin, current season only. shrinkGames damps the early season, when 'recent' and 'season' are the same handful of games.",
+      "streakPtsPerGame": 0.35,
+      "maxStreak": 6,
+      "formGames": 10,
+      "halfLifeGames": 4,
+      "formWeight": 0.3,
+      "shrinkGames": 8,
+      "fullConfidenceGames": 8,
+      "maxSwingPts": 5
+    },
+    "rest": {
+      "_comment": "Second night of a back-to-back is the big one (~2 pts). Travel from the previous game's arena; eastward time zones only bite on a back-to-back.",
+      "backToBackPts": -2,
+      "threeInFourPts": -0.8,
+      "restAdvantagePtsPerDay": 0.4,
+      "travelPtsPer1000Miles": -0.5,
+      "maxTravelPts": -1.5,
+      "eastwardB2bPtsPerHour": -0.35,
+      "maxSwingPts": 5
+    },
+    "primetime": {
+      "_comment": "ESPN / ABC / NBC / Prime / TNT national games (NBA TV excluded): the better team (by season margin) gets betterTeamPts, the home side homeCrowdPts.",
+      "betterTeamPts": 0.6,
+      "homeCrowdPts": 0.3
+    },
+    "style": {
+      "_comment": "Variance, not quality: factor = sqrt(poss/league) / (1 + k x (3PA rate - league)); points = implied margin x (factor - 1). Fast inside games favour the favourite, slow three-point games the underdog.",
+      "games": 15,
+      "minGames": 4,
+      "threePointVarianceK": 1.5,
+      "maxSwingPts": 1.5,
+      "ptsPerInteraction": 0.4,
+      "maxMismatchPts": 3
+    },
+    "confidence": {
+      "minToTrade": 0.45,
+      "staleBookSeconds": 300
+    },
+    "risk": {
+      "concurrentCorrelation": 0,
+      "observedLookbackDays": 60,
+      "roundsPerWeek": 5,
+      "_comment_rounds": "NBA recycles the book most days of the week (configs/risk note in config.json): 5, not NFL's 1.",
+      "minWeeksForObservedBasis": 4
+    },
+    "ratings": {
+      "_comment": "Current-season games decay by age (halfLifeDays). Last season counts only lightly (priorSeasonWeight) because rosters move. shrinkGames pulls every rating toward the league. homeCourtPts is both the adjustment removed from ratings and the edge added back for the home side.",
+      "halfLifeDays": 60,
+      "priorSeasonWeight": 0.06,
+      "shrinkGames": 6,
+      "homeCourtPts": 2.5,
+      "iterations": 12,
+      "cacheHours": 6
+    },
+    "matchup": {
+      "_comment": "maxGapPts is a rail against broken inputs, not a limit on disagreeing. fullConfidenceGames scales confidence early in the season.",
+      "maxGapPts": 10,
+      "fullConfidenceGames": 10
+    }
+  },
+  "policy": {
+    "_comment": "Axis-3's exits and windows. Higher risk comes from trading more games, not bigger bets: still 7% a position, with a higher ceiling on open exposure.",
+    "pregameOnly": true,
+    "evaluationMode": "rolling",
+    "priceWindowHoursBeforeTip": 2,
+    "openWindowHoursBeforeKickoff": 0.75,
+    "closeWindowMinutesBeforeKickoff": 5,
+    "exitAtFairValue": true,
+    "holdFavoritesToSettlement": true,
+    "holdToSettlementMinPrice": 0.75,
+    "_comment_holdToSettlementMinPrice": "2026-11-02 (user): only positions bought at 0.75+ hold to settlement. Below that, favourites get a resting exit at fair value + the volatility premium (exitVolatilityAlphaLogit), the same as underdogs and Argo-7 totals. Was effectively 0.50, which held every favourite.",
+    "exitBufferCents": 0.005,
+    "exitHoldThroughKickoff": true,
+    "exitVolatilityAlphaLogit": 0.45,
+    "exitInPlayMaxPrice": 0.97,
+    "_comment_stopLoss": "OFF (user, 2026-11-01): no stop-loss on moneyline winners, same as Adam-7 since 2026-10-11 -- on the NFL replay the trigger print gapped far below the floor and comebacks cost more than the stops saved.",
+    "exitStopLossEnabled": false,
+    "exitStopLossMaxLossPct": 0.85,
+    "_comment_minEdge": "1.5c. This model disagrees by more than Axis-3, so it does not need Axis-3's 1c bar to trade often.",
+    "minEdge": 0.015,
+    "kellyFraction": 0.25,
+    "sizingMode": "flat",
+    "flatPositionPctNav": 0.07,
+    "maxPositionPctNav": 0.07,
+    "maxGameExposurePctNav": 0.07,
+    "maxOpenExposurePctNav": 0.8,
+    "minPrice": 0.05,
+    "maxPrice": 0.95,
+    "minBookDepthUsd": 50,
+    "maxSlippageCents": 0.01,
+    "freshStatusVetoMinutes": 75,
+    "freshStatusVetoMinImpactPts": 1.5,
+    "_comment_veto": "Never buy a team that lost a real player (1.5+ pts of impact) in the last 75 minutes. Ratings cannot see a scratch."
+  },
+  "paper": {
+    "startingNavUsd": 10000,
+    "walkRealDepth": true,
+    "assumeTakerFeeBps": 0
+  },
+  "ingest": {
+    "pmNbaTagId": 745,
+    "recordWindowHours": 30,
+    "bookPollSeconds": 60,
+    "bookPollSecondsNearKickoff": 20,
+    "nearKickoffHours": 3,
+    "bookLevelsStored": 5,
+    "bookHeartbeatSeconds": 600,
+    "bookCompareLevels": 4,
+    "bookSizeTolerancePct": 0.1,
+    "midWindowHours": 24,
+    "farPollSeconds": 600,
+    "scheduleDaysAhead": 2,
+    "historyStart": "2025-10-01",
+    "skipRefresh": true
+  }
+}

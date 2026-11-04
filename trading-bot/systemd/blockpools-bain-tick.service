@@ -1,0 +1,16 @@
+[Unit]
+Description=BlockPools Bain-3 -- NBA matchup-model forecast + paper trade tick
+After=network-online.target
+
+[Service]
+# PATH NOTE: WorkingDirectory/User MUST match the existing backend unit.
+# Confirm with:  systemctl cat blockpools-backend.service
+Type=oneshot
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+# run/tick-nba.js defaults to Axis-3, so this env var is what makes it Bain-3.
+Environment=TRADING_BOT_CONFIG=config.bain-3.json
+ExecStart=/usr/bin/node trading-bot/run/tick-nba.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-bain-tick

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // trading-bot/run/tick-nba.js
 //
-// Axis-3 -- one decision pass over NBA games about to tip.
+// Axis-3 / Bain-3 -- one decision pass over NBA games about to tip. The config
+// picks the bot (TRADING_BOT_CONFIG, set per systemd unit).
 //
 //   refresh ESPN (today's board, injury report, new box scores)
 //   -> forecast every game inside the 2h PRICING window
@@ -22,6 +23,7 @@ const { q, close } = require("../src/db");
 const log = require("../src/log");
 const espn = require("../src/ingest/espnNba");
 const { loadNbaContext } = require("../src/features/nba/context");
+const { loadRatings } = require("../src/features/nba/ratings");
 const { forecastNbaGame } = require("../src/model/forecastNba");
 const { saveForecast } = require("../src/model/forecast");
 const { decide } = require("../src/policy/medium");
@@ -80,7 +82,9 @@ async function main() {
   const now = new Date();
   const asOf = now.toISOString();
   if (!DRY) await ensureBot(c);
-  await refreshData(c, now);
+  // One bot refreshes ESPN; a second would only double the calls. Bain-3 reads what
+  // Axis-3's tick wrote, and a stale feed lowers its injury confidence as usual.
+  if (!c.ingest.skipRefresh) await refreshData(c, now);
 
   // Games inside the PRICING window with a mapped, open market.
   const { rows: games } = await q(
@@ -99,6 +103,7 @@ async function main() {
   if (games.length) {
     const teams = [...new Set(games.flatMap((g) => [g.home_team, g.away_team]))];
     const ctx = await loadNbaContext(teams, asOf);
+    if ((c.model.weights.matchup ?? 0) > 0) ctx.ratings = await loadRatings(asOf);
     const nav = await currentNav(c.botId);
     const { rows: ex } = await q(
       `select coalesce(sum(notional_usd), 0) v from bots.trades where bot_id = $1 and settled = false`, [c.botId]);
@@ -121,10 +126,20 @@ async function main() {
 
       const { rows: held } = await q(
         `select 1 from bots.positions where bot_id = $1 and game_id = $2 and shares > 0`, [c.botId, game.game_id]);
-      const decision = decide({
+      let decision = decide({
         forecast, game, books: bySide, nav, existingPosition: held.length > 0,
         openExposureUsd: openExposure, now,
       });
+      // SAFETY CHECK (Bain-3). Team ratings cannot see a scratch, so a big "edge" on
+      // a team that just lost a real player is usually the model being late, not
+      // right. Never buy that side while the news is fresh.
+      const vetoMin = Number(c.policy.freshStatusVetoMinutes) || 0;
+      if (vetoMin > 0 && decision.acted) {
+        const hit = (forecast.inputs.detail.injury[decision.side] || []).find((x) => x.pts < 0
+          && x.ageHours !== null && x.ageHours * 60 <= vetoMin
+          && x.impact >= c.policy.freshStatusVetoMinImpactPts);
+        if (hit) decision = { acted: false, skip_reason: "fresh_injury_veto", edge: decision.edge, side: decision.side };
+      }
       const inp = forecast.inputs;
       const line = `mkt ${(forecast.p_market * 100).toFixed(1)}% fair ${(forecast.p_fair * 100).toFixed(1)}% ` +
         `(${inp.impliedMarginPts >= 0 ? "+" : ""}${inp.impliedMarginPts} -> ${inp.modelMarginPts >= 0 ? "+" : ""}${inp.modelMarginPts} pts, conf ${forecast.confidence.toFixed(2)})`;

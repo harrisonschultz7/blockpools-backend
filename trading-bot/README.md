@@ -636,3 +636,41 @@ and `/api/bots` join `sports.bot_games` (NFL ∪ NBA) instead of
     sudo cp trading-bot/systemd/blockpools-axis-* /etc/systemd/system/
     sudo systemctl daemon-reload
     sudo systemctl enable --now blockpools-axis-recorder blockpools-axis-tick.timer
+
+---
+
+# Bain-3 — NBA game winners, higher risk (added 2026-11-04)
+
+PAPER, HIDDEN (`config.bain-3.json`). Axis-3 is the selective NBA model; Bain-3
+takes a stance on most games. Same tick (`run/tick-nba.js`, selected by
+`TRADING_BOT_CONFIG`), same recorder, data, exits and settlement.
+
+**Price.** Opponent-adjusted team ratings from box scores
+(`src/features/nba/ratings.js`) give a rating margin. `matchup` points are that
+margin minus the margin the market implies, so the 0.45 weight means "move 45%
+of the way to our own number", capped by `deltaCap`. Adding raw team strength to
+the market instead would double-count it and just back the better team.
+
+**Weights** (user decision, deliberately not backtested): matchup 0.45, style
+0.15, injury 0.20, rest 0.10, momentum 0.05, primetime 0.05. Judge on closing-line
+value.
+
+**Style** is box-score mismatch (3PA rate, free throws, offensive rebounds,
+turnovers: offense x what the opponent allows), plus Axis-3's variance effect. It
+is not true scheme: ESPN publishes no coverages or play types.
+
+**Safety check.** Never buy a team that lost a player worth 1.5+ points in the
+last 75 minutes (`fresh_injury_veto`): ratings cannot see a scratch.
+
+**Egress.** Ratings read ~3,000 aggregate rows at most every 6 hours, cached in
+the OS temp dir. Bain-3's tick does not refresh ESPN (`ingest.skipRefresh`); it
+reads what Axis-3's tick wrote, so **Axis-3's timer must stay on**.
+
+## Deploy
+
+    git pull
+    sudo cp trading-bot/systemd/blockpools-bain-* /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl restart blockpools-axis-recorder     # now sweeps both bots
+    TRADING_BOT_CONFIG=config.bain-3.json node trading-bot/run/tick-nba.js --dry
+    sudo systemctl enable --now blockpools-bain-tick.timer

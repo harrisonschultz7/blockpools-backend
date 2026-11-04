@@ -87,22 +87,23 @@ async function mapNbaMarkets(markets) {
 
 /**
  * One snapshot of every NBA book worth recording: games inside the record
- * window, plus any game this bot still has a resting order on (exits ride
- * through tip-off, and an unrecorded in-play book can never fill them).
+ * window, plus any game an NBA bot still has a resting order on (exits ride
+ * through tip-off, and an unrecorded in-play book can never fill them). One
+ * recorder serves Axis-3 and Bain-3.
  */
-async function recordNbaBooks(botId) {
+async function recordNbaBooks() {
   const c = cfg();
   const { rows: markets } = await q(
     `select distinct m.condition_id, m.game_id, m.home_token_id, m.away_token_id, g.kickoff
        from sports.pm_markets m
        join sports.nba_games g on g.game_id = m.game_id
        left join bots.limit_orders o
-              on o.game_id = m.game_id and o.status = 'open' and o.bot_id = $2
+              on o.game_id = m.game_id and o.status = 'open'
       where m.closed = false and m.home_token_id is not null and g.home_score is null
         and (g.kickoff between now() - interval '4 hours' and now() + ($1 || ' hours')::interval
              or (o.id is not null and g.kickoff > now() - interval '8 hours'))
       order by g.kickoff`,
-    [String(c.ingest.recordWindowHours), botId]);
+    [String(c.ingest.recordWindowHours)]);
 
   const { due } = dueMarkets(markets);
   const out = [];

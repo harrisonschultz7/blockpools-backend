@@ -26,8 +26,10 @@ const { normCdf, normInv } = require("./forecastTotals");
 const {
   injurySignal, momentumSignal, restSignal, primetimeSignal, styleSignal,
 } = require("../features/nba/factors");
+const { matchupSignal, styleMismatchSignal } = require("../features/nba/ratings");
 
-const FACTORS = ["injury", "momentum", "rest", "primetime", "style"];
+// matchup is Bain-3's: Axis-3 has no weight on it and never reads ratings.
+const FACTORS = ["matchup", "injury", "momentum", "rest", "primetime", "style"];
 
 async function forecastNbaGame(game, books, asOf, ctx) {
   const m = cfg().model;
@@ -38,12 +40,20 @@ async function forecastNbaGame(game, books, asOf, ctx) {
   const p = Math.min(0.995, Math.max(0.005, p_market));
   const implied = sigma * normInv(p);
 
+  const hasRatings = (m.weights.matchup ?? 0) > 0;
+  const variance = styleSignal(game, ctx, implied);
+  const mismatch = hasRatings ? styleMismatchSignal(game, ctx) : null;
   const raw = {
+    matchup: hasRatings ? matchupSignal(game, ctx, implied) : { pts: 0, confidence: 1, detail: null },
     injury: injurySignal(game, ctx, now),
     momentum: momentumSignal(game, ctx),
     rest: restSignal(game, ctx),
     primetime: primetimeSignal(game, ctx),
-    style: styleSignal(game, ctx, implied),
+    // Bain-3 adds the offense-vs-defense style interaction to the variance effect.
+    style: mismatch
+      ? { pts: variance.pts + mismatch.pts, confidence: mismatch.confidence,
+          detail: { variance: variance.detail, mismatch: mismatch.detail } }
+      : variance,
   };
 
   let pts = 0;
@@ -72,9 +82,9 @@ async function forecastNbaGame(game, books, asOf, ctx) {
     f_injury: contrib.injury.weighted,
     f_momentum: contrib.momentum.weighted,
     f_situational: +(contrib.rest.weighted + contrib.primetime.weighted).toFixed(3),
-    f_matchup: contrib.style.weighted,
+    f_matchup: +(contrib.matchup.weighted + contrib.style.weighted).toFixed(3),
     inputs: {
-      model: "axis-nba-v1",
+      model: cfg().modelVersion,
       impliedMarginPts: +implied.toFixed(2),
       modelMarginPts: +(implied + pts).toFixed(2),
       factorPts: +pts.toFixed(3),

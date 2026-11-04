@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Bain-3 NBA tick every 5 minutes
+
+[Timer]
+# 5 minutes, not 15: Axis-3 trades only in the last 45 minutes before tip, so a
+# 15-minute timer would give a game three looks. Each tick refreshes ESPN's
+# injury report first, so a late scratch is priced within ~5 minutes.
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
