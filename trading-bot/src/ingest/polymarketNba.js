@@ -86,10 +86,12 @@ async function mapNbaMarkets(markets) {
 }
 
 /**
- * One snapshot of every NBA book worth recording: games inside the record
- * window, plus any game an NBA bot still has a resting order on (exits ride
- * through tip-off, and an unrecorded in-play book can never fill them). One
- * recorder serves Axis-3 and Bain-3.
+ * One snapshot of every NBA book worth recording: games inside the record window
+ * before tip, plus any game an NBA bot still has a resting order or a position on
+ * (exits ride through tip-off, an unrecorded in-play book can never fill them, and
+ * NAV marks an open position to it). Nothing else in play: both bots price from 2h
+ * before tip and trade from 45 minutes, so a game nobody holds has no use for it
+ * (2026-11-04, Supabase storage). One recorder serves Axis-3 and Bain-3.
  */
 async function recordNbaBooks() {
   const c = cfg();
@@ -97,11 +99,11 @@ async function recordNbaBooks() {
     `select distinct m.condition_id, m.game_id, m.home_token_id, m.away_token_id, g.kickoff
        from sports.pm_markets m
        join sports.nba_games g on g.game_id = m.game_id
-       left join bots.limit_orders o
-              on o.game_id = m.game_id and o.status = 'open'
       where m.closed = false and m.home_token_id is not null and g.home_score is null
-        and (g.kickoff between now() - interval '4 hours' and now() + ($1 || ' hours')::interval
-             or (o.id is not null and g.kickoff > now() - interval '8 hours'))
+        and (g.kickoff between now() and now() + ($1 || ' hours')::interval
+             or (g.kickoff > now() - interval '8 hours' and g.kickoff <= now() and (
+                   exists (select 1 from bots.limit_orders o where o.game_id = m.game_id and o.status = 'open')
+                or exists (select 1 from bots.positions p where p.game_id = m.game_id and p.shares > 0))))
       order by g.kickoff`,
     [String(c.ingest.recordWindowHours)]);
 

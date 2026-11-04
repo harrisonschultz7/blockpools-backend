@@ -155,7 +155,8 @@
   },
   "ingest": {
     "pmNbaTagId": 745,
-    "recordWindowHours": 30,
+    "_comment_recordWindow": "3h (was 30h, 2026-11-04): pricing starts 2h before tip, so earlier books were never read. 25,000+ rows a slate were written before the first tip.",
+    "recordWindowHours": 3,
     "bookPollSeconds": 60,
     "bookPollSecondsNearKickoff": 20,
     "nearKickoffHours": 3,

@@ -74,13 +74,13 @@ async function main() {
            and not exists (select 1 from sports.pm_passing_markets m
                             where o.token_id in (m.over_token_id, m.under_token_id))`,
     );
-    // NBA (Axis-3): same rule, once the closing price is safely on the game row
-    // (nba_games.closing_home_mid -- the calibration set). A day's grace either
-    // way, so an exit riding a late final is never left without a book.
+    // NBA: same rule, once the closing price is safely on the game row
+    // (nba_games.closing_home_mid -- the calibration set). Five hours after tip is
+    // this morning's run for last night's slate; a final has nothing left to fill.
     const nba = await q(
       `delete from sports.odds_history o using sports.nba_games g
          where g.game_id = o.game_id and g.home_score is not null
-           and g.kickoff < now() - interval '1 day'
+           and g.kickoff < now() - interval '5 hours'
            and (g.closing_home_mid is not null or g.kickoff < now() - interval '3 days')`,
     ).catch((e) => { log.warn(`nba book prune: ${e.message}`); return { rowCount: 0 }; });
     oh.rowCount += nba.rowCount;
