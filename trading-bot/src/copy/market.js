@@ -172,10 +172,10 @@ async function heldShares(tradingWallet, conditionId, tokenId) {
   const bal = await ethCall(CTF, data);
   if (bal !== null) return Number(bal) / 1e6;
   try {
-    const list = await getJson(
-      `${DATA_API}/positions?user=${tradingWallet}&market=${conditionId}&sizeThreshold=0`);
-    const p = (Array.isArray(list) ? list : []).find((x) => String(x.asset) === String(tokenId));
-    return p ? Number(p.size) || 0 : 0;
+    const page = await getJson(
+      `${DATA_API}/v2/positions?user=${tradingWallet}&condition=${conditionId}&filter_amount=0`);
+    const p = (page?.data || []).find((x) => String(x.token_id) === String(tokenId));
+    return p ? Number(p.current_size) || 0 : 0;
   } catch (e) {
     log.warn(`copy: position read failed: ${e.message}`);
     return null;

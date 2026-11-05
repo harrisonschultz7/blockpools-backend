@@ -162,13 +162,15 @@ export async function walletValueSeries(wallet: string) {
 
   // Activity: every trade/redeem (their tx hashes mark trade money).
   const act: any[] = [];
-  for (let off = 0; off < 5000; off += 500) {
-    const page = await getJson(`${DATA_API}/activity?user=${w}&limit=500&offset=${off}`);
-    if (!Array.isArray(page)) break;
-    act.push(...page);
-    if (page.length < 500) break;
+  let cursor: string | null = null;
+  for (let n = 0; n < 10; n++) {
+    const page: any = await getJson(
+      `${DATA_API}/v2/activity?user=${w}&limit=500` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
+    act.push(...(page?.data || []));
+    cursor = page?.pagination?.next_cursor || null;
+    if (!cursor) break;
   }
-  const actTx = new Set(act.map((a) => String(a.transactionHash || "").toLowerCase()));
+  const actTx = new Set(act.map((a) => String(a.transaction_hash || "").toLowerCase()));
 
   // Deposits / withdrawals: net stable flow per transaction, trade txs excluded.
   const { rows: transfers } = await pool.query(
@@ -189,15 +191,15 @@ export async function walletValueSeries(wallet: string) {
   type Pos = { sh: number; cost: number; cond: string; oi: number };
   const pos = new Map<string, Pos>();
   for (const a of act.filter((x) => x.type === "TRADE").sort((x, y) => x.timestamp - y.timestamp)) {
-    const p = pos.get(a.asset) || { sh: 0, cost: 0, cond: a.conditionId, oi: Number(a.outcomeIndex) };
-    const size = Number(a.size), usdc = Number(a.usdcSize);
+    const p = pos.get(a.token_id) || { sh: 0, cost: 0, cond: a.condition_id, oi: Number(a.outcome_index) };
+    const size = Number(a.size), usdc = Number(a.usdc_size);
     if (String(a.side).toUpperCase() === "BUY") { p.sh += size; p.cost += usdc; }
     else {
       const basis = p.sh > 0 ? p.cost * Math.min(1, size / p.sh) : 0;
       events.push({ t: Number(a.timestamp), v: usdc - basis, kind: "result" });
       p.sh -= size; p.cost -= basis;
     }
-    pos.set(a.asset, p);
+    pos.set(a.token_id, p);
   }
   // What is still held: resolved markets settle at $1/$0; the rest is open, at cost.
   let openCost = 0;

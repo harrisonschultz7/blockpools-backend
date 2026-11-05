@@ -24,6 +24,7 @@ const { PrivyClient } = require("@privy-io/server-auth");
 const { q, pool } = require("../db");
 const log = require("../log");
 const { getPmClient } = require("../copy/pmClient");
+const mkt = require("../copy/market");
 
 /** Polymarket clears AT the start; give the clear time to finish first. */
 const DELAY_S = Number(process.env.LIMIT_CARRY_DELAY_S || 90);
@@ -88,10 +89,9 @@ async function heldShares(userId, marketId, tokenId) {
   const { rows } = await q(`select trading_address from public.users where id = $1`, [userId]);
   const wallet = rows[0]?.trading_address;
   if (!wallet) return null; // unknown -> let the exchange decide
-  const list = await getJson(
-    `https://data-api.polymarket.com/positions?user=${wallet}&market=${marketId}&sizeThreshold=0`);
-  const p = (Array.isArray(list) ? list : []).find((x) => String(x.asset) === String(tokenId));
-  return p ? Number(p.size) || 0 : 0;
+  // On-chain first, the venue feed only as a fallback: copy trading's read. A feed
+  // outage must not cost anyone their exit (v1 of the feed was retired 2026-11-02).
+  return mkt.heldShares(wallet, marketId, tokenId);
 }
 
 /** Claim the next due carry, or null. pending -> placing, atomically. */

@@ -376,15 +376,17 @@ const PRINT_CHECK_MS = 30_000;
 
 async function tradesFor(conditionId, takerOnly) {
   const out = [];
-  for (let off = 0; off < 3000; off += 500) {
+  let cursor = null;
+  for (let n = 0; n < 6; n++) {
     const r = await fetch(
-      `${DATA_API}/trades?market=${conditionId}&takerOnly=${takerOnly}&limit=500&offset=${off}`,
+      `${DATA_API}/v2/trades?condition=${conditionId}&taker_only=${takerOnly}&limit=500`
+        + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""),
       { headers: { accept: "application/json" } });
     if (!r.ok) throw new Error(`trades ${r.status}`);
     const page = await r.json();
-    if (!Array.isArray(page) || !page.length) break;
-    out.push(...page);
-    if (page.length < 500) break;
+    out.push(...(page?.data || []));
+    cursor = page?.pagination?.next_cursor;
+    if (!cursor) break;
   }
   return out;
 }
@@ -408,16 +410,16 @@ async function printedFill(o) {
   const limit = Number(o.limit_price);
   const since = Math.floor(new Date(o.created_at).getTime() / 1000);
   const tok = String(o.token_id);
-  const at = (t) => String(t.asset) === tok && Number(t.timestamp) >= since && Number(t.price) >= limit - 1e-9;
+  const at = (t) => String(t.token_id) === tok && Number(t.timestamp) >= since && Number(t.price) >= limit - 1e-9;
 
   const [takers, all] = await Promise.all([tradesFor(cid, true), tradesFor(cid, false)]);
   const perTx = new Map();
-  for (const t of takers) if (at(t)) perTx.set(t.transactionHash, { size: Number(t.size), taker: true });
+  for (const t of takers) if (at(t)) perTx.set(t.transaction_hash, { size: Number(t.size), taker: true });
   for (const t of all) {
     if (!at(t)) continue;
-    const cur = perTx.get(t.transactionHash);
+    const cur = perTx.get(t.transaction_hash);
     if (cur && cur.taker) continue;
-    if (!cur || Number(t.size) > cur.size) perTx.set(t.transactionHash, { size: Number(t.size), taker: false });
+    if (!cur || Number(t.size) > cur.size) perTx.set(t.transaction_hash, { size: Number(t.size), taker: false });
   }
   let traded = 0;
   for (const v of perTx.values()) traded += v.size;

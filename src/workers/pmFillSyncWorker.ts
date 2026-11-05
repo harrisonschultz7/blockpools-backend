@@ -157,19 +157,27 @@ async function gameFor(marketId: string, orders: Order[]): Promise<Game | null> 
 }
 
 async function tradesFor(wallet: string, marketId: string, since: number): Promise<Trade[]> {
-  const list = await getJson(
-    `${DATA_API}/activity?user=${wallet}&market=${marketId}&type=TRADE&limit=500&sortDirection=ASC`);
-  return (Array.isArray(list) ? list : [])
+  const list: any[] = [];
+  let cursor: string | null = null;
+  for (let n = 0; n < 6; n++) {
+    const page: any = await getJson(
+      `${DATA_API}/v2/activity?user=${wallet}&condition=${marketId}&type=TRADE&limit=500&sort_direction=ASC`
+        + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
+    list.push(...(page?.data || []));
+    cursor = page?.pagination?.next_cursor || null;
+    if (!cursor) break;
+  }
+  return list
     .filter((t: any) => String(t.type) === "TRADE" && Number(t.timestamp) >= since)
     .map((t: any) => ({
-      tx: String(t.transactionHash || "").toLowerCase(),
+      tx: String(t.transaction_hash || "").toLowerCase(),
       ts: Number(t.timestamp),
       side: String(t.side).toUpperCase() === "SELL" ? "sell" as const : "buy" as const,
-      asset: String(t.asset || ""),
-      outcomeIndex: Number(t.outcomeIndex),
+      asset: String(t.token_id || ""),
+      outcomeIndex: Number(t.outcome_index),
       price: Number(t.price),
       size: Number(t.size),
-      usdc: Number(t.usdcSize),
+      usdc: Number(t.usdc_size),
     }))
     .filter((t) => t.tx && t.size > 0 && t.price > 0)
     .sort((a, b) => a.ts - b.ts || a.tx.localeCompare(b.tx));
@@ -216,7 +224,7 @@ async function syncGroup(wallet: string, marketId: string, orders: Order[]) {
     filled.set(order.id, (filled.get(order.id) || 0) + take);
     if (!game || !owner) continue; // counted toward the order; cannot be written
 
-    // The feed's usdcSize is what actually moved, fees included: a buy's cash
+    // The feed's usdc_size is what actually moved, fees included: a buy's cash
     // out (notional + fees), a sell's cash in (notional - fees). A maker fill
     // pays none, so there it equals the notional.
     const taker = order.carried && t.ts <= order.created + CARRY_CROSS_S;
