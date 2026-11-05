@@ -94,6 +94,8 @@
       "concurrentCorrelation": 0,
       "observedLookbackDays": 60,
       "roundsPerWeek": 5,
+      "expectedWeeklyTurnover": 0.65,
+      "_comment_expectedTurnover": "About 9 trades a week at 7% (1-2 a night over 6 nights). Used only until 4 weeks of real fills exist, then observed turnover decides. At the current price and exit factors, Medium holds up to about 86% a week, roughly 12 trades.",
       "_comment_rounds": "NBA recycles the book most days of the week (configs/risk note in config.json): 5, not NFL's 1.",
       "minWeeksForObservedBasis": 4
     }

@@ -273,10 +273,20 @@ async function computeRiskTier(botId) {
   // turnover -- roundsPerWeek is how many times the book realistically recycles.
   // NFL is 1. A daily sport must say so, or it will be rated as though it traded
   // once a week.
+  //
+  // cap x rounds assumes the book is FULL every round. That is fair for a bot that
+  // trades most games and absurd for a selective one: Axis-3 (0-2 trades a night at
+  // 7%) read as 300% of NAV a week and rated High. expectedWeeklyTurnover is a
+  // stated estimate for the new-bot period ONLY: once minWeeks of real fills exist
+  // the observed figure replaces it, so a bot cannot keep a label it does not earn.
   const roundsPerWeek = Math.max(1, Number(cfg?.model?.risk?.roundsPerWeek) || 1);
-  const basisPct = useObserved ? turn.p90 : openCap * roundsPerWeek;
+  const expected = Number(cfg?.model?.risk?.expectedWeeklyTurnover);
+  const hasExpected = Number.isFinite(expected) && expected > 0;
+  const basisPct = useObserved ? turn.p90 : hasExpected ? expected : openCap * roundsPerWeek;
   const basis = useObserved
     ? `observed p90 weekly turnover over ${turn.weeks} weeks`
+    : hasExpected
+    ? `expected ${(100 * expected).toFixed(0)}% weekly turnover (only ${turn.weeks} weeks of history, need ${minWeeks})`
     : `cap ${(100 * openCap).toFixed(0)}% x ${roundsPerWeek} round(s)/wk ` +
       `(only ${turn.weeks} weeks of history, need ${minWeeks})`;
 
