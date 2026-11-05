@@ -115,6 +115,12 @@ function privyProvider(address) {
  * dropped on failure so a transient error does not poison the wallet for the
  * lifetime of the process.
  */
+const POLYGON_RPCS = [
+  process.env.POLYGON_RPC_URL,
+  "https://polygon-bor-rpc.publicnode.com",
+  "https://1rpc.io/matic",
+].filter(Boolean);
+
 const clients = new Map();
 
 async function getPmClient(eoaAddress) {
@@ -126,7 +132,7 @@ async function getPmClient(eoaAddress) {
   if (cached) return cached;
 
   const promise = (async () => {
-    const [{ createSecureClient, remoteBuilderSigning }, { signerFrom }, viem, chains] =
+    const [{ createSecureClient, remoteBuilderSigning, forkEnvironmentConfig }, { signerFrom }, viem, chains] =
       await Promise.all([
         import("@polymarket/client"),
         import("@polymarket/client/viem"),
@@ -140,14 +146,29 @@ async function getPmClient(eoaAddress) {
       transport: viem.custom(privyProvider(eoaAddress)),
     });
 
-    const client = await createSecureClient({
-      signer: signerFrom(walletClient),
-      apiKey: remoteBuilderSigning({ url: PM_SIGNING_URL }),
-    });
-
-    // Without approvals the first order fails at the exchange rather than here,
-    // which reads as a rejected trade instead of an unconfigured wallet.
-    const approvals = await client.fetchTradingApprovalsState();
+    // NOT the library's default RPC, polygon.drpc.org: since 2026-11-04 its free plan
+    // refuses batches over 10 calls with a 400 and the approvals check sends more, so
+    // any session built after a restart or for a new subscriber would fail. A client
+    // is bound to one RPC, so the next one gets a new client.
+    let client, approvals, lastErr;
+    for (const rpc of POLYGON_RPCS) {
+      try {
+        client = await createSecureClient({
+          environment: forkEnvironmentConfig({ name: "production", rpc }),
+          signer: signerFrom(walletClient),
+          apiKey: remoteBuilderSigning({ url: PM_SIGNING_URL }),
+        });
+        // Without approvals the first order fails at the exchange rather than here,
+        // which reads as a rejected trade instead of an unconfigured wallet.
+        approvals = await client.fetchTradingApprovalsState();
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        log.warn(`  copy: session via ${rpc} failed: ${e.message}`);
+      }
+    }
+    if (lastErr) throw lastErr;
     if (!approvals.isFullyApproved) {
       log(`  copy: setting trading approvals for ${eoaAddress.slice(0, 10)}…`);
       await client.setupTradingApprovals();
