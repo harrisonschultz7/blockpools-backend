@@ -23,6 +23,7 @@ const path = require("path");
 const { cfg } = require("../../config");
 const { q } = require("../../db");
 const { seasonFloor } = require("./context");
+const { rosterAdjustment } = require("./factors");
 
 const CACHE_PATH = path.join(os.tmpdir(), "bp-nba-ratings.json");
 const STYLE_KEYS = ["par3", "ftr", "oreb", "tov"];
@@ -183,7 +184,11 @@ function matchupSignal(game, ctx, impliedMargin) {
   const homePts = ((h.off + a.def - lg) * poss) / 100;
   const awayPts = ((a.off + h.def - lg) * poss) / 100;
   const hca = game.neutral_site ? 0 : cfg().model.ratings.homeCourtPts;
-  const margin = homePts - awayPts + hca;
+  // The ratings describe the teams that played those games, not tonight's lineups.
+  const cap = mc.maxRosterAdjPts;
+  const rosterH = rosterAdjustment(game.home_team, ctx), rosterA = rosterAdjustment(game.away_team, ctx);
+  const adjH = clamp(rosterH.pts, -cap, cap), adjA = clamp(rosterA.pts, -cap, cap);
+  const margin = homePts - awayPts + hca + adjH - adjA;
   const gap = margin - impliedMargin;
   return {
     pts: clamp(gap, -mc.maxGapPts, mc.maxGapPts),
@@ -191,6 +196,7 @@ function matchupSignal(game, ctx, impliedMargin) {
     detail: {
       ratingMargin: +margin.toFixed(2), impliedMargin: +impliedMargin.toFixed(2), gap: +gap.toFixed(2),
       railed: Math.abs(gap) > mc.maxGapPts, poss: +poss.toFixed(1),
+      roster: { homePts: +adjH.toFixed(2), awayPts: +adjA.toFixed(2), home: rosterH.moves, away: rosterA.moves },
       home: { off: h.off, def: h.def, pace: h.pace, games: h.currentGames },
       away: { off: a.off, def: a.def, pace: a.pace, games: a.currentGames },
     },

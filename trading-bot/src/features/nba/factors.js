@@ -69,38 +69,96 @@ function playerImpact(p, teamMargin, ic) {
   return prior;
 }
 
+/**
+ * Share of his team's recent games a player was available for. Games he is not
+ * listed in count as missed, but only since he joined (first_rn): games before he
+ * arrived are not absences. A coach's-decision DNP was available.
+ */
+function recentAvailability(p, ic) {
+  const firstRn = Number(p.first_rn);
+  const games = Math.min(ic.recentGames, firstRn > 0 ? firstRn : ic.recentGames);
+  const gp = Number(p.gp_recent), coach = Number(p.coach_recent), out = Number(p.out_recent);
+  const missing = Math.max(0, games - gp - coach - out);
+  return { availRecent: games > 0 ? (gp + coach) / games : 1, missing, games };
+}
+
+/**
+ * WHAT A TEAM'S RATING IS MISSING TONIGHT, in points. A rating is built from past
+ * games, so it holds each player in proportion to how much of that data he played
+ * in (rating_share). A player out tonight is still in that data, so the rating is
+ * too high by
+ *
+ *   impact x (chance he sits) x (share of the rating he is in)
+ *
+ * Duren: 60% of DET's rating while hamstrung. A correction for absences of any age;
+ * the injury factor separately prices how FRESH a change is.
+ *
+ * ABSENCES ONLY. The symmetric version, crediting healthy players the rating
+ * under-represents, added a median 3.6 pts to nearly every team on the 2026-11-04
+ * slate: last season's data makes all regulars look under-represented. New
+ * arrivals are left to their current-season games.
+ */
+function rosterAdjustment(team, ctx) {
+  const ic = cfg().model.injury;
+  const players = ctx.players[team] || [];
+  const games = ctx.games[team] || [];
+  const teamMargin = games.length
+    ? games.slice(0, ic.lookbackGames).reduce((s, g) => s + Number(g.margin), 0) / Math.min(games.length, ic.lookbackGames)
+    : 0;
+  const report = new Map((ctx.injuries[team] || []).filter((i) => !i.cleared_at).map((i) => [String(i.player_id), i]));
+  let pts = 0;
+  const moves = [];
+  for (const p of players) {
+    const impact = playerImpact(p, teamMargin, ic);
+    if (impact < ic.minImpactPts) continue;
+    const inj = report.get(String(p.player_id));
+    if (!inj) continue;
+    const mult = ic.statusMultiplier[String(inj.status).toUpperCase()] ?? ic.statusMultiplier.default;
+    const share = Number(p.rating_share) || 0;
+    const d = -impact * mult * share;
+    pts += d;
+    if (Math.abs(d) >= 0.1) moves.push({ player: p.player, impact: +impact.toFixed(2), share: +share.toFixed(2), status: inj.status, pts: +d.toFixed(2) });
+  }
+  return { pts, moves: moves.sort((a, b) => Math.abs(b.pts) - Math.abs(a.pts)).slice(0, 6) };
+}
+
 function teamInjuryPts(team, ctx, now, ic) {
   const players = ctx.players[team] || [];
   const games = ctx.games[team] || [];
   const teamMargin = games.length
     ? games.slice(0, ic.lookbackGames).reduce((s, g) => s + Number(g.margin), 0) / Math.min(games.length, ic.lookbackGames)
     : 0;
-  const report = new Map((ctx.injuries[team] || []).map((i) => [String(i.player_id), i]));
+  const all = ctx.injuries[team] || [];
+  const report = new Map(all.filter((i) => !i.cleared_at).map((i) => [String(i.player_id), i]));
+  const cleared = new Map(all.filter((i) => i.cleared_at).map((i) => [String(i.player_id), i]));
 
   let pts = 0;
   const moves = [];
   for (const p of players) {
     const impact = playerImpact(p, teamMargin, ic);
     if (impact < ic.minImpactPts) continue;
-    // Share of his recent games he was AVAILABLE for (injury/illness absences
-    // only -- see context.js `unavailable`).
-    const rowsRecent = Number(p.rows_recent);
-    const availRecent = rowsRecent > 0 ? 1 - Number(p.out_recent) / rowsRecent : 1;
+    const { availRecent, missing } = recentAvailability(p, ic);
     const inj = report.get(String(p.player_id));
     const mult = inj ? (ic.statusMultiplier[String(inj.status).toUpperCase()] ?? ic.statusMultiplier.default) : 0;
     const availNow = 1 - mult;
     const change = availNow - availRecent;
     if (Math.abs(change) < 0.05) continue;
 
-    // How new is this news? A status on the report: hours since IT changed. A
-    // return (off the report, but missing lately): unknown, so a fixed share.
+    // How new is this news? A status on the report: hours since IT changed. Cleared
+    // off the report: hours since THAT. A player absent from recent box scores with
+    // NO report either way is not a return: a waived or demoted player looks just
+    // like that, and crediting him is the false-return bug.
     let fresh;
     let ageH = null;
-    if (inj) {
-      ageH = (now.getTime() - new Date(inj.status_changed_at).getTime()) / 3_600_000;
+    const back = cleared.get(String(p.player_id));
+    if (inj || back) {
+      const at = inj ? inj.status_changed_at : back.cleared_at;
+      ageH = (now.getTime() - new Date(at).getTime()) / 3_600_000;
       fresh = Math.pow(0.5, Math.max(0, ageH) / ic.freshnessHalfLifeHours);
+    } else if (missing > 0) {
+      continue;
     } else {
-      fresh = ic.returnFreshness;
+      fresh = ic.returnFreshness;   // an injury DNP in the box, no report stamp
     }
     const d = impact * change * fresh;
     pts += d;
@@ -254,4 +312,7 @@ function styleSignal(game, ctx, impliedMargin) {
   };
 }
 
-module.exports = { injurySignal, momentumSignal, restSignal, primetimeSignal, styleSignal, playerImpact };
+module.exports = {
+  injurySignal, momentumSignal, restSignal, primetimeSignal, styleSignal, playerImpact,
+  recentAvailability, rosterAdjustment,
+};

@@ -30,6 +30,7 @@
       "_comment": "Counts CHANGES the market may not have absorbed: impact x (availability now - availability over the last recentGames) x freshness. freshnessHalfLifeHours=2: a status that changed 2h ago counts half, 6h ago an eighth -- the line has moved on it by then. A player out for weeks counts nothing (he was out lately too). returnFreshness is the share credited to a player BACK after missing games, whose return time ESPN does not stamp.",
       "lookbackGames": 30,
       "recentGames": 5,
+      "rotationGames": 15,
       "freshnessHalfLifeHours": 2,
       "returnFreshness": 0.4,
       "replacementMpg": 16,
@@ -111,6 +112,7 @@
     "matchup": {
       "_comment": "maxGapPts is a rail against broken inputs, not a limit on disagreeing. fullConfidenceGames scales confidence early in the season.",
       "maxGapPts": 10,
+    "maxRosterAdjPts": 4,
       "fullConfidenceGames": 10
     }
   },

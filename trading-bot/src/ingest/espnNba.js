@@ -261,13 +261,20 @@ async function syncInjuries() {
       onConflict: `on conflict (player_id) do update set
         team = excluded.team, player = excluded.player, short_comment = excluded.short_comment,
         espn_updated_at = excluded.espn_updated_at, observed_at = now(),
+        -- Back on the report after being cleared is news too, even at the same status.
         status_changed_at = case when sports.nba_injuries.status is distinct from excluded.status
+                                   or sports.nba_injuries.cleared_at is not null
                                  then now() else sports.nba_injuries.status_changed_at end,
-        status = excluded.status`,
+        status = excluded.status, cleared_at = null`,
     });
-  // Off the report = cleared. Keep the row's history out of the way.
+  // Off the report = cleared. The row STAYS, stamped: it is the only evidence that
+  // a player is back, and the stamp is when the market could first know. An old
+  // tombstone is no longer news, so those are purged.
   const ids = unique.map((r) => r.player_id);
-  const { rowCount } = await q(`delete from sports.nba_injuries where not (player_id = any($1))`, [ids]);
+  const { rowCount } = await q(
+    `update sports.nba_injuries set cleared_at = now()
+      where cleared_at is null and not (player_id = any($1))`, [ids]);
+  await q(`delete from sports.nba_injuries where cleared_at < now() - interval '30 days'`);
   return { listed: unique.length, cleared: rowCount };
 }
 

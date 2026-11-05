@@ -43,13 +43,19 @@ async function loadNbaContext(teams, asOf) {
       order by t.team, g.kickoff desc`,
     [teams, asOf, floor]);
 
-  // ── Players: one aggregated row each, for players in the team's LAST box ────
-  // "Last box" is the roster test: a player traded away stops appearing; one
-  // who is injured still appears, as a DNP. Without it, a traded player reads as
-  // a star "returning" from a long absence.
+  // ── Players: one aggregated row each ───────────────────────────────────────
+  // THE ROSTER is whoever played for the team in its last rotationGames this season
+  // and has not since played for someone else, plus anyone on its injury report.
+  // It used to be "in the team's last box score", on the belief that an injured
+  // player still appears as a DNP. Often he does not: Duren and Isaiah Joe were not
+  // in DET's box on 2026-11-04 at all, so an absent star dropped off the roster and
+  // his return could never register.
+  //
+  // first_rn is the oldest team game he appears in, so games before he joined are
+  // not read as games he missed.
   const { rows: players } = await q(
     `with tg as (
-       select t.team, g.game_id,
+       select t.team, g.game_id, g.season,
               case when g.home_team = t.team then g.home_score - g.away_score
                    else g.away_score - g.home_score end as margin,
               row_number() over (partition by t.team order by g.kickoff desc) as rn
@@ -58,22 +64,39 @@ async function loadNbaContext(teams, asOf) {
         where g.home_score is not null and g.kickoff < $2 and g.season >= $3
           and g.season_type in (2, 5)
      ), tgl as (select * from tg where rn <= $4),
+     cur as (select max(season) as season from tg),
      pl as (
-       select p.player_id, p.player, p.minutes, p.plus_minus, tgl.team, tgl.rn, tgl.margin,
+       select p.player_id, p.player, p.minutes, p.plus_minus, tgl.team, tgl.rn, tgl.margin, tgl.season,
               -- UNAVAILABLE, not merely unused: a coach's-decision DNP is a
               -- healthy bench player, and reading him as "out" makes him a star
               -- "returning" every time he is not on the report (2026-11-01:
               -- CLE's deep bench was worth +3.5 pts that way).
-              (p.minutes = 0 and coalesce(p.dnp_reason, '') not ilike '%coach%') as unavailable
+              (p.minutes = 0 and coalesce(p.dnp_reason, '') not ilike '%coach%') as unavailable,
+              (p.minutes = 0 and coalesce(p.dnp_reason, '') ilike '%coach%') as coach_dnp
          from sports.nba_player_games p
          join tgl on tgl.game_id = p.game_id and tgl.team = p.team
      ),
-     roster as (select distinct team, player_id from pl where rn = 1)
+     latest as (
+       select distinct on (p.player_id) p.player_id, p.team
+         from sports.nba_player_games p join sports.nba_games g on g.game_id = p.game_id
+        where p.minutes > 0 and g.season >= $3
+        order by p.player_id, g.kickoff desc
+     ),
+     roster as (
+       select distinct pl.team, pl.player_id from pl
+         join cur on pl.season = cur.season
+         join latest l on l.player_id = pl.player_id and l.team = pl.team
+        where pl.rn <= $6 and pl.minutes > 0
+       union
+       select i.team, i.player_id from sports.nba_injuries i where i.team = any($1)
+     )
      select r.team, r.player_id, max(pl.player) as player,
             count(*) filter (where pl.minutes > 0)                      as gp,
             coalesce(sum(pl.minutes)    filter (where pl.minutes > 0), 0) as min_sum,
             coalesce(sum(pl.plus_minus) filter (where pl.minutes > 0), 0) as pm_sum,
-            count(*) filter (where pl.rn <= $5)                         as rows_recent,
+            max(pl.rn)                                                  as first_rn,
+            count(*) filter (where pl.rn <= $5 and pl.minutes > 0)      as gp_recent,
+            count(*) filter (where pl.rn <= $5 and pl.coach_dnp)        as coach_recent,
             count(*) filter (where pl.rn <= $5 and pl.unavailable)      as out_recent,
             avg(pl.margin) filter (where pl.minutes > 0)                as margin_with,
             avg(pl.margin) filter (where pl.unavailable)                as margin_without,
@@ -81,7 +104,38 @@ async function loadNbaContext(teams, asOf) {
        from roster r
        join pl on pl.player_id = r.player_id and pl.team = r.team
       group by r.team, r.player_id`,
-    [teams, asOf, floor, lookback, recentN]);
+    [teams, asOf, floor, lookback, recentN, m.injury.rotationGames]);
+
+  // How much of each player is IN his team's rating: the share of its rating weight
+  // from games he played. Weighted exactly as ratings.js weights them. Only models
+  // pricing from team ratings use it.
+  const rc = m.ratings;
+  const ratingShare = {};
+  if (rc && (m.weights.matchup ?? 0) > 0) {
+    const { rows: shares } = await q(
+      `with cur as (select max(season) as season from sports.nba_games
+                     where home_score is not null and kickoff < $2),
+       tg as (
+         select t.team, g.game_id,
+                case when g.season = cur.season
+                     then power(0.5, extract(epoch from ($2::timestamptz - g.kickoff)) / 86400 / $4::float)
+                     else $5::float end as w
+           from unnest($1::text[]) t(team)
+           join sports.nba_games g on t.team in (g.home_team, g.away_team)
+           cross join cur
+          where g.home_score is not null and g.kickoff < $2 and g.season >= $3
+            and g.season_type in (2, 5)
+       ), total as (select team, sum(w) as w from tg group by team)
+       select tg.team, p.player_id, sum(tg.w) / max(total.w) as share
+         from tg
+         join total on total.team = tg.team
+         join sports.nba_player_games p on p.game_id = tg.game_id and p.team = tg.team
+        where p.minutes > 0
+        group by tg.team, p.player_id`,
+      [teams, asOf, floor, rc.halfLifeDays, rc.priorSeasonWeight]);
+    for (const r of shares) ratingShare[`${r.team}|${r.player_id}`] = Number(r.share);
+    for (const p of players) p.rating_share = ratingShare[`${p.team}|${p.player_id}`] ?? 0;
+  }
 
   // ── Team style: possessions and 3-point attempt rate, recent games ─────────
   const styleGames = m.style.games;
@@ -121,10 +175,10 @@ async function loadNbaContext(teams, asOf) {
     [asOf]);
 
   const { rows: injuries } = await q(
-    `select player_id, team, player, status, status_changed_at, observed_at
+    `select player_id, team, player, status, status_changed_at, observed_at, cleared_at
        from sports.nba_injuries where team = any($1)`,
     [teams]);
-  const { rows: feed } = await q(`select max(observed_at) as at from sports.nba_injuries`);
+  const { rows: feed } = await q(`select max(observed_at) as at from sports.nba_injuries where cleared_at is null`);
 
   const byTeam = (rows) => rows.reduce((acc, r) => {
     (acc[r.team] ||= []).push(r);
