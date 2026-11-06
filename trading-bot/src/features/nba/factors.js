@@ -45,10 +45,15 @@ const num = (v) => (v === null || v === undefined ? null : Number(v));
  * +/- is noisy, so it is shrunk hard toward zero by minutes played. The
  * with/without gap is the honest test -- how the team actually did without him
  * -- but on two or three games it is noise, hence the shrink.
+ *
+ * All of it rests on the games he played, so under minImpactGames it is scaled
+ * down: Moody had 1 game in GSW's last 30, 34 minutes in a 6-point win, which made
+ * him worth 7.05 points, more than Banchero.
  */
 function playerImpact(p, teamMargin, ic) {
   const gp = Number(p.gp);
   if (!(gp > 0)) return 0;
+  const sample = Math.min(1, gp / (Number(ic.minImpactGames) || 1));
   const minSum = Number(p.min_sum);
   const mpg = minSum / gp;
   const onPer48 = minSum > 0 ? (Number(p.pm_sum) / minSum) * 48 : 0;
@@ -63,10 +68,13 @@ function playerImpact(p, teamMargin, ic) {
   const withM = num(p.margin_with), withoutM = num(p.margin_without);
   if (mpg >= ic.measuredMinMpg && nWithout > 0 && withM !== null && withoutM !== null) {
     const measured = clamp(withM - withoutM, -ic.maxPlayerPts, ic.maxPlayerPts);
-    const w = nWithout / (nWithout + ic.shrinkGamesWithout);
-    return clamp(w * measured + (1 - w) * prior, 0, ic.maxPlayerPts);
+    // A gap between two averages is only as good as its smaller side, so 18 games
+    // without a player and 5 with him is not 18 games of evidence.
+    const nEff = (gp * nWithout) / (gp + nWithout);
+    const w = nEff / (nEff + ic.shrinkGamesWithout);
+    return clamp(w * measured + (1 - w) * prior, 0, ic.maxPlayerPts) * sample;
   }
-  return prior;
+  return prior * sample;
 }
 
 /**

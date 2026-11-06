@@ -146,6 +146,7 @@ async function main() {
 
       if (!decision.acted) {
         await logDecision(c.botId, game, forecast, decision);
+        await snapshotSkip(forecast, decision);
         log(`  SKIP  ${label.padEnd(10)} ${decision.skip_reason.padEnd(20)} ${line}`);
         continue;
       }
@@ -187,6 +188,26 @@ async function main() {
     }
   }
   log(`tick-nba: priced ${forecasts.size}, traded ${traded}${DRY ? " (DRY RUN)" : ""}`);
+}
+
+/**
+ * The factors behind a game the model priced and passed on. Only traded games were
+ * saved, so a skip could not be reviewed. One row when it first prices the game
+ * inside the trading window, then only when its number moves: about two rows per
+ * game per model. Never allowed to stop a tick.
+ */
+const NOT_PRICED_TO_TRADE = new Set(["outside_window", "already_positioned"]);
+async function snapshotSkip(forecast, decision) {
+  if (DRY || NOT_PRICED_TO_TRADE.has(decision.skip_reason)) return;
+  try {
+    const { rows } = await q(
+      `select p_fair from sports.features where game_id = $1 and model_version = $2
+        order by asof_ts desc limit 1`, [forecast.game_id, forecast.model_version]);
+    if (rows[0] && Math.abs(Number(rows[0].p_fair) - forecast.p_fair) < 0.001) return;
+    await saveForecast(forecast);
+  } catch (e) {
+    log.warn(`skip snapshot failed: ${e.message}`);
+  }
 }
 
 async function logDecision(botId, game, forecast, decision, tradeId = null) {

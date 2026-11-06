@@ -37,6 +37,7 @@
       "per48PerMpg": 0.4,
       "pmShrinkMinutes": 600,
       "shrinkGamesWithout": 6,
+      "minImpactGames": 5,
       "measuredMinMpg": 20,
       "maxPlayerPts": 8,
       "minImpactPts": 0.4,

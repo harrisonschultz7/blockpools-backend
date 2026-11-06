@@ -160,8 +160,25 @@ function parseBoxscore(gameId, json) {
   return rows;
 }
 
+/**
+ * ESPN's fantasy status can lag its own note: on 2026-11-06, 7 of 30 GTD rows said
+ * "ruled out" in the comment, so a player certain to sit was priced as a coin flip.
+ * A note ruling him out for TODAY (US-Eastern) means OUT. A note naming another day
+ * says nothing about the next game, so the status stands.
+ */
+function statusFromNote(status, comment, now) {
+  if (["OUT", "OFS"].includes(String(status).toUpperCase())) return status;
+  const c = String(comment || "");
+  const today = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "long" }).format(now).toLowerCase();
+  const m = c.match(/\b(?:is|be|been|ruled|remains?)\s+out\s+(?:for\s+|on\s+)?(tonight|\w+day)\b/i)
+    || c.match(/\b(?:won't|will\s+not)\s+play\s+(?:on\s+|in\s+)?(tonight|\w+day)\b/i);
+  if (!m) return status;
+  const when = m[1].toLowerCase();
+  return when === "tonight" || when === today ? "OUT" : status;
+}
+
 /** League injury report -> nba_injuries rows (current state). */
-function parseInjuries(json) {
+function parseInjuries(json, now = new Date()) {
   const out = [];
   const teamCodeByName = new Map();
   for (const t of json?.injuries || []) {
@@ -180,7 +197,7 @@ function parseInjuries(json) {
         team: abbr || null,
         teamName: t.displayName || null,
         player: i.athlete?.displayName || null,
-        status: fine || String(i.status),
+        status: statusFromNote(fine || String(i.status), i.shortComment, now),
         short_comment: i.shortComment || null,
         espn_updated_at: i.date ? new Date(i.date).toISOString() : null,
       });
@@ -250,8 +267,9 @@ async function syncInjuries() {
   // not: ESPN's stamp is when the COMMENT was last edited (a month-long back
   // injury re-dated this morning), so the whole league would read as breaking.
   // Backdate the first load a day -- everything on it is priced already.
-  const { rows: seeded } = await q(`select exists (select 1 from sports.nba_injuries) as any`);
-  const firstLoad = !seeded[0].any;
+  const { rows: before } = await q(`select player_id, status, cleared_at from sports.nba_injuries`);
+  const firstLoad = before.length === 0;
+  const prior = new Map(before.map((r) => [r.player_id, r]));
   const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
   await bulkInsert("sports.nba_injuries",
     ["player_id", "team", "player", "status", "short_comment", "espn_updated_at", "status_changed_at"],
@@ -271,15 +289,32 @@ async function syncInjuries() {
   // a player is back, and the stamp is when the market could first know. An old
   // tombstone is no longer news, so those are purged.
   const ids = unique.map((r) => r.player_id);
-  const { rowCount } = await q(
+  const { rows: cleared } = await q(
     `update sports.nba_injuries set cleared_at = now()
-      where cleared_at is null and not (player_id = any($1))`, [ids]);
+      where cleared_at is null and not (player_id = any($1))
+      returning player_id, team, player, status`, [ids]);
   await q(`delete from sports.nba_injuries where cleared_at < now() - interval '30 days'`);
-  return { listed: unique.length, cleared: rowCount };
+  // What changed this pass, for review. The first load is a snapshot, not news.
+  const events = firstLoad ? [] : [
+    ...unique.flatMap((r) => {
+      const p = prior.get(r.player_id);
+      const was = p && !p.cleared_at ? p.status : null;
+      return was === r.status ? [] : [{
+        player_id: r.player_id, team: r.team, player: r.player, old_status: was, new_status: r.status,
+        short_comment: r.short_comment, espn_updated_at: r.espn_updated_at,
+      }];
+    }),
+    ...cleared.map((r) => ({
+      player_id: r.player_id, team: r.team, player: r.player, old_status: r.status, new_status: "CLEARED",
+    })),
+  ];
+  await bulkInsert("sports.nba_injury_events",
+    ["player_id", "team", "player", "old_status", "new_status", "short_comment", "espn_updated_at"], events);
+  return { listed: unique.length, cleared: cleared.length, changes: events.length };
 }
 
 module.exports = {
-  parseScoreboard, parseBoxscore, parseInjuries, isPrimetime, toCode, etDate,
+  parseScoreboard, parseBoxscore, parseInjuries, statusFromNote, isPrimetime, toCode, etDate,
   fetchScoreboard, fetchSummary, fetchInjuries,
   syncSchedule, syncBoxscores, syncInjuries, NBA_TEAMS,
 };

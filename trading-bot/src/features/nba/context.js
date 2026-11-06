@@ -89,7 +89,8 @@ async function loadNbaContext(teams, asOf) {
         where pl.rn <= $6 and pl.minutes > 0
        union
        select i.team, i.player_id from sports.nba_injuries i where i.team = any($1)
-     )
+     ),
+     agg as (
      select r.team, r.player_id, max(pl.player) as player,
             count(*) filter (where pl.minutes > 0)                      as gp,
             coalesce(sum(pl.minutes)    filter (where pl.minutes > 0), 0) as min_sum,
@@ -98,12 +99,27 @@ async function loadNbaContext(teams, asOf) {
             count(*) filter (where pl.rn <= $5 and pl.minutes > 0)      as gp_recent,
             count(*) filter (where pl.rn <= $5 and pl.coach_dnp)        as coach_recent,
             count(*) filter (where pl.rn <= $5 and pl.unavailable)      as out_recent,
-            avg(pl.margin) filter (where pl.minutes > 0)                as margin_with,
-            avg(pl.margin) filter (where pl.unavailable)                as margin_without,
-            count(*) filter (where pl.unavailable)                      as n_without
+            avg(pl.margin) filter (where pl.minutes > 0)                as margin_with
        from roster r
        join pl on pl.player_id = r.player_id and pl.team = r.team
-      group by r.team, r.player_id`,
+      group by r.team, r.player_id
+     )
+     -- THE TEAM WITHOUT HIM: every team game since he joined that he did not play,
+     -- listed or not, except coach's decisions. It used to need a DNP row, but an
+     -- injured player is often not in the box at all: Banchero, Holmgren and Edwards
+     -- all read as "0 games without" and Moody's "without" was only last season's
+     -- 9 listed games, so his one game back read as a 14-point swing.
+     select a.*, wo.margin_without, wo.n_without
+       from agg a
+       left join lateral (
+         select avg(t.margin) as margin_without, count(*) as n_without
+           from tgl t
+          where t.team = a.team and t.rn <= a.first_rn
+            and not exists (
+              select 1 from pl x
+               where x.player_id = a.player_id and x.team = a.team and x.rn = t.rn
+                 and (x.minutes > 0 or x.coach_dnp))
+       ) wo on true`,
     [teams, asOf, floor, lookback, recentN, m.injury.rotationGames]);
 
   // How much of each player is IN his team's rating: the share of its rating weight
