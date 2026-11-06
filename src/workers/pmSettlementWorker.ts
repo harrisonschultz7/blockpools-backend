@@ -48,9 +48,14 @@ function parseArr(x: any): any[] {
 
 const normName = (s: string) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
-/** "nhl-bos-wpg-2026-10-02" / "epl-bou-liv-2026-09-20" -> ["BOS","WPG"] (home, away). */
-function slugCodes(slug: string): [string, string] | null {
-  const m = String(slug || "").match(/^[a-z]+-([a-z0-9]+)-([a-z0-9]+)-\d{4}-\d{2}-\d{2}/i);
+/**
+ * "nhl-bos-wpg-2026-10-02" / "epl-bou-liv-2026-09-20" -> ["BOS","WPG"] (home, away).
+ * The whole slug, with nothing after the date: Polymarket lists sibling events on
+ * the same game and start time ("...-2026-11-06-first-td-scorer", "-player-props"),
+ * and one of those settled JAX-BAL as a Baltimore win off a player's prop market.
+ */
+export function slugCodes(slug: string): [string, string] | null {
+  const m = String(slug || "").match(/^[a-z]+-([a-z0-9]+)-([a-z0-9]+)-\d{4}-\d{2}-\d{2}$/i);
   return m ? [m[1].toUpperCase(), m[2].toUpperCase()] : null;
 }
 
@@ -76,6 +81,30 @@ async function fetchResolvedEvents(tagId: number): Promise<any[]> {
   }
 }
 
+/**
+ * The game's own event, by slug. The tag feed can miss it while listing its
+ * sibling prop events (it did for JAX-BAL). The slug's date is the UTC or US date
+ * of kickoff, so a late game can sit on either side of midnight.
+ */
+async function fetchGameEvent(g: OpenGame): Promise<any | null> {
+  const a = String(g.team_a_code || "").toLowerCase();
+  const b = String(g.team_b_code || "").toLowerCase();
+  if (!a || !b) return null;
+  const league = g.league.toLowerCase();
+  const days = [0, -1].map((d) => new Date((Number(g.lock_time) + d * 86_400) * 1000).toISOString().slice(0, 10));
+  for (const day of days) {
+    try {
+      const r = await fetch(`${GAMMA}/events?slug=${league}-${a}-${b}-${day}`);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (Array.isArray(d) && d[0]) return d[0];
+    } catch (e: any) {
+      console.warn(`[pm-settle] gamma slug lookup failed (${g.game_id}): ${e?.message || e}`);
+    }
+  }
+  return null;
+}
+
 function titleNames(ev: any): [string, string] {
   const [h, a] = String(ev?.title || "").split(/\s+vs\.?\s+/i);
   return [String(h || "").trim(), String(a || "").trim()];
@@ -90,13 +119,13 @@ function yesWon(m: any): boolean | null {
   return null; // void / mid / unresolved
 }
 
-/** Binary (two team outcomes) resolution. */
-function readBinary(ev: any): Resolution | null {
+/** Binary (two team outcomes) resolution, from the event's moneyline and nothing else. */
+export function readBinary(ev: any): Resolution | null {
   if (ev?.closed !== true) return null;
   const codes = slugCodes(ev.slug);
   if (!codes) return null;
   const mls = (ev.markets || []).filter((m: any) => String(m?.sportsMarketType || "") === "moneyline");
-  const ml = mls[0] || (ev.markets || [])[0];
+  const ml = mls[0];
   if (!ml) return null;
   const uma = String(ml.umaResolutionStatus || "").toLowerCase();
   if (uma && uma !== "resolved") return null;
@@ -355,7 +384,7 @@ export async function runPmSettlementOnce(): Promise<void> {
       const isSoccer = lg in SOCCER_TAGS;
       const candidates = byLeague.get(lg) || [];
 
-      const match = candidates.find((r) => {
+      const matches = (r: Resolution) => {
         if (Math.abs(r.lockTime - Number(g.lock_time)) > 120) return false;
         if (!isSoccer) {
           // Binary: slug codes match ours exactly — strong, handles doubleheaders.
@@ -368,13 +397,22 @@ export async function runPmSettlementOnce(): Promise<void> {
         if (!an && !bn) return true; // only candidate at this exact lock-time
         const rn = normName(r.homeName) + "|" + normName(r.awayName);
         return (an && rn.includes(an)) || (bn && rn.includes(bn));
-      });
+      };
+      let match = candidates.find(matches) ?? null;
+      if (!match && !isSoccer) {
+        const ev = await fetchGameEvent(g);
+        const direct = ev ? readBinary(ev) : null;
+        if (direct && matches(direct)) match = direct;
+      }
       if (!match) continue;
 
-      const mapped = mapWinner(g, isSoccer, match.winner);
+      // HOME is the slug's first team; our team A is usually the same, but say so.
+      const flipped = !isSoccer && match.codes[0] !== String(g.team_a_code || "").toUpperCase();
+      const winner: Winner = !flipped ? match.winner : match.winner === "HOME" ? "AWAY" : "HOME";
+      const mapped = mapWinner(g, isSoccer, winner);
       if (!mapped) {
         console.warn(
-          `[pm-settle] ${g.game_id} winner ${match.winner} did not map to stored codes ${g.team_a_code}/${g.team_b_code} — skipping`,
+          `[pm-settle] ${g.game_id} winner ${winner} did not map to stored codes ${g.team_a_code}/${g.team_b_code} — skipping`,
         );
         continue;
       }
@@ -382,7 +420,7 @@ export async function runPmSettlementOnce(): Promise<void> {
       try {
         const r = await settleGame(g, mapped.index, mapped.code, mapped.side);
         console.log(
-          `[pm-settle] ${g.game_id} -> ${match.winner} (${mapped.code}, idx ${mapped.index}); ${r.claimed} claim(s), $${r.payoutTotal.toFixed(2)} paid`,
+          `[pm-settle] ${g.game_id} -> ${winner} (${mapped.code}, idx ${mapped.index}); ${r.claimed} claim(s), $${r.payoutTotal.toFixed(2)} paid`,
         );
         settled += 1;
         claims += r.claimed;
