@@ -71,6 +71,8 @@ function toRow(r: any) {
     side: r.side,
     price: Number(r.price),
     shares: Number(r.shares),
+    // Kept current by the fill sync: the venue will not report this per order.
+    filledShares: Number(r.filled_shares) || 0,
     createdAt: r.created_at,
     carryOver: r.carry_over === true,
     carryStatus: r.carry_status ?? null,
@@ -82,7 +84,7 @@ router.get("/", authPrivyOptionalWallet, async (req: AuthedRequest, res: Respons
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
     const { rows } = await pool.query(
-      `SELECT id, market_id, outcome_index, side, price, shares, created_at,
+      `SELECT id, market_id, outcome_index, side, price, shares, filled_shares, created_at,
               carry_over, carry_status, game_start_at
          FROM pm_limit_orders
         WHERE user_id = $1 AND status = 'live'
