@@ -88,9 +88,14 @@ function decide(args) {
   // be reverted once the edge estimate earns it back, not a decision to relitigate.
   const kellyFull = edge / (1 - price);
   const kelly = Math.max(0, kellyFull * p.kellyFraction);
-  const sized = p.sizingMode === "flat"
+  let sized = p.sizingMode === "flat"
     ? nav * p.flatPositionPctNav
     : kelly * nav;
+  // THIN EDGES GET LESS. Under thinEdgeBelow the stake is scaled by
+  // thinEdgeSizeScale: a loss is the whole stake, and a 1c edge is the one most
+  // likely to be the model being wrong. Off unless both keys are set.
+  const thinBelow = Number(p.thinEdgeBelow), thinScale = Number(p.thinEdgeSizeScale);
+  if (thinBelow > 0 && thinScale > 0 && thinScale < 1 && edge < thinBelow) sized *= thinScale;
 
   const capPerMarket = nav * p.maxPositionPctNav;
   const openRoom = Math.max(0, nav * p.maxOpenExposurePctNav - openExposureUsd);
