@@ -125,7 +125,7 @@
     "minEdge": 0.01,
     "kellyFraction": 0.25,
     "sizingMode": "flat",
-    "_comment_thinEdge": "2026-11-09 (user): edges under 2c bet 60% of the flat size (7% -> 4.2% of NAV). Both of Axis-3's losses so far were 1.2-1.3c edges.",
+    "_comment_thinEdge": "2026-11-09 (user): edges under 2c bet 60% of the flat size (7% -> 4.2% of NAV). RISK SIZING, NOT A MEASURED EFFECT: edge size has not predicted Axis-3's results (t 0.44 over the 27 games it priced), and its 5-2 record under 2c vs 6-0 above rests on 2 losses. The reason is Kelly: at quarter-Kelly a 1c edge on a 50c price is worth ~0.5% of NAV, so a flat 7% is most over-sized exactly where the edge is thinnest. Cost if thin edges are real: ~40% of their small expected profit. Benefit: a thin-edge loss is ~-$315 with the 70% stop instead of ~-$540. Revisit when edge size can be tested on ~100 trades.",
     "thinEdgeBelow": 0.02,
     "thinEdgeSizeScale": 0.6,
     "flatPositionPctNav": 0.07,
