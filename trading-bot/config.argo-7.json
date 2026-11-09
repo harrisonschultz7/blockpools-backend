@@ -22,7 +22,8 @@
     "weights": {
       "weather": 0.3,
       "_comment_scheme_LIVE_EXPERIMENT": "0.30 is a DELIBERATE OVERRIDE of a negative measurement, kept as a live experiment by the user on 2026-10-02, not an oversight. What it overrides: the residual calibration on 1,188 finished games fits scheme at beta -1.1131, t -1.74 against the total's deviation from the closing line, on the 311 games where it produces a value -- i.e. when scheme says over, the game has tended to come in under. The scheme fit itself is sound (t +2.52 predicting offensive EPA per play), which points at the EPA-to-points conversion as the fault: schemeSignal multiplies EPA/play by a flat expectedPlaysPerTeam of 64 for every team, while 70% of scheme's over-signal comes from SLOW offences, the ones that do not run 64 plays. t -1.74 is suggestive, not conclusive, which is why running it live to settle the question is reasonable. REVIEW TRIGGER: re-run run/calibrate-totals.js after roughly 40 more settled Argo-7 trades. If scheme still fits wrong-signed, zero it -- see git 8b036e49 for the commit that did so, reverted here. If it flips positive, the conversion was noise and the weight is earned. Do not let this comment become scenery: an override with no review date is just a mistake with extra steps.",
-    "scheme": 0.3,
+    "_comment_scheme_2026_11_09": "ZEROED per the review trigger above (43 settled Argo-7 trades). calibrate-totals on 1,274 games (2022+): beta -0.657, t -1.14; on 2025-26 alone -1.39, t -2.18 -- wrong-signed again and stronger on recent data. The rule set on 2026-10-02 was: still wrong-signed, zero it.",
+    "scheme": 0,
       "rest": 0.15,
       "pace": 0,
       "injury": 0.08,
