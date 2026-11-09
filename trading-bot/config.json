@@ -41,6 +41,8 @@
     "injury": {
       "_comment": "BASELINED, not raw player value. Penalty = player marginal value x (1 - demonstrated replacement quality). The Rams played exactly ONE 2025 game without Nacua, so 'they cope fine' rests on a single game -- shrinkGamesWithout forces that estimate back toward league-average positional replacement until the sample earns its way out. Without this the bot chases noise every week.",
       "shrinkGamesWithout": 4,
+      "_comment_pricedInAfterGames": "2026-11-09 (user): an absence counts in full only as news. cost x (1 - games he has missed in a row / this), so with 2: newly out = full, missed last week = half, missed 2+ = nothing (the line and the team's EPA already hold it). 0 turns it off.",
+      "pricedInAfterGames": 2,
       "defaultReplacementQuality": 0.5,
       "replacementScaleEpa": 0.2,
       "positionValue": {

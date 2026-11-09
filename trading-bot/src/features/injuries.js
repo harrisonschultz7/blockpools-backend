@@ -95,7 +95,11 @@ async function playerBaseline(team, playerName, asOf) {
             t.off_epa_per_play, t.def_epa_per_play,
             max(case when s.pfr_player_id is not null then 1 else 0 end) played,
             max(coalesce(s.offense_pct, 0)) off_pct,
-            max(coalesce(s.defense_pct, 0)) def_pct
+            max(coalesce(s.defense_pct, 0)) def_pct,
+            -- Snap counts land a day or two after a game. Without them a game says
+            -- nothing about who played, so it must not read as a game he missed.
+            exists (select 1 from sports.nfl_snap_counts x
+                     where x.game_id = g.game_id and x.team = $1) as has_snaps
        from sports.nfl_games g
        join sports.nfl_team_game_stats t
          on t.game_id = g.game_id and t.team = $1
@@ -133,8 +137,19 @@ async function playerBaseline(team, playerName, asOf) {
     quality = m.defaultReplacementQuality + (clamped - m.defaultReplacementQuality) * k;
   }
 
+  // The run of most recent games he has missed, back to the last one he played.
+  // Games before he first played for the team are not part of it (the run stops
+  // there), and games whose snap counts are not in yet are skipped, not counted.
+  let recentMissed = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (!rows[i].has_snaps) continue;
+    if (rows[i].played === 1) break;
+    recentMissed++;
+  }
+
   return {
     snapShare,
+    recentMissed,
     gamesWith: withP.length,
     gamesWithout: withoutP.length,
     replacementQuality: quality,
@@ -156,7 +171,14 @@ async function teamInjuryPenalty(team, season, week, asOf) {
     const statusMult = m.statusMultiplier[r.report_status] ?? 0;
 
     const importance = base.snapShare * posValue;
-    const cost = importance * statusMult * (1 - base.replacementQuality);
+    // ONLY NEWS COUNTS. The price is the anchor, and the market has seen every game
+    // he has missed: by the time he has sat out a few, the line holds his absence
+    // and so does the team's EPA. Counting it again is the double-count the README
+    // warns about -- 2026-11-08, SF was charged for Deebo Samuel (21 games out) and
+    // Mike Evans (20), more than Adam-7's whole edge on LV@SF.
+    const after = Number(m.pricedInAfterGames);
+    const fresh = after > 0 ? Math.max(0, 1 - base.recentMissed / after) : 1;
+    const cost = importance * statusMult * (1 - base.replacementQuality) * fresh;
     penalty += cost;
 
     if (cost > 0.001) {
@@ -167,6 +189,8 @@ async function teamInjuryPenalty(team, season, week, asOf) {
         snapShare: +base.snapShare.toFixed(3),
         replacementQuality: +base.replacementQuality.toFixed(3),
         gamesWithout: base.gamesWithout,
+        recentMissed: base.recentMissed,
+        fresh: +fresh.toFixed(2),
         cost: +cost.toFixed(4),
       });
     }
