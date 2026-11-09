@@ -106,7 +106,8 @@
       "halfLifeDays": 60,
       "priorSeasonWeight": 0.06,
       "shrinkGames": 6,
-      "homeCourtPts": 2.5,
+      "_comment_homeCourtPts_2026_11_09": "2.5 -> 1.0 (user). At 2.5 the ratings sat a mean +2.0 pts on the home side of the market over the 39 games Bain-3 priced, and 22 of its 24 trades were home teams (home bets -$1,807, away +$603). Home teams won 29/58 this season while the market priced them at 53.7%, i.e. about +1.2 pts. At 1.0 the mean gap is +0.5 and the trades it would take split 9 home / 8 away; 0.5 zeroes the gap exactly but fits 39 games too closely. Brier is unchanged at every value: the ratings disagreement does not predict results either way (t -0.57).",
+      "homeCourtPts": 1.0,
       "iterations": 12,
       "cacheHours": 6
     },
