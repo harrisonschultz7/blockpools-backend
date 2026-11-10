@@ -6,6 +6,7 @@ import { authPrivy, authPrivyOptionalWallet, AuthedRequest } from "../middleware
 import { sendInviteEmail } from "../services/emailService";
 import { createReferralRedemptions } from "../services/promotions/createReferralRedemptions";
 import { notifyReferral } from "../services/notifications/notify";
+import { countReferrals, getOrCreateReferralCode, redeemReferral } from "../services/referrals";
 
 const router = Router();
 
@@ -233,57 +234,68 @@ router.post("/invites/accept", authPrivyOptionalWallet, async (req: AuthedReques
  */
 // Wallet-OPTIONAL — see note on /invites/accept above. Redeem only needs the
 // Privy user id; the wallet may not exist yet at OTP time.
+//
+// Token is either an emailed invite token (64 hex) or a personal referral code
+// from /invite/<code>. Rules (one referral per user, new accounts only, no
+// self-referral) live in services/referrals.ts. Any refusal is a 409, which the
+// frontend treats as final and stops retrying.
 router.post("/invites/redeem", authPrivyOptionalWallet, async (req: AuthedRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Not authenticated" });
 
-    const token = String(req.body?.token || "").trim();
-    if (!token || token.length < 20) return res.status(400).json({ error: "Invalid token" });
+    const refereeUserId = req.user.id;
+    const out = await redeemReferral(pool, req.body?.token, refereeUserId);
 
-    const tokenHash = sha256Hex(token);
-    const inviteeUserId = req.user.id;
-
-    const { rows } = await pool.query(
-      `
-      update invites
-         set status = 'redeemed',
-             redeemed_at = now(),
-             redeemed_by_user_id = $2
-       where token_hash = $1
-         and status in ('sent','pending','accepted')
-       returning id, inviter_user_id, status, redeemed_at, redeemed_by_user_id
-      `,
-      [tokenHash, inviteeUserId]
-    );
-
-    if (!rows[0]) {
-      return res.status(409).json({ error: "Invite already redeemed or not found" });
+    if (!out.ok) {
+      if (out.reason === "bad_token") return res.status(400).json({ error: "Invalid token" });
+      if (out.reason === "not_found") return res.status(404).json({ error: "Invite not found" });
+      return res.status(409).json({ error: "Invite not applied", reason: out.reason });
     }
 
-    // Referral promo: create the pending redemption pair (idempotent,
-    // non-blocking).
-    try {
-      await createReferralRedemptions(rows[0].id);
-    } catch (e) {
-      console.error("[invites/redeem] referral pair creation failed (non-blocking)", e);
-    }
+    if (!out.alreadyRedeemed) {
+      // Legacy promo framework: no-op while it's off / no referral campaign
+      // is active. Kept so re-activating a campaign needs no code change.
+      try {
+        await createReferralRedemptions(out.inviteId);
+      } catch (e) {
+        console.error("[invites/redeem] referral pair creation failed (non-blocking)", e);
+      }
 
-    // "New Referred Friend: X" → the inviter. Deduped by invite id.
-    notifyReferral({
-      inviteId: rows[0].id,
-      inviterUserId: rows[0].inviter_user_id,
-      refereeUserId: inviteeUserId,
-    }).catch(() => {});
+      // "New Referred Friend: X" → the inviter. Deduped by invite id.
+      notifyReferral({
+        inviteId: out.inviteId,
+        inviterUserId: out.inviterUserId,
+        refereeUserId,
+      }).catch(() => {});
+    }
 
     return res.json({
       ok: true,
-      inviterUserId: rows[0].inviter_user_id,
-      status: rows[0].status,
-      redeemedAt: rows[0].redeemed_at,
-      redeemedByUserId: rows[0].redeemed_by_user_id,
+      inviterUserId: out.inviterUserId,
+      status: "redeemed",
+      kind: out.kind,
+      alreadyRedeemed: out.alreadyRedeemed,
     });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message || "Failed to redeem invite" });
+  }
+});
+
+/**
+ * GET /api/invites/link
+ * Auth: Privy. The caller's personal referral link (created on first ask) and
+ * how many friends have joined through any of their invites.
+ */
+router.get("/invites/link", authPrivyOptionalWallet, async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Not authenticated" });
+    const code = await getOrCreateReferralCode(pool, req.user.id);
+    if (!code) return res.status(404).json({ error: "Create your profile first" });
+    const base = (process.env.APP_BASE_URL || "https://www.blockpools.io").trim().replace(/\/+$/, "");
+    const referredCount = await countReferrals(pool, req.user.id);
+    return res.json({ ok: true, code, url: `${base}/invite/${code}`, referredCount });
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || "Failed to load invite link" });
   }
 });
 

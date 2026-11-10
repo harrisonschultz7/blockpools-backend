@@ -306,7 +306,7 @@ export async function sendInviteEmail(opts: {
               <tr>
                 <td align="center" style="padding-bottom:28px;">
                   <div style="max-width:440px;margin:0 auto;font-size:13px;line-height:1.55;color:rgba(255,255,255,0.78);">
-                    Para recibir el <strong style="color:#facc15;">bono de referido de $20</strong>, debes crear tu perfil de BlockPools <strong>a través de este enlace de invitación</strong>. Si te registras por separado, el bono no podrá aplicarse a tu cuenta.
+                    Crea tu cuenta de BlockPools <strong>a través de este enlace de invitación</strong> para que tu amigo reciba el crédito por invitarte.
                   </div>
                 </td>
               </tr>
