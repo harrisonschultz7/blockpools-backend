@@ -6,7 +6,7 @@
 -- A buy qualifies when the position was either
 --   - held to settlement: shares still held once the market settled
 --     (games.is_final, or the friend claimed it, or 24h past kickoff), or
---   - sold at a real move: average sell price at least p_min_move (default 10%)
+--   - sold at a real move: average sell price at least p_min_move (default 5%)
 --     away from the average buy price, up or down.
 -- A quick buy-and-sell round trip doesn't count. Holding BOTH sides of the same
 -- market to settlement counts only the net one-sided amount (a hedge isn't a bet).
@@ -35,7 +35,7 @@ create or replace function public.referral_credits(
   p_start    timestamptz default '2026-11-10 05:00:00+00',  -- 2026-11-10 00:00 ET
   p_end      timestamptz default '2026-12-12 05:00:00+00',  -- end of 2026-12-11 ET
   p_rate     numeric     default 0.01,
-  p_min_move numeric     default 0.10
+  p_min_move numeric     default 0.05
 )
 returns table (
   referrer_user_id   text,
@@ -153,7 +153,7 @@ create or replace function public.referral_payouts_due(
   p_start    timestamptz default '2026-11-10 05:00:00+00',
   p_end      timestamptz default '2026-12-12 05:00:00+00',
   p_rate     numeric     default 0.01,
-  p_min_move numeric     default 0.10
+  p_min_move numeric     default 0.05
 )
 returns table (
   referrer_user_id   text,
