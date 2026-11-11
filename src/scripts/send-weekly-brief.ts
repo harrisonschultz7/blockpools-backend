@@ -34,7 +34,7 @@ const DELAY_MS = 700;
 
 // Resend tag for this send (see lib/emailTracking.ts). Keep in step with the
 // utm_campaign hardcoded in the template links.
-const CAMPAIGN = "nba_model_launch";
+const CAMPAIGN = "referral_promo";
 
 // ── TEST MODE ────────────────────────────────────────────────────────────────
 // Set to true to send BOTH language versions only to TEST_EMAIL.
