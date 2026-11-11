@@ -193,6 +193,16 @@ async function copyEnter(sub, intent, orderId) {
   let usd = nav * frac * Number(sub.multiplier);
   if (sub.max_trade_usd !== null) usd = Math.min(usd, Number(sub.max_trade_usd));
 
+  // A SMALLER-THAN-USUAL MODEL TRADE ON A BIG ENOUGH SLEEVE IS RAISED TO THE
+  // MINIMUM, not skipped. Axis-3 bets 60% of its usual size on thin edges, so a
+  // $100 sleeve asked for $4.20 and was told to top up (2026-11-10). A sleeve of
+  // MIN_SLEEVE_USD or more clears the minimum at the model's full ~7% size, so $5
+  // never exceeds what a full-size trade would be. Smaller sleeves still skip.
+  if (usd < MIN_ORDER_USD && nav >= MIN_SLEEVE_USD
+      && (sub.max_trade_usd === null || Number(sub.max_trade_usd) >= MIN_ORDER_USD)) {
+    usd = MIN_ORDER_USD;
+  }
+
   if (usd < MIN_ORDER_USD) {
     await finish(orderId, {
       status: "skipped", skip_reason: "below_min_order", requested_usd: usd,
