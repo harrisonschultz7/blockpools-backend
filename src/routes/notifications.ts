@@ -30,10 +30,22 @@ router.get("/notifications", authPrivy, async (req: AuthedRequest, res: Response
 
     const [list, count] = await Promise.all([
       pool.query(
-        `SELECT id, type, actor_id, payload, read_at, created_at
-           FROM public.notifications
-          WHERE recipient_id = $1
-          ORDER BY created_at DESC
+        // The actor's name/avatar/address are read live from users, over what
+        // was stored at insert time. A referral notification is written the
+        // moment the friend signs up, before they've picked a username, so its
+        // stored name is the "Someone" fallback; renames show up too.
+        `SELECT n.id, n.type, n.actor_id,
+                CASE WHEN u.id IS NULL OR NOT (n.payload ? 'actorUsername') THEN n.payload
+                     ELSE n.payload || jsonb_strip_nulls(jsonb_build_object(
+                            'actorUsername', COALESCE(NULLIF(trim(u.username), ''), NULLIF(trim(u.display_name), '')),
+                            'actorAvatarUrl', u.avatar_url,
+                            'actorAddress', lower(u.primary_address)))
+                END AS payload,
+                n.read_at, n.created_at
+           FROM public.notifications n
+           LEFT JOIN public.users u ON u.id = n.actor_id
+          WHERE n.recipient_id = $1
+          ORDER BY n.created_at DESC
           LIMIT $2`,
         [recipientId, limit]
       ),
