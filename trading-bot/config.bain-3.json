@@ -1,30 +1,30 @@
 {
-  "_comment": "Bain-3: the HIGHER-RISK NBA game-winner model (Axis-3 is the selective one). It forms its own price from opponent-adjusted team ratings and moves toward it, so it disagrees with the market on most games. PAPER, HIDDEN. Created 2026-11-04.",
+  "_comment": "Bain-3: the HIGH-RISK NBA game-winner model. Since 2026-11-14 it prices exactly like Axis-3 but trades only edges of 3c or more, at 25% of NAV, with a 70% stop. PAPER, HIDDEN. v1 (own team-ratings formula, 2026-11-04 to 2026-11-14) is archived as bain-3-v1.",
   "botId": "bain-3",
   "botName": "Bain-3",
   "league": "NBA",
   "riskTier": "high",
   "mode": "paper",
-  "modelVersion": "bain-nba-v1",
+  "modelVersion": "bain-nba-v2",
   "hidden": true,
   "_comment_hidden": "Off every public surface (GET /api/bots, copy subscribe, model alerts) while it paper trades. Flip to false and deploy the backend to show it.",
   "marketScopeLabel": "Game Markets",
-  "description": "A proprietary BlockPools prediction model for NBA game markets. It builds its own price for every game from how each offense matches up with the defense it faces, and takes a position where it disagrees with the market.",
+  "description": "A proprietary BlockPools prediction model for NBA game markets. It prices each game in the last two hours before tip-off and only acts on its strongest disagreements with the market, taking a large position with a stop-loss.",
   "reporting": {
     "_comment": "NBA plays every day, so ROI and selectivity are reported per Monday-Sunday week (US-Eastern), not per NFL week.",
     "period": "isoWeek"
   },
   "model": {
-    "_comment": "Weights by user decision (2026-11-04), deliberately NOT backtested: matchup first, because a late scratch is usually repriced before a 5-minute tick can act. matchup is a DISAGREEMENT (rating margin minus implied margin), so its weight is how far the model moves toward its own number. Judge it on closing-line value.",
+    "_comment": "SAME PRICING AS AXIS-3 (copied 2026-11-14, user). Bain-3 is now Axis-3's formula traded only at its widest disagreements, sized large. The v1 ratings/matchup formula (bain-nba-v1) lost money at every edge above 2c (5c+: 9 trades, -55%) and is retired; its record is archived as bot bain-3-v1. If Axis-3's weights change, change these with them -- the 3c evidence is Axis-3's.",
     "sigmaMarginPts": 12.5,
-    "deltaCap": 0.12,
+    "deltaCap": 0.1,
+    "_comment_weights_2026_11_02": "Calibrated on 1,088 2025-26 games vs the Polymarket tip price: no factor beat the market (all |t| < 0.6). Momentum fit at 0.08 of its points (was weighted 0.25, trimmed to 0.10); style pointed the wrong way (-0.57), set to 0. Heavier weights (x1.5, x2) made the model LESS accurate than the market. Injury is not backtestable (no historical ESPN reports) and stays at the user setting of 0.35.",
     "weights": {
-      "matchup": 0.45,
-      "style": 0.15,
-      "injury": 0.2,
-      "rest": 0.1,
-      "momentum": 0.05,
-      "primetime": 0.05
+      "injury": 0.35,
+      "momentum": 0.1,
+      "rest": 0.2,
+      "primetime": 0.1,
+      "style": 0
     },
     "injury": {
       "_comment": "Counts CHANGES the market may not have absorbed: impact x (availability now - availability over the last recentGames) x freshness. freshnessHalfLifeHours=2: a status that changed 2h ago counts half, 6h ago an eighth -- the line has moved on it by then. A player out for weeks counts nothing (he was out lately too). returnFreshness is the share credited to a player BACK after missing games, whose return time ESPN does not stamp.",
@@ -86,9 +86,7 @@
       "games": 15,
       "minGames": 4,
       "threePointVarianceK": 1.5,
-      "maxSwingPts": 1.5,
-      "ptsPerInteraction": 0.4,
-      "maxMismatchPts": 3
+      "maxSwingPts": 1.5
     },
     "confidence": {
       "minToTrade": 0.45,
@@ -98,28 +96,14 @@
       "concurrentCorrelation": 0,
       "observedLookbackDays": 60,
       "roundsPerWeek": 5,
+      "expectedWeeklyTurnover": 0.6,
+      "_comment_expectedTurnover": "About 2-3 trades a week at 25% (Axis-3 priced 94 games in 12 days; 7 cleared 3c).",
       "_comment_rounds": "NBA recycles the book most days of the week (configs/risk note in config.json): 5, not NFL's 1.",
       "minWeeksForObservedBasis": 4
-    },
-    "ratings": {
-      "_comment": "Current-season games decay by age (halfLifeDays). Last season counts only lightly (priorSeasonWeight) because rosters move. shrinkGames pulls every rating toward the league. homeCourtPts is both the adjustment removed from ratings and the edge added back for the home side.",
-      "halfLifeDays": 60,
-      "priorSeasonWeight": 0.06,
-      "shrinkGames": 6,
-      "_comment_homeCourtPts_2026_11_09": "2.5 -> 1.0 (user). At 2.5 the ratings sat a mean +2.0 pts on the home side of the market over the 39 games Bain-3 priced, and 22 of its 24 trades were home teams (home bets -$1,807, away +$603). Home teams won 29/58 this season while the market priced them at 53.7%, i.e. about +1.2 pts. At 1.0 the mean gap is +0.5 and the trades it would take split 9 home / 8 away; 0.5 zeroes the gap exactly but fits 39 games too closely. Brier is unchanged at every value: the ratings disagreement does not predict results either way (t -0.57).",
-      "homeCourtPts": 1.0,
-      "iterations": 12,
-      "cacheHours": 6
-    },
-    "matchup": {
-      "_comment": "maxGapPts is a rail against broken inputs, not a limit on disagreeing. fullConfidenceGames scales confidence early in the season.",
-      "maxGapPts": 10,
-    "maxRosterAdjPts": 4,
-      "fullConfidenceGames": 10
     }
   },
   "policy": {
-    "_comment": "Axis-3's exits and windows. Higher risk comes from trading more games, not bigger bets: still 7% a position, with a higher ceiling on open exposure.",
+    "_comment": "Axis-3's windows and exits, traded only at 3c+ edge with 25% of NAV per position and a 70% stop. High risk by design: one stopped loss is about -18 to -20% of NAV, two in a row about -36%.",
     "pregameOnly": true,
     "evaluationMode": "rolling",
     "priceWindowHoursBeforeTip": 2,
@@ -128,29 +112,26 @@
     "exitAtFairValue": true,
     "holdFavoritesToSettlement": true,
     "holdToSettlementMinPrice": 0.75,
-    "_comment_holdToSettlementMinPrice": "2026-11-02 (user): only positions bought at 0.75+ hold to settlement. Below that, favourites get a resting exit at fair value + the volatility premium (exitVolatilityAlphaLogit), the same as underdogs and Argo-7 totals. Was effectively 0.50, which held every favourite.",
     "exitBufferCents": 0.005,
     "exitHoldThroughKickoff": true,
     "exitVolatilityAlphaLogit": 0.45,
     "exitInPlayMaxPrice": 0.97,
-    "_comment_stopLoss": "OFF (user, 2026-11-01): no stop-loss on moneyline winners, same as Adam-7 since 2026-10-11 -- on the NFL replay the trigger print gapped far below the floor and comebacks cost more than the stops saved.",
-    "exitStopLossEnabled": false,
-    "exitStopLossMaxLossPct": 0.85,
-    "_comment_minEdge": "1.5c. This model disagrees by more than Axis-3, so it does not need Axis-3's 1c bar to trade often.",
-    "minEdge": 0.015,
+    "_comment_stopLoss": "ON at 0.70 (user, 2026-11-14), same as Axis-3. On the 116-side NBA replay a 70% stop was about EV-neutral versus holding; tighter stops (30-50%) cost ~2% per trade. At 25% sizing it caps a loss near -18% of NAV instead of -25%.",
+    "exitStopLossEnabled": true,
+    "exitStopLossMaxLossPct": 0.7,
+    "_comment_minEdge": "0.03 (user, 2026-11-14). Axis-3 pricing at 3c+: its 7 live trades +$1,158 (+23%/trade); replay over all 94 games it priced, 7 games, 6 winners, +14.9%/trade (t 1.0). THIN EVIDENCE -- 7 trades, 1 loss. Re-check at ~25 trades.",
+    "minEdge": 0.03,
     "kellyFraction": 0.25,
     "sizingMode": "flat",
-    "flatPositionPctNav": 0.07,
-    "maxPositionPctNav": 0.07,
-    "maxGameExposurePctNav": 0.07,
-    "maxOpenExposurePctNav": 0.8,
+    "_comment_size": "25% of NAV per position (user, 2026-11-14). maxOpenExposure 0.75 = at most three positions at once.",
+    "flatPositionPctNav": 0.25,
+    "maxPositionPctNav": 0.25,
+    "maxGameExposurePctNav": 0.25,
+    "maxOpenExposurePctNav": 0.75,
     "minPrice": 0.05,
     "maxPrice": 0.95,
     "minBookDepthUsd": 50,
-    "maxSlippageCents": 0.01,
-    "freshStatusVetoMinutes": 75,
-    "freshStatusVetoMinImpactPts": 1.5,
-    "_comment_veto": "Never buy a team that lost a real player (1.5+ pts of impact) in the last 75 minutes. Ratings cannot see a scratch."
+    "maxSlippageCents": 0.01
   },
   "paper": {
     "startingNavUsd": 10000,
