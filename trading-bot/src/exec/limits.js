@@ -116,6 +116,16 @@ function walkBids(bids, sharesWanted, limitPrice) {
     remaining -= take;
     consumed.push([price, +take.toFixed(4)]);
   }
+  // PAPER: the book crossed the limit, so the WHOLE position sells (user
+  // 2026-11-11). Sizing by standing depth split TOR @ BOS into a 433-share fill
+  // showing +$59 and a later 831-share one -- a win displayed as a fraction of
+  // itself, and a remainder still exposed to the stop. A real copier's few
+  // hundred dollars clear the depth that was there; the paper size is notional.
+  if (filled > 0 && remaining > 0) {
+    proceeds += remaining * limitPrice;
+    filled += remaining;
+    remaining = 0;
+  }
   return {
     filledShares: filled,
     unfilledShares: Math.max(0, sharesWanted - filled),
@@ -424,10 +434,12 @@ async function printedFill(o) {
   let traded = 0;
   for (const v of perTx.values()) traded += v.size;
 
+  // Any real trade at or above the limit fills the WHOLE remaining paper position
+  // (user 2026-11-11, same rule as walkBids): the price reached the sell, so it's
+  // a full win, not a win the size of whatever volume happened to print.
   const remaining = Number(o.shares);
-  const alreadySold = Math.max(0, Number(o.trade_shares || remaining) - remaining);
-  const take = Math.min(remaining, traded - alreadySold);
-  if (!(take > 0.01)) return null;
+  if (!(traded > 0) || !(remaining > 0.01)) return null;
+  const take = remaining;
   return {
     filledShares: take,
     unfilledShares: Math.max(0, remaining - take),

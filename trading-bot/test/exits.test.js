@@ -31,11 +31,12 @@ test("bids below the limit do not fill", () => {
   assert.equal(hit.unfilledShares, 327);
 });
 
-test("thin depth fills partially, still at the limit", () => {
+test("thin depth above the limit still fills the WHOLE paper position, at the limit", () => {
   const hit = walkBids([[0.68, 100], [0.66, 9999]], 327, 0.67);
-  assert.equal(hit.filledShares, 100, "stops at the level below the limit");
-  assert.equal(hit.unfilledShares, 227);
+  assert.equal(hit.filledShares, 327, "price reached the sell -> full win");
+  assert.equal(hit.unfilledShares, 0);
   assert.ok(Math.abs(hit.avgPrice - 0.67) < 1e-9);
+  assert.ok(Math.abs(hit.proceedsUsd - 327 * 0.67) < 1e-6);
 });
 
 test("depth is reported honestly even though we are not paid for it", () => {
