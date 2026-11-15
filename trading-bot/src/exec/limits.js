@@ -300,13 +300,17 @@ function stopFloor(policy, entryPrice) {
 async function settleStop(botId, order, floorPrice, bookTs, exec) {
   const run = exec ? (text, params) => exec.query(text, params) : q;
   const shares = Number(order.shares);
-  await run(
-    `update bots.limit_orders
-        set status='filled', filled_at=now(), fill_price=$2,
-            fill_detail=$3, closed_reason='stop_loss', shares=$4, updated_at=now()
-      where id=$1`,
-    [order.id, floorPrice, JSON.stringify({ stop: true, bookTs }), shares],
-  );
+  // A position held to settlement has no resting order (order.id null): only
+  // the trade and the position are closed.
+  if (order.id != null) {
+    await run(
+      `update bots.limit_orders
+          set status='filled', filled_at=now(), fill_price=$2,
+              fill_detail=$3, closed_reason='stop_loss', shares=$4, updated_at=now()
+        where id=$1`,
+      [order.id, floorPrice, JSON.stringify({ stop: true, bookTs }), shares],
+    );
+  }
   const { rows } = await run(
     `update bots.trades t
         set exit_price  = $2,
@@ -358,6 +362,75 @@ async function tryStop(botId, order, floorPrice, bookTs) {
   } finally {
     client.release();
   }
+}
+
+/**
+ * STOP-LOSS FOR POSITIONS WITH NO RESTING SELL.
+ *
+ * The stop used to ride on the resting exit order, so a favourite held to
+ * settlement (bought at holdToSettlementMinPrice or above -- no exit order) had
+ * no stop at all. DAL @ CLE 2026-11-14: Axis-3 and Bain-3 bought DAL at 0.75,
+ * the price fell through the 70% floor (0.225) to 0.165 at 01:56 UTC and never
+ * came back above 0.325, and both rode to zero (-$812 and -25% of Bain's NAV).
+ * The stop replays that set the 70% level assumed it applied to every position.
+ *
+ * Same trigger as an order-backed stop (recorded mid at or below the floor),
+ * same row-lock discipline: the trade row is locked and re-checked so the tick
+ * and the 20s sweep cannot stop the same position twice.
+ */
+async function sweepHeldStops(botId) {
+  const p = cfg().policy;
+  if (!p.exitStopLossEnabled) return 0;
+  const { rows } = await q(
+    `select t.id as trade_id, t.token_id, t.game_id, t.side, t.condition_id, t.market_type, t.line,
+            t.shares - coalesce(t.exit_shares, 0) as shares, t.fill_price as entry_price,
+            bk.mid, bk.ts as book_ts
+       from bots.trades t
+       join sports.bot_games g on g.game_id = t.game_id
+       left join lateral (
+         select h.mid, h.ts from sports.odds_history h
+          where h.token_id = t.token_id and h.mid is not null
+          order by h.ts desc limit 1
+       ) bk on true
+      where t.bot_id = $1 and not t.settled and not coalesce(t.exited, false)
+        and t.shares - coalesce(t.exit_shares, 0) > 1e-6
+        and not (g.home_score is not null and g.away_score is not null)
+        and not exists (select 1 from bots.limit_orders o
+                         where o.trade_id = t.id and o.action = 'SELL' and o.status = 'open')`,
+    [botId],
+  );
+  let stopped = 0;
+  for (const t of rows) {
+    const floor = stopFloor(p, t.entry_price);
+    const mid = t.mid == null ? null : Number(t.mid);
+    if (floor === null || mid === null || mid > floor + 1e-9) continue;
+    const price = Math.max(0.001, Math.min(floor, mid));
+    const client = await pool.connect();
+    let done = false;
+    try {
+      await client.query("begin");
+      const { rows: cur } = await client.query(
+        `select 1 from bots.trades t where t.id = $1 and not t.settled and not coalesce(t.exited, false)
+            and not exists (select 1 from bots.limit_orders o where o.trade_id = t.id and o.action = 'SELL' and o.status = 'open')
+          for update`, [t.trade_id]);
+      if (!cur.length) { await client.query("rollback"); continue; }
+      await settleStop(botId, { id: null, trade_id: t.trade_id, token_id: t.token_id, game_id: t.game_id, shares: t.shares },
+        price, t.book_ts, client);
+      await client.query("commit");
+      done = true;
+    } catch (e) {
+      await client.query("rollback").catch(() => {});
+      log.warn(`  held stop ${t.game_id}: ${e.message}`);
+    } finally {
+      client.release();
+    }
+    if (done) {
+      stopped++;
+      await emitExit({ botId, kind: "stop", order: t, limitPrice: price });
+    }
+  }
+  if (stopped) log(`  ${stopped} stop-loss exit(s) on positions held to settlement`);
+  return stopped;
 }
 
 /**
@@ -508,6 +581,7 @@ async function sweepFills(botId) {
       log(`  sweep: ${o.game_id} filled ${printed.filledShares.toFixed(0)} sh on trades printed at/above ${Number(o.limit_price).toFixed(3)}`);
     }
   }
+  stopped += await sweepHeldStops(botId).catch((e) => { log.warn(`  held stops: ${e.message}`); return 0; });
   if (stopped) log(`  sweep: ${stopped} stop-loss exit(s)`);
   return { filled, stopped, checked: orders.length };
 }
@@ -631,6 +705,10 @@ async function manageExits(botId, forecasts, now) {
     // shares twice. A false return means the sweep got there first.
     if (await tryFill(botId, o, hit, books[0].ts)) filled++;
   }
+
+  // Positions held to settlement have no order above, so the tick covers their
+  // stop here too (bots with no 20s sweep, like Adam-7, rely on this).
+  stopped += await sweepHeldStops(botId).catch((e) => { log.warn(`  held stops: ${e.message}`); return 0; });
 
   if (repriced || filled || cancelled || stopped) {
     log(`  exits: ${repriced} repriced, ${filled} filled, ${stopped} stopped, ${cancelled} cancelled`);
