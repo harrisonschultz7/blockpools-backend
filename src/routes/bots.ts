@@ -48,7 +48,10 @@ botsRouter.get("/", async (_req, res) => {
       // every rebuild was a large share of the project's egress (2026-11-01).
       `select id, name, league, risk_tier, mode, enabled, starting_nav, created_at,
               market_scope, description,
-              (config->'policy'->>'openWindowHoursBeforeKickoff')::numeric as open_window_hours
+              (config->'policy'->>'openWindowHoursBeforeKickoff')::numeric as open_window_hours,
+              -- config.inTraining: a newly published model. The card shows a
+              -- subtle NEW tag whose tooltip says it is still in training.
+              coalesce((config->>'inTraining')::boolean, false) as in_training
          from bots.bot where enabled = true and ${NOT_HIDDEN_SQL} order by created_at`,
     );
 
@@ -238,6 +241,7 @@ botsRouter.get("/", async (_req, res) => {
         riskTier: b.risk_tier,
         marketScope: b.market_scope,
         description: b.description,
+        inTraining: !!b.in_training,
         mode: b.mode,                  // 'paper' — the UI must label this
         startingNav: startNav,
         nav,
