@@ -99,8 +99,8 @@
       "concurrentCorrelation": 0,
       "observedLookbackDays": 60,
       "roundsPerWeek": 5,
-      "expectedWeeklyTurnover": 0.6,
-      "_comment_expectedTurnover": "About 2-3 trades a week at 25% (Axis-3 priced 94 games in 12 days; 7 cleared 3c).",
+      "expectedWeeklyTurnover": 2,
+      "_comment_expectedTurnover": "2.0 (corrected 2026-11-17). The first estimate (0.6, 2-3 trades a week) was wrong: v2 opened 6 trades at ~25% of NAV in its first 3 days, about 3.5x NAV a week. 2.0 is the conservative side of that and rates it High (score ~1.1 vs the 0.45 line). Replaced by observed turnover after 4 weeks of fills.",
       "_comment_rounds": "NBA recycles the book most days of the week (configs/risk note in config.json): 5, not NFL's 1.",
       "minWeeksForObservedBasis": 4
     }
