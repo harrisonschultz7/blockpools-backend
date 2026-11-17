@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Bain-3 NBA morning preview daily
+
+[Timer]
+# 14:10 UTC = 9am US-Eastern (10am during daylight time). Ten minutes after Axis-3, which refreshes the ESPN data this run reads.
+OnCalendar=*-*-* 14:10:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -31,8 +31,18 @@ const { executePaper } = require("../src/exec/paper");
 const { manageExits, createExitOrder } = require("../src/exec/limits");
 const { currentNav, snapshotNav, snapshotNavIntraday } = require("../src/accounting/nav");
 const { gradeClv, settleTrades, settleFromMarkets } = require("../src/accounting/settle");
+const { normaliseBook, fetchBook } = require("../src/ingest/polymarket");
+const { writeBooks } = require("../src/ingest/bookWriter");
 
 const DRY = process.argv.includes("--dry");
+// --preview: the MORNING LOOK (user, 2026-11-17). Prices every game 2-30h out
+// once, so the ops monitor shows a preliminary fair price and any data gap hours
+// before the 2h pricing window -- like the NFL models' daily look. It cannot
+// trade: every game it sees is outside the 45-minute trading window, so the
+// policy returns outside_window. Books are fetched live (the recorder only runs
+// from 3h out) and stored once so the monitor can project an edge.
+const PREVIEW = process.argv.includes("--preview");
+const PREVIEW_HOURS = 30;
 
 async function ensureBot(c) {
   await q(
@@ -77,6 +87,59 @@ async function captureClosing() {
   );
 }
 
+/** The morning look: price every game 2-30h out once, record the decision, never trade. */
+async function preview(c, now) {
+  const asOf = now.toISOString();
+  const { rows: games } = await q(
+    `select g.game_id, g.kickoff, g.game_date::text as game_date, g.home_team, g.away_team,
+            g.national_tv, g.neutral_site, m.condition_id, m.home_token_id, m.away_token_id
+       from sports.nba_games g
+       join sports.pm_markets m on m.game_id = g.game_id and m.closed = false
+      where m.home_token_id is not null and m.away_token_id is not null
+        and g.kickoff > now() + ($1 || ' hours')::interval
+        and g.kickoff <= now() + ($2 || ' hours')::interval
+      order by g.kickoff`,
+    [String(c.policy.priceWindowHoursBeforeTip), String(PREVIEW_HOURS)]);
+  log(`tick-nba --preview: ${games.length} game(s) ${c.policy.priceWindowHoursBeforeTip}-${PREVIEW_HOURS}h out`);
+  if (!games.length) return;
+
+  const teams = [...new Set(games.flatMap((g) => [g.home_team, g.away_team]))];
+  const ctx = await loadNbaContext(teams, asOf);
+  if ((c.model.weights.matchup ?? 0) > 0) ctx.ratings = await loadRatings(asOf);
+  const nav = await currentNav(c.botId);
+
+  const snaps = [];
+  for (const game of games) {
+    const label = `${game.away_team} @ ${game.home_team}`;
+    const bySide = {};
+    for (const side of ["home", "away"]) {
+      const tokenId = side === "home" ? game.home_token_id : game.away_token_id;
+      try {
+        const snap = normaliseBook(await fetchBook(tokenId), c.ingest.bookLevelsStored);
+        if (snap.mid === null) continue;
+        const row = { condition_id: game.condition_id, token_id: tokenId, game_id: game.game_id, side, ...snap };
+        snaps.push(row);
+        bySide[side] = { ...row, ts: asOf };
+      } catch (e) { log.warn(`  preview book ${label}/${side}: ${e.message}`); }
+    }
+    const forecast = await forecastNbaGame(game, bySide, asOf, ctx);
+    if (!forecast) {
+      await logDecision(c.botId, game, null, { acted: false, skip_reason: "no_book" });
+      log(`  PREVIEW ${label.padEnd(10)} no_book`);
+      continue;
+    }
+    // decide() returns outside_window for every game here -- the record of the
+    // look, with its fair price, is the point.
+    const decision = decide({ forecast, game, books: bySide, nav, existingPosition: false, openExposureUsd: 0, now });
+    if (decision.acted) { log.warn(`  PREVIEW ${label}: policy would act outside its window -- not trading`); continue; }
+    if (DRY) { log(`  PREVIEW ${label.padEnd(10)} fair ${(forecast.p_fair * 100).toFixed(1)}% mkt ${(forecast.p_market * 100).toFixed(1)}% (dry)`); continue; }
+    await logDecision(c.botId, game, forecast, decision);
+    await saveForecast(forecast); // factor breakdown for the monitor
+    log(`  PREVIEW ${label.padEnd(10)} fair ${(forecast.p_fair * 100).toFixed(1)}% mkt ${(forecast.p_market * 100).toFixed(1)}%`);
+  }
+  if (!DRY && snaps.length) await writeBooks(snaps, `nba preview books (${games.length} games)`);
+}
+
 async function main() {
   const c = cfg();
   const now = new Date();
@@ -85,6 +148,7 @@ async function main() {
   // One bot refreshes ESPN; a second would only double the calls. Bain-3 reads what
   // Axis-3's tick wrote, and a stale feed lowers its injury confidence as usual.
   if (!c.ingest.skipRefresh) await refreshData(c, now);
+  if (PREVIEW) { await preview(c, now); return; }
 
   // Games inside the PRICING window with a mapped, open market.
   const { rows: games } = await q(
