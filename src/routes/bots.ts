@@ -51,7 +51,13 @@ botsRouter.get("/", async (_req, res) => {
               (config->'policy'->>'openWindowHoursBeforeKickoff')::numeric as open_window_hours,
               -- config.inTraining: a newly published model. The card shows a
               -- subtle NEW tag whose tooltip says it is still in training.
-              coalesce((config->>'inTraining')::boolean, false) as in_training
+              coalesce((config->>'inTraining')::boolean, false) as in_training,
+              -- Stake per trade, for the risk explanation on the model page. Read
+              -- from the live policy so the words cannot drift from the sizing.
+              coalesce((config->'policy'->>'flatPositionPctNav')::numeric,
+                       (config->'policy'->>'maxPositionPctNav')::numeric) as stake_pct,
+              (config->'policy'->>'thinEdgeSizeScale')::numeric as thin_scale,
+              (config->'policy'->>'thinEdgeBelow')::numeric as thin_below
          from bots.bot where enabled = true and ${NOT_HIDDEN_SQL} order by created_at`,
     );
 
@@ -242,6 +248,12 @@ botsRouter.get("/", async (_req, res) => {
         marketScope: b.market_scope,
         description: b.description,
         inTraining: !!b.in_training,
+        // Fractions of NAV. lowConfidenceStakePct is set only for a bot that sizes
+        // its thinner-edge trades down (Axis-3: 7% -> 4.2%).
+        stakePct: b.stake_pct == null ? null : Number(b.stake_pct),
+        lowConfidenceStakePct:
+          b.stake_pct != null && Number(b.thin_below) > 0 && Number(b.thin_scale) > 0 && Number(b.thin_scale) < 1
+            ? Number(b.stake_pct) * Number(b.thin_scale) : null,
         mode: b.mode,                  // 'paper' — the UI must label this
         startingNav: startNav,
         nav,
