@@ -894,7 +894,7 @@ let lastReconcile = 0;
 async function reconcileSleeves() {
   const { rows } = await q(
     `select p.id, p.subscription_id, p.token_id, p.shares, p.cost_usd, p.opened_at, s.privy_did,
-            i.condition_id, i.line
+            i.condition_id, i.line, gm.game_id, gm.outcome_index
        from copy.positions p
        join copy.subscriptions s on s.id = p.subscription_id
        left join lateral (
@@ -902,24 +902,63 @@ async function reconcileSleeves() {
           where token_id = p.token_id and condition_id is not null
           order by id desc limit 1
        ) i on true
+       -- The app's game + outcome for this token, from the copied buy, so the
+       -- wallet's own trade log (user_trade_events) can be matched to it.
+       left join lateral (
+         select l.game_id, l.outcome_index from public.pm_limit_orders l
+          where l.user_id = s.privy_did and l.token_id = p.token_id and l.game_id is not null
+          order by l.created_at limit 1
+       ) gm on true
       where not p.dry_run and p.closed_at is null and p.shares > 0`);
   for (const p of rows) {
     if (!p.condition_id) continue;
-    // Proceeds are what the fill sync recorded for each copied sell (its rows'
-    // ids end in the order's id prefix), net of fees; the order's own price is
-    // the fallback for a fill the sync has not written yet.
-    const sold = await q(
-      `select coalesce(sum(o.filled_shares), 0) as sh,
-              coalesce(sum(coalesce(
-                (select sum(e.net_out_dec) from public.user_trade_events e
-                  where e.id like 'pmfill-%-' || lower(substr(o.id, 3, 12))),
-                o.filled_shares * o.price)), 0) as usd
-         from public.pm_limit_orders o
-        where o.user_id = $1 and o.token_id = $2 and o.side = 'sell'
-          and o.meta->>'source' = 'copy' and o.created_at >= $3`,
-      [p.privy_did, p.token_id, p.opened_at]);
-    const soldSh = Number(sold.rows[0].sh), soldUsd = Number(sold.rows[0].usd);
     const shares = Number(p.shares), cost = Number(p.cost_usd);
+    // EVERY SELL OF THIS TOKEN FROM THE WALLET counts, not only copy orders. A
+    // subscriber can sell copied shares by hand (or replace the copy exit with
+    // their own order); counting copy orders only booked those shares as held to
+    // settlement -- PHI @ ORL and MEM @ CLE 2026-11-18 were sold at 81c / 74c and
+    // booked as total losses, WAS @ TOR sold at 55c and booked as a $1 win. When
+    // two models copied the same side into one wallet, the wallet's sales are
+    // shared between their positions in proportion to the shares each copied.
+    let soldSh = 0, soldUsd = 0;
+    if (p.game_id) {
+      const w = await q(
+        `select coalesce(sum(e.gross_out_dec / nullif(e.avg_price_bps / 10000.0, 0)), 0) as sh,
+                coalesce(sum(coalesce(e.net_out_dec, e.gross_out_dec)), 0) as usd
+           from public.user_trade_events e
+           join public.users u on u.id = $1
+          where e.type = 'SELL' and e.game_id = $2 and e.outcome_index is not distinct from $3
+            and lower(e.user_address) in (lower(u.primary_address), lower(u.eoa_address),
+                                          lower(u.deposit_address), lower(u.trading_address))
+            and e."timestamp" >= extract(epoch from $4::timestamptz)::bigint - 60`,
+        [p.privy_did, p.game_id, p.outcome_index, p.opened_at]);
+      const grp = await q(
+        `select coalesce(sum(x.shares), 0) as sh from copy.positions x
+           join copy.subscriptions xs on xs.id = x.subscription_id
+          where xs.privy_did = $1 and x.token_id = $2 and not x.dry_run
+            and x.opened_at > $3::timestamptz - interval '1 day'
+            and (x.closed_at is null or x.closed_at > $3::timestamptz)`,
+        [p.privy_did, p.token_id, p.opened_at]);
+      const walletSh = Number(w.rows[0].sh), walletUsd = Number(w.rows[0].usd);
+      const groupSh = Math.max(Number(grp.rows[0].sh), shares);
+      if (walletSh > 0) {
+        soldSh = Math.min(shares, walletSh * (shares / groupSh));
+        soldUsd = walletUsd * (soldSh / walletSh);
+      }
+    } else {
+      // No game mapping: fall back to this subscriber's copied sells only.
+      const sold = await q(
+        `select coalesce(sum(o.filled_shares), 0) as sh,
+                coalesce(sum(coalesce(
+                  (select sum(e.net_out_dec) from public.user_trade_events e
+                    where e.id like 'pmfill-%-' || lower(substr(o.id, 3, 12))),
+                  o.filled_shares * o.price)), 0) as usd
+           from public.pm_limit_orders o
+          where o.user_id = $1 and o.token_id = $2 and o.side = 'sell'
+            and o.meta->>'source' = 'copy' and o.created_at >= $3`,
+        [p.privy_did, p.token_id, p.opened_at]);
+      soldSh = Number(sold.rows[0].sh); soldUsd = Number(sold.rows[0].usd);
+    }
 
     let pnl = null;
     const info = await mkt.marketInfo(p.condition_id, p.line);
