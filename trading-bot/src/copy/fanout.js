@@ -128,7 +128,7 @@ function floorToTick(price, tick) {
 async function subscribersOf(botId) {
   const { rows } = await q(
     `select id, privy_did, wallet_address, basis_usd, multiplier, max_trade_usd,
-            realized_pnl
+            realized_pnl, bot_id
        from copy.subscriptions
       where bot_id = $1 and status = 'active' and delegated_at is not null
         -- never trade for someone with no recorded agreement to the terms
@@ -558,11 +558,18 @@ async function runFanout() {
 
 /** Cancel every live copied sell on this token (venue + shared record). */
 async function cancelLiveCopySells(client, sub, tokenId, reason) {
+  // ONLY THIS MODEL'S sells. Two models can copy the same side into one wallet
+  // (Bain-3 prices with Axis-3's formula), each resting its own exit for its own
+  // shares. Cancelling every copy sell on the token let one model's reprice wipe
+  // the other's exit, which was never re-placed: PHI @ ORL 2026-11-18, Axis-3's
+  // reprice cancelled Bain-3's 432.78-share sell and left 247 of 680 shares
+  // listed. Orders recorded before botId was stamped are still included.
   const live = await q(
     `select id from public.pm_limit_orders
       where user_id = $1 and token_id = $2 and side = 'sell' and status = 'live'
-        and meta->>'source' = 'copy'`,
-    [sub.privy_did, tokenId],
+        and meta->>'source' = 'copy'
+        and ($3::text is null or meta->>'botId' = $3 or meta->>'botId' is null)`,
+    [sub.privy_did, tokenId, sub.bot_id || null],
   );
   for (const r of live.rows) {
     try { await client.cancelOrder({ orderId: r.id }); }
