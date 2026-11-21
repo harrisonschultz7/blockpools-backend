@@ -210,6 +210,12 @@ async function syncGroup(wallet: string, marketId: string, orders: Order[]) {
     const type = t.side === "sell" ? "SELL" : "BUY";
     if (direct.some((d) => d.type === type && Math.abs(d.ts - t.ts) <= 60)) continue;
 
+    // One trade can fill more than one order (two copied models resting sells
+    // at the same price): what is left after the oldest order is full spills
+    // to the next, instead of being dropped (2026-11-21, NOP @ OKC: 73.6
+    // shares lost this way).
+    let left = t.size;
+    while (left > EPS) {
     const order = orders
       .filter((o) => {
         if (o.side !== t.side) return false;
@@ -223,10 +229,11 @@ async function syncGroup(wallet: string, marketId: string, orders: Order[]) {
         return t.ts >= o.created + PLACEMENT_S && Math.abs(t.price - o.price) < 1e-4;
       })
       .sort((a, b) => a.created - b.created)[0];
-    if (!order) continue;
+    if (!order) break;
 
-    const take = Math.min(t.size, order.shares - (filled.get(order.id) || 0));
+    const take = Math.min(left, order.shares - (filled.get(order.id) || 0));
     filled.set(order.id, (filled.get(order.id) || 0) + take);
+    left -= take;
     if (!game || !owner) continue; // counted toward the order; cannot be written
 
     // The feed's usdc_size is what actually moved, fees included: a buy's cash
@@ -263,13 +270,28 @@ async function syncGroup(wallet: string, marketId: string, orders: Order[]) {
       },
       __source: "pm-fill-sync",
     });
+    }
   }
 
-  if (rows.length) {
+  // Several fills in ONE transaction against one order share a row id. Sent
+  // as separate rows, the upsert fails ("cannot affect row a second time")
+  // and the whole market stops syncing -- every pass, forever (2026-11-21:
+  // two fills in tx 0xaef0deb0 froze a copier's NOP @ OKC sales). Merge them.
+  const byId = new Map<string, any>();
+  for (const r of rows) {
+    const cur = byId.get(r.id);
+    if (!cur) { byId.set(r.id, { ...r }); continue; }
+    for (const k of ["grossInDec", "grossOutDec", "feeDec", "netStakeDec", "netOutDec"]) {
+      cur[k] = (Number(cur[k]) + Number(r[k])).toFixed(6);
+    }
+  }
+  const merged = [...byId.values()];
+
+  if (merged.length) {
     const fresh = await pool.query(
-      `SELECT id FROM public.user_trade_events WHERE id = ANY($1::text[])`, [rows.map((r) => r.id)]);
+      `SELECT id FROM public.user_trade_events WHERE id = ANY($1::text[])`, [merged.map((r) => r.id)]);
     const have = new Set(fresh.rows.map((r: any) => r.id));
-    const toWrite = rows.filter((r) => !have.has(r.id));
+    const toWrite = merged.filter((r) => !have.has(r.id));
     if (toWrite.length) {
       await upsertUserTradesAndGames({ user: owner, tradeRows: toWrite });
       bustUserCache(owner);
