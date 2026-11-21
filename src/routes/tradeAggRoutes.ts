@@ -464,6 +464,14 @@ async function handleTradeAgg(req: any, res: any) {
           END AS all_in_price_bps,
 
           COALESCE(SUM(e.net_out_dec::numeric) FILTER (WHERE e.type='SELL'), 0)::numeric AS sell_amount,
+          -- Shares bought and sold (USDC / price), so a position that has sold
+          -- only part of its shares is not reported as closed (2026-11-20: a
+          -- copy sell filled 485 of 2,233 shares and the row read Sold -64.9%).
+          -- NULL when a row has no price -- the caller then keeps "any sale = Sold".
+          SUM(e.net_stake_dec::numeric * 10000 / NULLIF(COALESCE(e.avg_price_bps, e.spot_price_bps), 0)::numeric)
+            FILTER (WHERE e.type='BUY') AS buy_shares,
+          SUM(e.gross_out_dec::numeric * 10000 / NULLIF(COALESCE(e.avg_price_bps, e.spot_price_bps), 0)::numeric)
+            FILTER (WHERE e.type='SELL') AS sell_shares,
           MAX(e.timestamp)::bigint AS last_activity_ts
         FROM public.user_trade_events e
         JOIN public.games g ON g.game_id = e.game_id
@@ -610,6 +618,8 @@ async function handleTradeAgg(req: any, res: any) {
           p.buy_gross,
           p.all_in_price_bps,
           p.sell_amount,
+          p.buy_shares,
+          p.sell_shares,
           p.last_activity_ts,
           p.total_buy_gross_game,
           COALESCE(c.claim_amount, 0)::numeric AS claim_amount,
@@ -626,6 +636,8 @@ async function handleTradeAgg(req: any, res: any) {
           jp.buy_gross,
           jp.all_in_price_bps,
           jp.sell_amount,
+          jp.buy_shares,
+          jp.sell_shares,
           jp.last_activity_ts,
           jp.total_buy_gross_game,
           jp.claim_amount,
@@ -641,6 +653,8 @@ async function handleTradeAgg(req: any, res: any) {
           0::numeric AS buy_gross,
           NULL::numeric AS all_in_price_bps,
           0::numeric AS sell_amount,
+          NULL::numeric AS buy_shares,
+          NULL::numeric AS sell_shares,
           0::bigint AS last_activity_ts,
           0::numeric AS total_buy_gross_game,
           cg.claim_amount,
@@ -655,6 +669,8 @@ async function handleTradeAgg(req: any, res: any) {
         u.buy_gross,
         u.all_in_price_bps,
         u.sell_amount,
+        u.buy_shares,
+        u.sell_shares,
         u.last_activity_ts,
         u.total_buy_gross_game,
 
@@ -813,8 +829,16 @@ async function handleTradeAgg(req: any, res: any) {
 
       const returnAmount = Math.max(0, sellAmount + claimAlloc);
 
+      // A sale closes the row only once (nearly) every share is sold, or the
+      // game is over. Until then a part-sold position is still open.
+      const buyShares = r.buy_shares == null ? null : Number(r.buy_shares);
+      const sellShares = r.sell_shares == null ? null : Number(r.sell_shares);
+      const partSold = !isFinal && buyShares != null && sellShares != null && buyShares > 0
+        && sellShares < buyShares * 0.98;
+
       let action: TradeAggRow["action"] = "Pending";
-      if (sellAmount > 0) action = "Sold";
+      if (sellAmount > 0 && partSold) action = "Pending";
+      else if (sellAmount > 0) action = "Sold";
       else if (isFinal && winningOutcomeIndex != null) {
         if (outcomeIndex != null && outcomeIndex === winningOutcomeIndex) action = "Won";
         else if (outcomeIndex != null) action = "Lost";

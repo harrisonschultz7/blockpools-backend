@@ -94,8 +94,13 @@ type Game = {
   takerFeeRate: number;
 };
 
+// Every venue call is bounded. One request that never answered left the run
+// "in progress" forever, so every later tick returned early and no fill was
+// logged for anyone (2026-11-21: stuck from 01:30 UTC with a copier's last
+// 1,748 sold shares missing from their history).
+const FETCH_TIMEOUT_MS = 15_000;
 async function getJson(url: string): Promise<any> {
-  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const r = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!r.ok) throw new Error(`${r.status} ${url}`);
   return r.json();
 }
@@ -287,10 +292,15 @@ async function syncGroup(wallet: string, marketId: string, orders: Order[]) {
 }
 
 let running = false;
+let runStartedAt = 0;
+/** A run older than this is presumed hung (a DB call, say) and a new one may start. */
+const STALE_RUN_MS = 10 * 60_000;
 
 export async function runPmFillSyncOnce(): Promise<void> {
-  if (running) return;
+  if (running && Date.now() - runStartedAt < STALE_RUN_MS) return;
+  if (running) console.warn(`[pm-fills] previous run stuck for ${Math.round((Date.now() - runStartedAt) / 60000)}m -- starting a new one`);
   running = true;
+  runStartedAt = Date.now();
   try {
     const { rows } = await pool.query(
       `SELECT o.id, o.owner_address, o.market_id, o.outcome_index, o.side, o.price, o.shares,
