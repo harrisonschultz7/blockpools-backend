@@ -18,6 +18,7 @@ selectConfig("config.argo-7.json");
 const { q, close } = require("../src/db");
 const log = require("../src/log");
 const { loadSchemeContext } = require("../src/features/scheme");
+const { loadSchemeMatchupContext } = require("../src/features/schemeMatchup");
 const { loadPace, paceSignal } = require("../src/features/paceTotals");
 const { solveRatings } = require("../src/features/teamStrength");
 const { loadAbsoluteFit } = require("../src/model/fitAbsolute");
@@ -146,7 +147,12 @@ async function main() {
         `out of sample, game sigma ${absoluteFit.gameSigmaOutOfSample} pts ` +
         `(closing line's own error: ${calibration.sigma} pts)`);
   }
-  const ctx = { scheme, pace, ratings, absoluteFit, calibration };
+  // The scheme-matchup stance (model.schemeMatchup) reads each team's charted
+  // games directly; one load per tick, shared by every game.
+  const schemeMatchup = games.length && c.model.schemeMatchup && c.model.schemeMatchup.enabled
+    ? await loadSchemeMatchupContext(season)
+    : null;
+  const ctx = { scheme, pace, ratings, absoluteFit, calibration, schemeMatchup };
 
   const nav = await currentNav(c.botId);
   const weekRow = await q(

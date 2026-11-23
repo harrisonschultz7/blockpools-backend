@@ -37,6 +37,7 @@ const { cfg } = require("../config");
 const { q } = require("../db");
 const { weatherTotalsSignal } = require("../features/weatherTotals");
 const { schemeSignal } = require("../features/scheme");
+const { schemeMatchupSignal } = require("../features/schemeMatchup");
 const { paceSignal, restSignal, situationalTotalsSignal } = require("../features/paceTotals");
 const { injuryTotalsSignal } = require("../features/injuryTotals");
 const { baseTotal, absoluteSigma } = require("./absoluteTotals");
@@ -159,6 +160,7 @@ async function forecastTotal(game, market, books, asOf, ctx) {
     if (base.skip) return { skip: base.skip, detail: base.detail || base };
   }
 
+  const matchupOn = !!(m.schemeMatchup && m.schemeMatchup.enabled);
   const [weather, injury] = await Promise.all([
     weatherTotalsSignal(game, asOf),
     injuryTotalsSignal(game, asOf),
@@ -166,7 +168,12 @@ async function forecastTotal(game, market, books, asOf, ctx) {
   const raw = {
     weather,
     injury,
-    scheme: schemeSignal(game, ctx.scheme),
+    // model.schemeMatchup replaces the old scheme interaction with the
+    // play-action-vs-box / pass-vs-coverage stance (src/features/schemeMatchup.js).
+    scheme: matchupOn
+      ? (ctx.schemeMatchup ? schemeMatchupSignal(game, ctx.schemeMatchup)
+                           : { points: 0, confidence: 0, detail: { reason: "scheme matchup context not loaded" } })
+      : schemeSignal(game, ctx.scheme),
     pace: paceSignal(game, ctx.pace),
     rest: restSignal(game),
     situational: situationalTotalsSignal(game),
@@ -192,7 +199,9 @@ async function forecastTotal(game, market, books, asOf, ctx) {
     // already in the market price", which is only a meaningful question when the
     // market price is the thing being adjusted. Here the bot forms its own number
     // and the factors speak at the weights they were given.
-    const scaleFor = (key) => (independent ? 1 : (cal.scale[key] ?? 0));
+    // The scheme matchup is already fitted against the closing line (its own
+    // coefficient, model.schemeMatchup.pointsPerUnit), so it takes no calibration scale.
+    const scaleFor = (key) => (independent || (matchupOn && key === "scheme") ? 1 : (cal.scale[key] ?? 0));
     if (parts && Object.keys(parts).length) {
       for (const [name, pts] of Object.entries(parts)) {
         const key = `${k}.${name}`;

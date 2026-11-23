@@ -23,7 +23,8 @@
       "weather": 0.3,
       "_comment_scheme_LIVE_EXPERIMENT": "0.30 is a DELIBERATE OVERRIDE of a negative measurement, kept as a live experiment by the user on 2026-10-02, not an oversight. What it overrides: the residual calibration on 1,188 finished games fits scheme at beta -1.1131, t -1.74 against the total's deviation from the closing line, on the 311 games where it produces a value -- i.e. when scheme says over, the game has tended to come in under. The scheme fit itself is sound (t +2.52 predicting offensive EPA per play), which points at the EPA-to-points conversion as the fault: schemeSignal multiplies EPA/play by a flat expectedPlaysPerTeam of 64 for every team, while 70% of scheme's over-signal comes from SLOW offences, the ones that do not run 64 plays. t -1.74 is suggestive, not conclusive, which is why running it live to settle the question is reasonable. REVIEW TRIGGER: re-run run/calibrate-totals.js after roughly 40 more settled Argo-7 trades. If scheme still fits wrong-signed, zero it -- see git 8b036e49 for the commit that did so, reverted here. If it flips positive, the conversion was noise and the weight is earned. Do not let this comment become scenery: an override with no review date is just a mistake with extra steps.",
     "_comment_scheme_2026_11_09": "ZEROED per the review trigger above (43 settled Argo-7 trades). calibrate-totals on 1,274 games (2022+): beta -0.657, t -1.14; on 2025-26 alone -1.39, t -2.18 -- wrong-signed again and stronger on recent data. The rule set on 2026-10-02 was: still wrong-signed, zero it.",
-    "scheme": 0,
+    "_comment_scheme_2026_11_23": "1 = the scheme MATCHUP stance below (model.schemeMatchup), whose points are already in points against the line, so the weight is 1 and it takes no calibration scale. The old interaction input stays zeroed while schemeMatchup.enabled is true.",
+    "scheme": 1,
       "rest": 0.15,
       "pace": 0,
       "injury": 0.08,
@@ -163,7 +164,23 @@
       "ridgeIterations": 12,
       "minGamesToRate": 3
     },
-    "priceMode": "independent",
+    "priceMode": "residual",
+    "_comment_priceMode_2026_11_23": "RESIDUAL as of 2026-11-23 (user). The independent base total had no predictive value against the line: across 52 settled Argo-7 trades, (base - line) correlated -0.02 with (final - line), right side 28 of 52, and it supplied nearly all of Argo's 8-15c edges (MIN@SF: base 41.0 vs line 46.5, 15.7c Under, with every factor ~0). Replaying those 60 trades in residual mode with the old factors took none of them -- so the scheme matchup stance (model.schemeMatchup) is what Argo now trades on, plus calibrated cold weather and primetime.",
+    "schemeMatchup": {
+      "_comment": "The user's stance (2026-11-23): the defence wins two style matchups the line under-prices -- (1) play-action offence vs a defence that loads the box, (2) pass-heavy offence vs a defence that rushes few and drops into coverage. Strong defensive matchup -> Under, the reverse -> Over. See src/features/schemeMatchup.js. Measured on 1,238 games 2022-26 (pre-game traits only): -0.92 pts vs the closing total per unit of signal, t -3.6, same sign 4 of 5 seasons (2024 flat), 2025-26 alone -1.37 (t -3.1). Only 2 of 9 ideas tried held their sign in both halves, so the coefficient is shrunk to -0.6. Replay of 2026 at a 2.5c bar: 22 trades, 13-9, +15.9% held to settlement (in-sample). REVIEW after 30 settled trades on this stance: if the signal's live fit against (final - line) is not negative, turn it off.",
+      "enabled": true,
+      "pointsPerUnit": -0.6,
+      "maxPoints": 4.5,
+      "_comment_constants": "z-score constants and component spreads from the 2022-26 sample (scratchpad scheme_replay2026.js). Fixed so the signal does not drift as the season adds games.",
+      "traits": {
+        "off_pa_rate": { "mean": 0.25376, "sd": 0.05314 },
+        "def_heavy_box_rate": { "mean": 0.3353, "sd": 0.07196 },
+        "off_pass_rate": { "mean": 0.54491, "sd": 0.05197 },
+        "def_rushers_avg": { "mean": 4.28543, "sd": 0.11441 }
+      },
+      "paBoxSd": 1.43963,
+      "passCoverageSd": 1.38334
+    },
     "_comment_priceMode": "independent | residual. RESIDUAL is p_fair = market_price + adjustment: the market is the anchor and the calibration exists only to stop a factor being counted twice (once in the anchor, once by us). INDEPENDENT computes the bot's OWN absolute total from offence/defence ratings plus the weighted factors and never reads the market price to form an opinion -- the market is only the thing it trades against. User chose independent on 2026-09-26 after being shown the measured cost, which is recorded here rather than softened: the absolute model's out-of-sample error on a game total is 13.54 points against the closing line's 13.07, so on average it is a slightly worse estimate than the price it is betting against. Factor scales are NOT applied in this mode, because 'how much has the market already priced' is a question that only means something when you are adding to the market's own number.",
     "absolute": {
       "_comment": "The independent mode's base total. Offence and defence QUALITY only (opponent-adjusted EPA/play) plus expected plays -- style deliberately excluded here so it cannot be counted twice against the scheme factor, which carries the style terms at its own weight.",
@@ -206,7 +223,8 @@
     "exitStopLossEnabled": false,
     "exitStopLossMaxLossPct": 0.85,
     "_comment_minEdge": "0.080, RAISED from 0.025 on 2026-10-02. Argo-7 was not being selective at all: 0.025 let through 10 of the 11 games it evaluated, and 0.020 would have taken all 11. The two bots were sharing one constant while producing edges on completely different scales -- Argo-7's median best edge is 0.0800, Adam-7's MAXIMUM EVER is 0.0287 -- so the same number is a near-no-op on one and a near-off-switch on the other. 0.080 is Argo-7's own median, which puts it at 6 of 11 (55%) by construction. Measured ladder: 0.040 -> 82%, 0.060 -> 55%, 0.080 -> 55%, 0.100 -> 27%, 0.120 -> 18%. CAVEAT n=11, and the rest-factor resign on the same day moves p_fair, so re-measure after a few weeks rather than trusting this split.",
-    "minEdge": 0.08,
+    "_comment_minEdge_2026_11_23": "0.025 with residual mode + the scheme matchup. Against the line, 1 point of disagreement is ~3c, so 2.5c needs ~1 point plus the half-spread: games about 1.7+ units of signal from neutral, ~2-3 a week in the 2026 replay. The 0.080 below belonged to the independent base model's much larger (and empty) edges.",
+    "minEdge": 0.025,
     "kellyFraction": 0.25,
     "maxPositionPctNav": 0.07,
     "maxGameExposurePctNav": 0.05,
