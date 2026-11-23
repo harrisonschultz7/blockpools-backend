@@ -18,7 +18,7 @@
 // double-count the single best-known effect in the sport.
 
 const { cfg } = require("../config");
-const { q } = require("../db");
+const { cachedRows } = require("../cache");
 
 /**
  * Solve offence/defence ratings for every team, as of a moment in time.
@@ -38,7 +38,9 @@ async function solveRatings(asOf, opts) {
   // is already enforced by that decay, not by the window.
   const startSeason = (opts && opts.fromSeason) || cfg().data.startSeason;
 
-  const { rows } = await q(
+  // Through the disk cache (src/cache.js): live ticks reuse this until the
+  // daily ingest changes the table; fits with past dates still hit the database.
+  const rows = await cachedRows("ratings",
     `select s.team, s.opponent, s.off_epa_per_play, s.def_epa_per_play, g.kickoff
        from sports.nfl_team_game_stats s
        join sports.nfl_games g on g.game_id = s.game_id
@@ -48,6 +50,7 @@ async function solveRatings(asOf, opts) {
         and s.def_epa_per_play is not null
       order by g.kickoff`,
     [asOf, startSeason],
+    { keyParams: [startSeason], asOf },
   );
   if (!rows.length) return new Map();
 

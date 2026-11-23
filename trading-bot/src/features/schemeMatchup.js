@@ -28,11 +28,13 @@
 // that kicked off before this one count).
 
 const { cfg } = require("../config");
-const { q } = require("../db");
+const { cachedRows } = require("../cache");
 
 /** Every team-game row from last season on, for the traits. Loaded once per tick. */
 async function loadSchemeMatchupContext(season) {
-  const { rows } = await q(
+  // Through the disk cache (src/cache.js): the charting only changes when the
+  // daily FTN/nflverse ingest runs.
+  const rows = await cachedRows("scheme-matchup",
     `select s.team, s.season, extract(epoch from g.kickoff) * 1000 as k,
             s.off_pa_rate::float8 off_pa_rate, s.def_heavy_box_rate::float8 def_heavy_box_rate,
             s.def_rushers_avg::float8 def_rushers_avg, t.off_pass_rate::float8 off_pass_rate
@@ -42,6 +44,7 @@ async function loadSchemeMatchupContext(season) {
       where s.season >= $1
       order by g.kickoff`,
     [season - 1],
+    { keyParams: [season - 1] },
   );
   const byTeam = new Map();
   for (const r of rows) {

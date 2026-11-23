@@ -128,9 +128,13 @@ async function main() {
   // rating anyway -- a game 40 back carries ~0.001 of last week's weight.
   const independent = c.model.priceMode === "independent";
   const ratingsFrom = c.model.absolute.fitStartSeason || c.data.startSeason;
+  // The old scheme interaction is only read when the scheme-matchup stance is
+  // off (or the independent base model needs its traits); otherwise loading it
+  // every tick was pure Supabase egress (2026-11-23).
+  const matchupMode = !!(c.model.schemeMatchup && c.model.schemeMatchup.enabled);
   const [scheme, pace, ratings] = games.length
     ? await Promise.all([
-        loadSchemeContext(season, week),
+        matchupMode && !independent ? Promise.resolve(null) : loadSchemeContext(season, week),
         loadPace(asOf, c.data.startSeason),
         independent ? solveRatings(asOf, { fromSeason: ratingsFrom }) : Promise.resolve(new Map()),
       ])

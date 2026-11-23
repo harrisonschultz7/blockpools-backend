@@ -20,7 +20,7 @@
 // differential model is blind to exactly that game.
 
 const { cfg } = require("../config");
-const { q } = require("../db");
+const { cachedRows } = require("../cache");
 
 /**
  * Recency-weighted seconds-per-play for both teams, from games before asOf.
@@ -29,13 +29,15 @@ const { q } = require("../db");
  * record is not read as having a settled tempo.
  */
 async function loadPace(asOf, startSeason) {
-  const { rows } = await q(
+  // Through the disk cache (src/cache.js), as teamStrength.
+  const rows = await cachedRows("pace",
     `select s.team, s.sec_per_play, s.off_plays, g.kickoff
        from sports.nfl_team_game_stats s
        join sports.nfl_games g on g.game_id = s.game_id
       where s.season >= $1 and g.kickoff < $2 and s.sec_per_play is not null
       order by g.kickoff`,
     [startSeason, asOf],
+    { keyParams: [startSeason], asOf },
   );
   const byTeam = new Map();
   for (const r of rows) {

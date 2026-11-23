@@ -23,6 +23,7 @@
 
 const { cfg } = require("../config");
 const { q } = require("../db");
+const { cachedRows } = require("../cache");
 
 // The injury report's position codes are not the config's. Map before lookup,
 // or an offensive tackle ("T") silently falls through to the 0.08 default and
@@ -90,7 +91,9 @@ async function playerBaseline(team, playerName, asOf) {
   const key = normName(playerName);
 
   // Games the team played before asOf, and whether this player was on the field.
-  const { rows } = await q(
+  // Through the disk cache (src/cache.js): one query per injured player per
+  // tick was 534k calls a year; snap counts and team stats only change daily.
+  const rows = await cachedRows("baseline",
     `select g.game_id,
             t.off_epa_per_play, t.def_epa_per_play,
             max(case when s.pfr_player_id is not null then 1 else 0 end) played,
@@ -112,6 +115,7 @@ async function playerBaseline(team, playerName, asOf) {
       group by g.game_id, t.off_epa_per_play, t.def_epa_per_play, g.kickoff
       order by g.kickoff`,
     [team, asOf, startSeason, key],
+    { keyParams: [team, startSeason, key], asOf },
   );
   if (!rows.length) return null;
 

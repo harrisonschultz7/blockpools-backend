@@ -17,14 +17,15 @@
 // POINT-IN-TIME: reads only games kicked off before `asOf`.
 
 const { cfg } = require("../config");
-const { q } = require("../db");
+const { cachedRows } = require("../cache");
 
 /** Recency-weighted pace and style profile per team, as of a moment. */
 async function loadProfiles(asOf) {
   const { startSeason } = cfg().data;
   const { halfLifeGames } = cfg().model.momentum;
 
-  const { rows } = await q(
+  // Through the disk cache (src/cache.js), as teamStrength.
+  const rows = await cachedRows("profiles",
     `select s.team, s.sec_per_play, s.off_plays, s.plays_total, s.off_pass_rate,
             s.off_pass_epa, s.off_rush_epa, s.def_epa_per_play,
             s.def_pass_epa, s.def_rush_epa, g.kickoff
@@ -33,6 +34,7 @@ async function loadProfiles(asOf) {
       where g.kickoff < $1 and s.season >= $2 and s.sec_per_play is not null
       order by g.kickoff`,
     [asOf, startSeason],
+    { keyParams: [startSeason], asOf },
   );
 
   const byTeam = new Map();
