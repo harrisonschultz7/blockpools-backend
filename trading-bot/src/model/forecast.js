@@ -116,7 +116,11 @@ async function forecastGame(game, books, asOf, ctx) {
     const keep = Number.isFinite(m.factorKeep?.[k]) ? m.factorKeep[k]
       : (cal.scale[k] ?? prov) / prov;
     const residual = keep * (raw[k].signal * prov - (cal.beta[k] ?? 0) * (p_market - 0.5));
-    const c = m.weights[k] * residual;
+    // model.factorCap: the most one factor may move the price, either way (unset = no cap).
+    const cap = Number(m.factorCap?.[k]);
+    const c = Number.isFinite(cap) && cap >= 0
+      ? Math.max(-cap, Math.min(cap, m.weights[k] * residual))
+      : m.weights[k] * residual;
     contrib[k] = { signal: +raw[k].signal.toFixed(5), scaled: +scaled.toFixed(5),
                    residual: +residual.toFixed(5), weighted: +c.toFixed(5),
                    confidence: +raw[k].confidence.toFixed(3) };

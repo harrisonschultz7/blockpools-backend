@@ -19,6 +19,10 @@
       "momentum": 1,
       "injury": 1
     },
+    "_comment_factorCap": "2026-11-22 (user): injury may move the price at most 1c either way, so it can tip a trade over minEdge but never carry one alone. Why: trades where injury was half or more of the edge were 11-7 but -23.2% (-$3,462) through Nov 22, every other trade +7.6% (+$1,663). On Nov 22 injury alone gave MIA, ARI and TEN 3.0-3.3c (BUF was charged 22 points of win probability for five defensive absences, one CB ~10 points); all three lost, -$2,490. Adam trades 24h out, after Friday's final report, when the market has had days to price the news -- calibration damped injury to 0 for that reason. Remove the key to uncap.",
+    "factorCap": {
+      "injury": 0.01
+    },
     "weights": {
       "momentum": 0.3,
       "matchup": 0.25,
@@ -131,6 +135,9 @@
     "maxOpenExposurePctNav": 0.60,
     "minPrice": 0.05,
     "maxPrice": 0.95,
+    "_comment_longshot": "2026-11-22 (user): below 20c a side needs a 5c edge, not 1.5c. Polymarket NFL moneylines 2025-26, 810 sides bought 24h out: under 15c reached entry+8c 52% of the time vs 61% for a fair price (-18% selling at +8c); 15-20c 60% vs 68% (-11%); 30c+ within 1-2 points of fair. Half the sub-15c sides were below half their price two hours in. That shortfall is worth roughly 2-3c on a 12-17c price, so the bar is minEdge plus ~3.5c. Adam-7 had bought 3 under 15c: 1 win, -49.6%. Nov 22 MIA and ARI (9c, edges 2.1c and 2.3c) both lost, -$1,660. Unset either key to turn this off.",
+    "longshotMaxPrice": 0.20,
+    "longshotMinEdge": 0.05,
     "minBookDepthUsd": 50,
     "_comment_slippage_cap": "0.01, HALVED alongside minEdge and not optional. edge is measured against best_ask (policy/medium.js), so slippage is spent AFTER the edge test passes: at minEdge 0.015 with 0.02 of permitted slippage the bot could fill a 1.5c edge at -0.5c and never record a complaint. Measured fills say 0.01 costs nothing -- 8 of 10 filled exactly at top of book, worst walk 0.0082.",
     "maxSlippageCents": 0.01,

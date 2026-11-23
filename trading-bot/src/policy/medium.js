@@ -23,6 +23,7 @@ const SKIP = {
   TOO_CLOSE_TO_KICKOFF: "too_close_to_kickoff",
   LOW_CONFIDENCE: "low_confidence",
   EDGE_BELOW_THRESHOLD: "edge_below_threshold",
+  LONGSHOT_EDGE_BELOW_THRESHOLD: "longshot_edge_below_threshold",
   PRICE_OUT_OF_RANGE: "price_out_of_range",
   THIN_BOOK: "thin_book",
   ALREADY_POSITIONED: "already_positioned",
@@ -69,6 +70,12 @@ function decide(args) {
   const fairForSide = side === "home" ? forecast.p_fair : 1 - forecast.p_fair;
   const edge = fairForSide - price;
   if (edge < p.minEdge) return skip(SKIP.EDGE_BELOW_THRESHOLD, { edge, price, side });
+  // A cheap underdog needs a bigger edge (policy.longshotMaxPrice / longshotMinEdge;
+  // off when unset). See the config comment for the data behind it.
+  if (Number.isFinite(p.longshotMaxPrice) && Number.isFinite(p.longshotMinEdge)
+      && price < p.longshotMaxPrice && edge < p.longshotMinEdge) {
+    return skip(SKIP.LONGSHOT_EDGE_BELOW_THRESHOLD, { edge, price, side });
+  }
 
   const depth = Number(book.ask_depth_usd || 0);
   if (depth < p.minBookDepthUsd) return skip(SKIP.THIN_BOOK, { depth });
