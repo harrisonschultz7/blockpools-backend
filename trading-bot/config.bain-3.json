@@ -25,7 +25,8 @@
     "weights": {
       "injury": 0.35,
       "momentum": 0.1,
-      "rest": 0.2,
+      "_comment_rest_2026_11_23": "0.1, halved from 0.2 alongside Axis-3 (same pricing block) -- see config.axis-3.json for the measurement: rest is already in the price.",
+      "rest": 0.1,
       "primetime": 0.1,
       "style": 0
     },

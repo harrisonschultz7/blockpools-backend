@@ -23,7 +23,8 @@
     "weights": {
       "injury": 0.35,
       "momentum": 0.1,
-      "rest": 0.2,
+      "_comment_rest_2026_11_23": "0.1, halved from 0.2 (user asked to improve rest/travel). Fitted on 2,913 NBA games 2024-25 on, against the Polymarket price 30 min before tip: Axis's rest points are worth 0.14 (+/-0.49) beyond the price; back-to-back -0.10 (+/-1.29), 3-in-4 -0.28, rest-day advantage +0.14/day, travel -0.26/1000mi -- every term right-signed, none distinguishable from zero, i.e. the market already prices rest. Live, rest-led trades were -4.3% (n10) vs injury-led +8.5% (n45). Rest still nudges a price but no longer drives a trade on its own. Script: scratchpad rest_test.js.",
+      "rest": 0.1,
       "primetime": 0.1,
       "style": 0
     },
