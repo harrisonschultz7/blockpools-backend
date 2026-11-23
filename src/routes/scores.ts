@@ -76,24 +76,65 @@ type PgCacheHit = {
   ageMs: number;
 };
 
+// In-process copy of game_score_cache rows, so repeat requests for the same
+// game don't pull the row out of Postgres every time. Every read used to go to
+// the database (~177k full-row reads since Dec 2025, rows averaging 42 KB and
+// up to 355 KB for older games), which counts as Supabase egress. A FINAL row
+// never changes, so it is kept until evicted (capped by count); a live row is
+// re-read at most every PG_ROW_LIVE_TTL_MS, far below the 60s revalidation
+// age, so live scores are no staler than before. pgCacheSet refreshes the
+// copy whenever it writes the row.
+const PG_ROW_LIVE_TTL_MS = 15_000;
+const PG_ROW_CACHE_MAX = 1500;
+type PgRow = { data: any; isFinal: boolean; fetchedAt: number; readAt: number };
+const _pgRowCache = new Map<string, PgRow>();
+
+function pgRowRemember(key: string, row: PgRow) {
+  if (_pgRowCache.has(key)) _pgRowCache.delete(key); // refresh insertion order
+  _pgRowCache.set(key, row);
+  while (_pgRowCache.size > PG_ROW_CACHE_MAX) {
+    const oldest = _pgRowCache.keys().next().value;
+    if (oldest === undefined) break;
+    _pgRowCache.delete(oldest);
+  }
+}
+
+async function pgCacheRow(key: string): Promise<PgRow | null> {
+  const mem = _pgRowCache.get(key);
+  if (mem && (mem.isFinal || Date.now() - mem.readAt < PG_ROW_LIVE_TTL_MS)) return mem;
+  const { rows } = await pool.query(
+    `SELECT score_data, is_final, fetched_at
+     FROM game_score_cache
+     WHERE contract_address = $1
+     LIMIT 1`,
+    [key]
+  );
+  const row = rows[0];
+  if (!row || row.score_data == null) {
+    _pgRowCache.delete(key);
+    return null;
+  }
+  const fresh: PgRow = {
+    data: row.score_data,
+    isFinal: row.is_final === true,
+    fetchedAt: row.fetched_at ? new Date(row.fetched_at).getTime() : 0,
+    readAt: Date.now(),
+  };
+  pgRowRemember(key, fresh);
+  return fresh;
+}
+
 async function pgCacheGet(contractAddress: string): Promise<PgCacheHit | null> {
   if (!contractAddress) return null;
   try {
-    const { rows } = await pool.query(
-      `SELECT score_data, is_final, fetched_at
-       FROM game_score_cache
-       WHERE contract_address = $1
-       LIMIT 1`,
-      [contractAddress.toLowerCase()]
-    );
-    const row = rows[0];
-    const data = row?.score_data;
-    if (data == null) return null;
+    const row = await pgCacheRow(contractAddress.toLowerCase());
+    const data = row?.data;
+    if (!row || data == null) return null;
 
-    const fetchedAt = row.fetched_at ? new Date(row.fetched_at).getTime() : 0;
+    const fetchedAt = row.fetchedAt;
     const ageMs = fetchedAt ? Date.now() - fetchedAt : Number.MAX_SAFE_INTEGER;
 
-    if (row.is_final === true) {
+    if (row.isFinal) {
       return { data, header: "postgres-final", ageMs };
     }
 
@@ -128,6 +169,9 @@ async function pgCacheSet(
          fetched_at = now()`,
       [contractAddress.toLowerCase(), league.toUpperCase(), JSON.stringify(data), isFinal]
     );
+    // Keep the in-process copy in step with what was just written.
+    const now = Date.now();
+    pgRowRemember(contractAddress.toLowerCase(), { data, isFinal, fetchedAt: now, readAt: now });
   } catch (e) {
     console.warn("[scores] pgCacheSet error", (e as any)?.message);
   }

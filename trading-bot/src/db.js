@@ -16,11 +16,25 @@ const ssl = /supabase.(co|com)/.test(connectionString)
   ? { rejectUnauthorized: false }
   : undefined;
 
+// Idle connections are kept for 10 minutes (was 30s). The long-running
+// services -- the four book recorders poll every 60s, copy-fanout every 3s,
+// limit-carryover every 10s -- went idle past 30s between polls, so the
+// recorders closed and reopened a connection every minute: ~480 new
+// connections an hour around the clock through the transaction pooler
+// (Supabase supavisor logs, 2026-11-23), each a TLS handshake + startup,
+// and a large part of the 5 GB/month egress that pushed the org off the free
+// plan. One-shot timer scripts are unaffected: they close the pool on exit.
+// Override with BOT_PG_IDLE_TIMEOUT_MS.
 const pool = new Pool({
   connectionString,
   ssl,
   max: 6,
-  idleTimeoutMillis: 30_000,
+  idleTimeoutMillis: Number(process.env.BOT_PG_IDLE_TIMEOUT_MS || 600_000),
+  keepAlive: true,
+});
+// A connection the pooler drops while idle must not crash the service.
+pool.on("error", (err) => {
+  console.error("[db] idle client error:", err && err.message);
 });
 
 async function q(text, params) {
