@@ -14,7 +14,7 @@
 
 const { cfg, ENV } = require("../config");
 const { getText, parseCsv, streamCsv, num, str, bool } = require("../http");
-const { bulkInsert, q } = require("../db");
+const { bulkInsert, upsertIfChanged, q } = require("../db");
 const log = require("../log");
 
 const url = (tag, file) => `${ENV.NFLVERSE_BASE}/${tag}/${file}`;
@@ -243,10 +243,9 @@ async function ingestPbpSeason(season) {
   if (!rows.length) { log.warn(`pbp ${season}: no aggregable plays`); return 0; }
 
   const cols = Object.keys(rows[0]);
-  const updates = cols.filter((c) => !["game_id", "team"].includes(c))
-    .map((c) => `${c} = excluded.${c}`).join(", ");
+  // Rewrites only rows whose numbers changed (see upsertIfChanged).
   await bulkInsert("sports.nfl_team_game_stats", cols, rows, {
-    onConflict: `on conflict (game_id, team) do update set ${updates}, computed_at = now()`,
+    onConflict: upsertIfChanged("sports.nfl_team_game_stats", cols, ["game_id", "team"], "computed_at = now()"),
   });
   log(`pbp ${season}: ${playCount} plays -> ${rows.length} team-game rows`);
   return rows.length;
@@ -276,10 +275,9 @@ async function ingestSnapCounts(season) {
   if (!rows.length) return 0;
 
   const cols = Object.keys(rows[0]);
-  const updates = cols.filter((c) => !["game_id", "pfr_player_id"].includes(c))
-    .map((c) => `${c} = excluded.${c}`).join(", ");
+  // Rewrites only rows whose numbers changed (see upsertIfChanged).
   await bulkInsert("sports.nfl_snap_counts", cols, rows, {
-    onConflict: `on conflict (game_id, pfr_player_id) do update set ${updates}`,
+    onConflict: upsertIfChanged("sports.nfl_snap_counts", cols, ["game_id", "pfr_player_id"]),
   });
   log(`snap_counts ${season}: ${rows.length} rows`);
   return rows.length;

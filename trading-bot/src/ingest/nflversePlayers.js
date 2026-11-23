@@ -15,7 +15,7 @@
 
 const { cfg, ENV } = require("../config");
 const { getText, parseCsv, num, str } = require("../http");
-const { bulkInsert } = require("../db");
+const { bulkInsert, upsertIfChanged } = require("../db");
 const log = require("../log");
 const { currentSeason } = require("./nflverse");
 
@@ -78,10 +78,9 @@ async function ingestPlayerWeekSeason(season) {
   if (!rows.length) { log.warn(`player_week ${season}: no rows`); return 0; }
 
   const cols = Object.keys(rows[0]);
-  const updates = cols.filter((c) => !["game_id", "player_id"].includes(c))
-    .map((c) => `${c} = excluded.${c}`).join(", ");
+  // Rewrites only rows whose box score changed (see upsertIfChanged).
   await bulkInsert("sports.nfl_player_week", cols, rows, {
-    onConflict: `on conflict (game_id, player_id) do update set ${updates}, updated_at = now()`,
+    onConflict: upsertIfChanged("sports.nfl_player_week", cols, ["game_id", "player_id"], "updated_at = now()"),
   });
   log(`player_week ${season}: ${rows.length} rows`);
   return rows.length;

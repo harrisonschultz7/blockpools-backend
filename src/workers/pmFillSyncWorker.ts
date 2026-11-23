@@ -308,7 +308,12 @@ async function syncGroup(wallet: string, marketId: string, orders: Order[]) {
               closed_reason = CASE WHEN status = 'live' AND $2 >= shares - GREATEST(0.01, shares * 0.001) THEN 'filled' ELSE closed_reason END,
               closed_at = CASE WHEN status = 'live' AND $2 >= shares - GREATEST(0.01, shares * 0.001) THEN now() ELSE closed_at END,
               updated_at = CASE WHEN filled_shares IS DISTINCT FROM $2 THEN now() ELSE updated_at END
-        WHERE id = $1`,
+        WHERE id = $1
+          -- Only when something changes: every pass re-derives every order in
+          -- the 3-day window, and writing the unchanged ones was 700k no-op
+          -- row rewrites a year (2026-11-23).
+          AND (filled_shares IS DISTINCT FROM $2
+               OR (status = 'live' AND $2 >= shares - GREATEST(0.01, shares * 0.001)))`,
       [o.id, f.toFixed(6)]);
   }
 }

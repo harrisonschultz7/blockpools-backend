@@ -49,8 +49,28 @@ async function bulkInsert(table, cols, rows, { onConflict = "" } = {}) {
   return total;
 }
 
+/**
+ * ON CONFLICT clause that updates a row ONLY when one of its data columns
+ * actually changed. The daily re-ingests (nflverse, FTN) re-send whole seasons;
+ * a plain "do update" rewrote every unchanged row every day -- 40k snap-count
+ * rows a day, 2.2M row rewrites in a year -- which Postgres stores as a fresh
+ * row version each time (bloat the size-capped database pays for). New and
+ * corrected rows are written exactly as before; identical ones are skipped.
+ *
+ *   table   "sports.nfl_snap_counts" (schema optional)
+ *   keys    conflict-target columns
+ *   extra   SET fragment applied only when a row changes, e.g. "computed_at = now()"
+ */
+function upsertIfChanged(table, cols, keys, extra = "") {
+  const rel = table.split(".").pop();
+  const data = cols.filter((c) => !keys.includes(c));
+  const set = data.map((c) => `${c} = excluded.${c}`).concat(extra ? [extra] : []).join(", ");
+  const cmp = `(${data.map((c) => `${rel}.${c}`).join(", ")}) is distinct from (${data.map((c) => `excluded.${c}`).join(", ")})`;
+  return `on conflict (${keys.join(", ")}) do update set ${set} where ${cmp}`;
+}
+
 async function close() {
   await pool.end();
 }
 
-module.exports = { pool, q, bulkInsert, close };
+module.exports = { pool, q, bulkInsert, upsertIfChanged, close };

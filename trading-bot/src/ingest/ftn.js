@@ -28,7 +28,7 @@
 
 const { cfg, ENV } = require("../config");
 const { getText, streamCsv, num, str } = require("../http");
-const { bulkInsert } = require("../db");
+const { bulkInsert, upsertIfChanged } = require("../db");
 const log = require("../log");
 
 const url = (tag, file) => `${ENV.NFLVERSE_BASE}/${tag}/${file}`;
@@ -294,10 +294,9 @@ async function ingestFtnSeason(season) {
   if (!rows.length) { log.warn(`ftn ${season}: no team-game rows survived the neutral filter`); return 0; }
 
   const cols = Object.keys(rows[0]);
-  const updates = cols.filter((c) => !["game_id", "team"].includes(c))
-    .map((c) => `${c} = excluded.${c}`).join(", ");
+  // Rewrites only rows whose charting changed (see upsertIfChanged).
   await bulkInsert("sports.nfl_team_scheme_game", cols, rows, {
-    onConflict: `on conflict (game_id, team) do update set ${updates}, computed_at = now()`,
+    onConflict: upsertIfChanged("sports.nfl_team_scheme_game", cols, ["game_id", "team"], "computed_at = now()"),
   });
   log(`ftn ${season}: ${charted} joined plays (${(joinRate * 100).toFixed(0)}%) -> ${rows.length} team-game rows`);
   return rows.length;
