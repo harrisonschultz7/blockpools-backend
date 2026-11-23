@@ -121,12 +121,16 @@ function yesWon(m: any): boolean | null {
 
 /** Binary (two team outcomes) resolution, from the event's moneyline and nothing else. */
 export function readBinary(ev: any): Resolution | null {
-  if (ev?.closed !== true) return null;
-  const codes = slugCodes(ev.slug);
+  const codes = slugCodes(ev?.slug);
   if (!codes) return null;
   const mls = (ev.markets || []).filter((m: any) => String(m?.sportsMarketType || "") === "moneyline");
   const ml = mls[0];
   if (!ml) return null;
+  // THE MONEYLINE decides, not the event. Polymarket keeps an event open until
+  // every sub-market (props, spreads) settles, so requiring ev.closed left
+  // finished games unsettled for a day or more -- NYJ@LAC and TEN@DAL on
+  // 2026-11-22 had resolved moneylines while their events were still open.
+  if (ml.closed !== true && ev?.closed !== true) return null;
   const uma = String(ml.umaResolutionStatus || "").toLowerCase();
   if (uma && uma !== "resolved") return null;
   const start = Date.parse(ml.gameStartTime || ev.startDate || "");
