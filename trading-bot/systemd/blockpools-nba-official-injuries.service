@@ -1,0 +1,15 @@
+[Unit]
+Description=BlockPools -- log the NBA official injury report (status changes only, research)
+After=network-online.target
+
+[Service]
+# Reads any official injury report PDFs published in the last two hours that it
+# has not read yet and logs player status changes with the time we first saw
+# them. Never trades; no model reads these rows yet.
+Type=oneshot
+User=bp
+WorkingDirectory=/opt/blockpools/backend
+ExecStart=/usr/bin/node trading-bot/run/record-official-injuries.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bp-nba-official-injuries

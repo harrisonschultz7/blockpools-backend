@@ -1,0 +1,12 @@
+[Unit]
+Description=Log the NBA official injury report every 5 minutes
+
+[Timer]
+# The league republishes on 15-minute marks; checking every 5 minutes means a
+# new report is seen within ~5 minutes of going up.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
