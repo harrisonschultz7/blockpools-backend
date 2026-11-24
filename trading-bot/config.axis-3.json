@@ -24,9 +24,13 @@
       "injury": 0.35,
       "momentum": 0.1,
       "_comment_rest_2026_11_23": "0.1, halved from 0.2 (user asked to improve rest/travel). Fitted on 2,913 NBA games 2024-25 on, against the Polymarket price 30 min before tip: Axis's rest points are worth 0.14 (+/-0.49) beyond the price; back-to-back -0.10 (+/-1.29), 3-in-4 -0.28, rest-day advantage +0.14/day, travel -0.26/1000mi -- every term right-signed, none distinguishable from zero, i.e. the market already prices rest. Live, rest-led trades were -4.3% (n10) vs injury-led +8.5% (n45). Rest still nudges a price but no longer drives a trade on its own. Script: scratchpad rest_test.js.",
-      "rest": 0.1,
-      "primetime": 0.1,
-      "style": 0
+      "_comment_rest_2026_11_24": "0 (was 0.1). Second measurement in two days: rest is worth 0.00 (+/-0.27) beyond the price, and dropping it raised the replay (Axis +5.6% -> +5.8%, Bain +6.2% -> +7.0%). Code kept; weight off.",
+      "rest": 0,
+      "_comment_primetime_2026_11_24": "0 (was 0.1). Replay 2026-11-24 on ~2,500 games 2024-25 on: primetime points are worth -2.0 (+/-1.4) beyond the price -- WRONG-SIGNED; removing it raised replay ROI. Replaced by concentration.",
+      "primetime": 0,
+      "style": 0,
+      "_comment_concentration": "0.08 per percentage point of top-5 minutes-share gap (= the fitted ~8 pts per 1.00 Oct-Feb; x3 from March and in the playoffs, ~25 fitted). User 2026-11-24: our clearest measured edge, weighted at its full fitted value. Replay (conc points fitted out-of-season): Axis-3 +7.0% n383 -> +5.6% n1719 (t 2.3) with far more trades; Bain-3 3c+ 0 trades -> +6.2% n779. On Axis's own 139 live 2026-27 games (incl. the real injury factor): -2.2% -> +10.4% at the tip price. 1.5x the fit did worse for Axis. Script: scratchpad conc_replay.js.",
+      "concentration": 0.08
     },
     "injury": {
       "_comment": "Counts CHANGES the market may not have absorbed: impact x (availability now - availability over the last recentGames) x freshness. freshnessHalfLifeHours=2: a status that changed 2h ago counts half, 6h ago an eighth -- the line has moved on it by then. A player out for weeks counts nothing (he was out lately too). returnFreshness is the share credited to a player BACK after missing games, whose return time ESPN does not stamp.",
@@ -70,7 +74,7 @@
     },
     "rest": {
       "_comment": "Second night of a back-to-back is the big one (~2 pts). Travel from the previous game's arena; eastward time zones only bite on a back-to-back.",
-      "backToBackPts": -2.0,
+      "backToBackPts": -2,
       "threeInFourPts": -0.8,
       "restAdvantagePtsPerDay": 0.4,
       "travelPtsPer1000Miles": -0.5,
@@ -102,6 +106,13 @@
       "_comment_expectedTurnover": "About 9 trades a week at 7% (1-2 a night over 6 nights). Used only until 4 weeks of real fills exist, then observed turnover decides. At the current price and exit factors, Medium holds up to about 86% a week, roughly 12 trades.",
       "_comment_rounds": "NBA recycles the book most days of the week (configs/risk note in config.json): 5, not NFL's 1.",
       "minWeeksForObservedBasis": 4
+    },
+    "concentration": {
+      "_comment": "Top-5 minutes share, this season, home minus away (pct-pts). See weights._comment_concentration and factors.js concentrationSignal.",
+      "minGames": 8,
+      "lateFromMonth": 3,
+      "lateSeasonMultiplier": 3,
+      "maxSwingPts": 50
     }
   },
   "policy": {
@@ -113,7 +124,8 @@
     "closeWindowMinutesBeforeKickoff": 5,
     "exitAtFairValue": true,
     "holdFavoritesToSettlement": true,
-    "holdToSettlementMinPrice": 0.75,
+    "_comment_hold_2026_11_24": "0 (was 0.75), user 2026-11-24: EVERY position rides to the final; no resting sell target. Replay on Polymarket minute prices (646 Axis / 144 Bain trades, 2025-26 on, scratchpad conc_replay.js EXIT TEST): the target filled on nearly every WINNER late in the game (217 winners capped vs 88 losers saved), so it sold wins at 60-70c instead of $1. Hold-to-final +3.6% vs target+stop -2.1% (Axis, paired t 1.96); Bain +7.6% vs -0.1%. Sides that touch 0.98 after tip lose only ~0.7% of the time (2% needed to justify a 0.98 sell), so no high sell either. The 70% stop stays (sweepHeldStops covers positions with no exit order).",
+    "holdToSettlementMinPrice": 0,
     "_comment_holdToSettlementMinPrice": "2026-11-02 (user): only positions bought at 0.75+ hold to settlement. Below that, favourites get a resting exit at fair value + the volatility premium (exitVolatilityAlphaLogit), the same as underdogs and Argo-7 totals. Was effectively 0.50, which held every favourite.",
     "exitBufferCents": 0.005,
     "exitHoldThroughKickoff": true,

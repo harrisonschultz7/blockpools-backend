@@ -92,7 +92,7 @@ async function preview(c, now) {
   const asOf = now.toISOString();
   const { rows: games } = await q(
     `select g.game_id, g.kickoff, g.game_date::text as game_date, g.home_team, g.away_team,
-            g.national_tv, g.neutral_site, m.condition_id, m.home_token_id, m.away_token_id
+            g.national_tv, g.neutral_site, g.season_type, m.condition_id, m.home_token_id, m.away_token_id
        from sports.nba_games g
        join sports.pm_markets m on m.game_id = g.game_id and m.closed = false
       where m.home_token_id is not null and m.away_token_id is not null
@@ -153,7 +153,7 @@ async function main() {
   // Games inside the PRICING window with a mapped, open market.
   const { rows: games } = await q(
     `select g.game_id, g.kickoff, g.game_date::text as game_date, g.home_team, g.away_team,
-            g.national_tv, g.neutral_site, m.condition_id
+            g.national_tv, g.neutral_site, g.season_type, m.condition_id
        from sports.nba_games g
        join sports.pm_markets m on m.game_id = g.game_id and m.closed = false
       where g.kickoff > now()

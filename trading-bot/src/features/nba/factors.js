@@ -320,7 +320,38 @@ function styleSignal(game, ctx, impliedMargin) {
   };
 }
 
+// ── Minutes concentration ───────────────────────────────────────────────────
+
+/**
+ * Teams that give most of their minutes to their top five beat the price; teams
+ * that spread minutes around (tanking, resting, deep rotations) fall short of it.
+ * Raw points = home minus away top-5 minutes share, in percentage points, times
+ * lateSeasonMultiplier from March and in the playoffs, where the effect is ~3x
+ * larger (rotations shorten; tanking teams spread minutes).
+ *
+ * Measured 2026-11-24 on ~2,500 games 2024-25 on against the Polymarket price
+ * 30 min before tip: z 3.0 overall, positive every season; Oct-Feb ~8 pts per
+ * 1.00 of share gap (z 1.3), Mar+ ~25 (z 3.3). It is the only NBA input besides
+ * injuries that has beaten the price. Script: scratchpad conc_replay.js.
+ */
+function concentrationSignal(game, ctx) {
+  const cc = cfg().model.concentration;
+  const h = ctx.concentration?.[game.home_team], a = ctx.concentration?.[game.away_team];
+  if (!cc || !h || !a || h.n < cc.minGames || a.n < cc.minGames) {
+    // Early season: no reading, but no reason to doubt the other factors either.
+    return { pts: 0, confidence: 1, detail: { reason: "too_few_games", home: h || null, away: a || null } };
+  }
+  const month = new Date(game.kickoff).getUTCMonth() + 1;
+  const late = Number(game.season_type) === 3 || (month >= cc.lateFromMonth && month <= 7);
+  const gapPct = 100 * (h.share - a.share);
+  const pts = clamp(gapPct * (late ? cc.lateSeasonMultiplier : 1), -cc.maxSwingPts, cc.maxSwingPts);
+  return {
+    pts, confidence: 1,
+    detail: { homeTop5Share: +h.share.toFixed(3), awayTop5Share: +a.share.toFixed(3), gapPct: +gapPct.toFixed(1), late },
+  };
+}
+
 module.exports = {
-  injurySignal, momentumSignal, restSignal, primetimeSignal, styleSignal, playerImpact,
+  injurySignal, momentumSignal, restSignal, primetimeSignal, styleSignal, concentrationSignal, playerImpact,
   recentAvailability, rosterAdjustment,
 };

@@ -24,12 +24,12 @@ const { cfg } = require("../config");
 const { marketProb } = require("./forecast");
 const { normCdf, normInv } = require("./forecastTotals");
 const {
-  injurySignal, momentumSignal, restSignal, primetimeSignal, styleSignal,
+  injurySignal, momentumSignal, restSignal, primetimeSignal, styleSignal, concentrationSignal,
 } = require("../features/nba/factors");
 const { matchupSignal, styleMismatchSignal } = require("../features/nba/ratings");
 
 // matchup is Bain-3's: Axis-3 has no weight on it and never reads ratings.
-const FACTORS = ["matchup", "injury", "momentum", "rest", "primetime", "style"];
+const FACTORS = ["matchup", "injury", "momentum", "rest", "primetime", "style", "concentration"];
 
 async function forecastNbaGame(game, books, asOf, ctx) {
   const m = cfg().model;
@@ -49,6 +49,7 @@ async function forecastNbaGame(game, books, asOf, ctx) {
     momentum: momentumSignal(game, ctx),
     rest: restSignal(game, ctx),
     primetime: primetimeSignal(game, ctx),
+    concentration: concentrationSignal(game, ctx),
     // Bain-3 adds the offense-vs-defense style interaction to the variance effect.
     style: mismatch
       ? { pts: variance.pts + mismatch.pts, confidence: mismatch.confidence,
@@ -81,7 +82,7 @@ async function forecastNbaGame(game, books, asOf, ctx) {
     // onto them by kind; all five, unmapped, are in inputs.contrib.
     f_injury: contrib.injury.weighted,
     f_momentum: contrib.momentum.weighted,
-    f_situational: +(contrib.rest.weighted + contrib.primetime.weighted).toFixed(3),
+    f_situational: +(contrib.rest.weighted + contrib.primetime.weighted + contrib.concentration.weighted).toFixed(3),
     f_matchup: +(contrib.matchup.weighted + contrib.style.weighted).toFixed(3),
     inputs: {
       model: cfg().modelVersion,

@@ -190,6 +190,36 @@ async function loadNbaContext(teams, asOf) {
        from box`,
     [asOf]);
 
+  // ── Minutes concentration: share of the team's minutes this season that went
+  // to its five most-used players. One aggregated row per team. Only read when
+  // the concentration factor carries weight.
+  const concentration = {};
+  if ((m.weights.concentration ?? 0) > 0) {
+    const { rows: conc } = await q(
+      `with cur as (select max(season) as s from sports.nba_games where home_score is not null and kickoff < $2),
+       tg as (
+         select t.team, g.game_id
+           from unnest($1::text[]) t(team)
+           join sports.nba_games g on t.team in (g.home_team, g.away_team)
+           cross join cur
+          where g.home_score is not null and g.kickoff < $2 and g.season = cur.s
+            and g.season_type in (2, 3, 5)
+       ), pm as (
+         select tg.team, p.player_id, sum(p.minutes) as m
+           from tg join sports.nba_player_games p on p.game_id = tg.game_id and p.team = tg.team
+          where p.minutes > 0
+          group by tg.team, p.player_id
+       ), rk as (select team, m, row_number() over (partition by team order by m desc) as rn from pm)
+       select rk.team, (select count(*) from tg where tg.team = rk.team) as n,
+              sum(rk.m) filter (where rk.rn <= 5) as top5, sum(rk.m) as total
+         from rk group by rk.team`,
+      [teams, asOf]);
+    for (const r of conc) {
+      const total = Number(r.total);
+      if (total > 0) concentration[r.team] = { n: Number(r.n), share: Number(r.top5) / total };
+    }
+  }
+
   const { rows: injuries } = await q(
     `select player_id, team, player, status, status_changed_at, observed_at, cleared_at
        from sports.nba_injuries where team = any($1)`,
@@ -206,6 +236,7 @@ async function loadNbaContext(teams, asOf) {
     players: byTeam(players),
     style: Object.fromEntries(style.map((s) => [s.team, { n: Number(s.n), poss: Number(s.poss), par3: Number(s.par3) }])),
     league: { n: Number(lg[0]?.n || 0), poss: Number(lg[0]?.poss || 0), par3: Number(lg[0]?.par3 || 0) },
+    concentration,
     injuries: byTeam(injuries),
     injuryFeedAt: feed[0]?.at ? new Date(feed[0].at) : null,
   };
