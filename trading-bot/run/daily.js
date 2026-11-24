@@ -122,7 +122,7 @@ async function main() {
     for (const t of tiers) {
       if (t.changed) {
         log(`risk tier: ${t.name} ${t.previousTier} -> ${t.tier} ` +
-            `(score ${(100 * t.riskScore).toFixed(1)}%)`);
+            `(stakes ${(100 * t.stakePct).toFixed(1)}% of NAV per trade)`);
       }
     }
   } catch (e) {

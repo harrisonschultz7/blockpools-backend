@@ -339,12 +339,46 @@ async function computeRiskTier(botId) {
 
 
 /** Compute and persist for every enabled bot. */
+// ── THE TIER USERS SEE (user, 2026-11-24) ─────────────────────────────────
+// Rated on ONE number a copier can understand: the share of the portfolio the
+// model stakes on a single trade. The turnover score above swung Axis-3 from
+// Medium to High purely because it trades most nights, at the same 7% stake as
+// the NFL models -- a label driven by schedule, not by what a copier risks on a
+// bet. computeRiskTier() is kept as a diagnostic (run/risk-tier.js --score) but
+// no longer sets the tier.
+//
+//   Low     stake < 5% of the portfolio per trade
+//   Medium  5% to under 15%
+//   High    15% and up
+//
+// Stake = policy.flatPositionPctNav for flat sizing, else maxPositionPctNav.
+const STAKE_BANDS = [
+  { tier: "low", max: 0.05 },
+  { tier: "medium", max: 0.15 },
+  { tier: "high", max: Infinity },
+];
+
+function stakePctOf(cfg) {
+  const p = cfg?.policy || {};
+  const flat = Number(p.flatPositionPctNav), max = Number(p.maxPositionPctNav);
+  return p.sizingMode === "flat" && Number.isFinite(flat) ? flat : (Number.isFinite(max) ? max : flat);
+}
+
+function stakeTier(cfg) {
+  const stake = stakePctOf(cfg);
+  if (!Number.isFinite(stake)) return { tier: null, stakePct: null };
+  return { tier: STAKE_BANDS.find((b) => stake < b.max).tier, stakePct: stake };
+}
+
 async function applyRiskTiers({ write = true } = {}) {
   const { rows: bots } = await q(
-    `select id, risk_tier from bots.bot where enabled order by id`);
+    `select id, name, risk_tier, config from bots.bot where enabled order by id`);
   const out = [];
   for (const b of bots) {
-    const r = await computeRiskTier(b.id);
+    const cfg = typeof b.config === "string" ? JSON.parse(b.config) : b.config;
+    const s = stakeTier(cfg);
+    if (!s.tier) { log.warn(`risk tier: ${b.id} has no stake in its policy -- left as ${b.risk_tier}`); continue; }
+    const r = { botId: b.id, name: b.name, tier: s.tier, stakePct: s.stakePct };
     r.previousTier = b.risk_tier;
     r.changed = b.risk_tier !== r.tier;
     if (write && r.changed) {
@@ -357,5 +391,5 @@ async function applyRiskTiers({ write = true } = {}) {
 
 module.exports = {
   computeRiskTier, applyRiskTiers, tierFor, sqrtOdds,
-  weeklyTurnover, exitFactor, BANDS,
+  weeklyTurnover, exitFactor, BANDS, STAKE_BANDS, stakeTier, stakePctOf,
 };
