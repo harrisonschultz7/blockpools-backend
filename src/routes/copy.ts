@@ -111,7 +111,7 @@ router.get("/status", authPrivy, async (req: AuthedRequest, res: Response) => {
 
     const { rows } = await pool.query(
       `select s.bot_id, s.status, s.basis_usd, s.multiplier, s.max_trade_usd,
-              s.realized_pnl, s.delegated_at, s.wallet_address,
+              s.realized_pnl, s.pnl_baseline, s.delegated_at, s.wallet_address,
               b.name as bot_name, b.risk_tier
          from copy.subscriptions s
          join bots.bot b on b.id = s.bot_id
@@ -148,6 +148,9 @@ router.get("/status", authPrivy, async (req: AuthedRequest, res: Response) => {
         multiplier: Number(r.multiplier),
         maxTradeUsd: r.max_trade_usd === null ? null : Number(r.max_trade_usd),
         realizedPnl: Number(r.realized_pnl),
+        // Realized P&L at the last allocation change: the sleeve the model trades
+        // is basisUsd + realizedPnl - pnlBaseline (sql/013).
+        pnlBaseline: Number(r.pnl_baseline || 0),
         // A subscription can exist with delegation revoked. It is inert until
         // the subscriber re-delegates, and saying so is better than showing it
         // as active and quietly never trading.
@@ -230,6 +233,8 @@ router.post("/subscribe", authPrivy, async (req: AuthedRequest, res: Response) =
            wallet_address = excluded.wallet_address,
            status         = 'active',
            basis_usd      = excluded.basis_usd,
+           -- a fresh subscribe starts the sleeve at exactly the amount entered
+           pnl_baseline   = copy.subscriptions.realized_pnl,
            multiplier     = excluded.multiplier,
            max_trade_usd  = excluded.max_trade_usd,
            delegated_at   = now(),
@@ -334,7 +339,7 @@ router.post("/allocation", authPrivy, async (req: AuthedRequest, res: Response) 
   try {
     const { rowCount } = await pool.query(
       `update copy.subscriptions
-          set basis_usd = $3, updated_at = now()
+          set basis_usd = $3, pnl_baseline = realized_pnl, updated_at = now()
         where privy_did = $1 and bot_id = $2 and status <> 'revoked'`,
       [did, botId, basis],
     );

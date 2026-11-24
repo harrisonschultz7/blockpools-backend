@@ -1,0 +1,13 @@
+-- trading-bot/sql/013_copy_pnl_baseline.sql
+--
+-- RESIZING A SLEEVE SETS IT TO THE NEW AMOUNT (user, 2026-11-24). The sleeve a
+-- model sizes against was basis_usd + realized_pnl, so setting Bain-3 to $2,000
+-- after a +$253 run left $2,253 trading -- the edit read as a deposit on top of
+-- the winnings, not as "trade with $2,000". pnl_baseline is realized_pnl at the
+-- last allocation change; the sleeve is now
+--
+--   basis_usd + (realized_pnl - pnl_baseline)
+--
+-- and realized_pnl itself is untouched, so lifetime return and ROI keep the
+-- whole history.
+alter table copy.subscriptions add column if not exists pnl_baseline numeric not null default 0;

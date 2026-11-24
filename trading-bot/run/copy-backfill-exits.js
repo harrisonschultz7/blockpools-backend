@@ -31,7 +31,7 @@ const APPLY = process.argv.includes("--apply");
   const { rows } = await q(`
     select p.id as pos_id, p.token_id, p.shares, s.id as sub_id, s.bot_id,
            s.privy_did, s.wallet_address, s.basis_usd, s.multiplier,
-           s.max_trade_usd, s.realized_pnl,
+           s.max_trade_usd, s.realized_pnl, s.pnl_baseline,
            i.id as intent_id, i.kind, i.limit_price, i.game_id, o.id as order_id
       from copy.positions p
       join copy.subscriptions s on s.id = p.subscription_id
@@ -67,7 +67,7 @@ const APPLY = process.argv.includes("--apply");
     const sub = {
       id: r.sub_id, privy_did: r.privy_did, wallet_address: r.wallet_address,
       basis_usd: r.basis_usd, multiplier: r.multiplier, max_trade_usd: r.max_trade_usd,
-      realized_pnl: r.realized_pnl,
+      realized_pnl: r.realized_pnl, pnl_baseline: r.pnl_baseline,
     };
     try {
       const ok = await copyExit(sub, intent, r.order_id);

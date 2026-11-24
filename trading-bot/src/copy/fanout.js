@@ -77,7 +77,9 @@ function dryOrderId(kind) {
  * which is how a losing week quietly shrinks every subsequent position.
  */
 function sleeveNav(sub) {
-  return Number(sub.basis_usd) + Number(sub.realized_pnl);
+  // pnl_baseline: realized P&L at the last allocation change, so a resize sets the
+  // sleeve to exactly the new amount (sql/013).
+  return Number(sub.basis_usd) + Number(sub.realized_pnl) - Number(sub.pnl_baseline || 0);
 }
 
 /**
@@ -128,7 +130,7 @@ function floorToTick(price, tick) {
 async function subscribersOf(botId) {
   const { rows } = await q(
     `select id, privy_did, wallet_address, basis_usd, multiplier, max_trade_usd,
-            realized_pnl, bot_id
+            realized_pnl, pnl_baseline, bot_id
        from copy.subscriptions
       where bot_id = $1 and status = 'active' and delegated_at is not null
         -- never trade for someone with no recorded agreement to the terms
@@ -986,7 +988,7 @@ async function reconcileSleeves() {
       if (upd.rowCount) log(`  copy: sleeve ${p.subscription_id} closed position ${p.id}: ${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}`);
       if (upd.rowCount) {
         const { rows: subRows } = await q(
-          `select id, privy_did, bot_id, basis_usd, realized_pnl from copy.subscriptions where id = $1 and status = 'active'`,
+          `select id, privy_did, bot_id, basis_usd, realized_pnl, pnl_baseline from copy.subscriptions where id = $1 and status = 'active'`,
           [p.subscription_id]);
         const sub = subRows[0];
         if (sub && sleeveNav(sub) < MIN_SLEEVE_USD) await notifyBelowMin(sub, sub.bot_id, sleeveNav(sub));
