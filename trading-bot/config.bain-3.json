@@ -1,5 +1,5 @@
 {
-  "_comment": "Bain-3: the HIGH-RISK NBA game-winner model. Since 2026-11-14 it prices exactly like Axis-3 but trades only edges of 3c or more, at 15% of NAV (25% until 2026-11-24), held to the final with a 70% stop. PAPER, HIDDEN. v1 (own team-ratings formula, 2026-11-04 to 2026-11-14) is archived as bain-3-v1.",
+  "_comment": "Bain-3: the HIGH-RISK NBA game-winner model. Since 2026-11-14 it prices exactly like Axis-3 but trades edges of 1.5c or more (3c until 2026-11-24), at 15% of NAV (25% until 2026-11-24), held to the final with a 70% stop. PAPER, HIDDEN. v1 (own team-ratings formula, 2026-11-04 to 2026-11-14) is archived as bain-3-v1.",
   "botId": "bain-3",
   "botName": "Bain-3",
   "league": "NBA",
@@ -18,12 +18,13 @@
     "period": "isoWeek"
   },
   "model": {
-    "_comment": "SAME PRICING AS AXIS-3 (copied 2026-11-14, user). Bain-3 is now Axis-3's formula traded only at its widest disagreements, sized large. The v1 ratings/matchup formula (bain-nba-v1) lost money at every edge above 2c (5c+: 9 trades, -55%) and is retired; its record is archived as bot bain-3-v1. If Axis-3's weights change, change these with them -- the 3c evidence is Axis-3's.",
+    "_comment": "SAME PRICING AS AXIS-3 EXCEPT injury weight 0 (2026-11-24) (copied 2026-11-14, user). Bain-3 is now Axis-3's formula traded only at its widest disagreements, sized large. The v1 ratings/matchup formula (bain-nba-v1) lost money at every edge above 2c (5c+: 9 trades, -55%) and is retired; its record is archived as bot bain-3-v1. If Axis-3's weights change, change these with them -- the 3c evidence is Axis-3's.",
     "sigmaMarginPts": 12.5,
     "deltaCap": 0.1,
     "_comment_weights_2026_11_02": "Calibrated on 1,088 2025-26 games vs the Polymarket tip price: no factor beat the market (all |t| < 0.6). Momentum fit at 0.08 of its points (was weighted 0.25, trimmed to 0.10); style pointed the wrong way (-0.57), set to 0. Heavier weights (x1.5, x2) made the model LESS accurate than the market. Injury is not backtestable (no historical ESPN reports) and stays at the user setting of 0.35.",
     "weights": {
-      "injury": 0.35,
+      "_comment_injury_2026_11_24": "0 for Bain-3 ONLY (user, 2026-11-24; Axis-3 keeps 0.35). Bain's 1.5c threshold rests on the 3-season replay, which has NO injury input (concentration + momentum only: +8.2%/trade at 1.5c+, t 2.7). With injury on, 1.5c mostly admits injury-led trades, which showed no edge live (side favoured -0.5 pts/game, n96). November rebuild at 1.5c/15%: injury on 28-16, $10k -> $6,907; injury off 16-2, $10k -> $23,755 (18 trades -- thin). Bain now prices exactly what the replay validated.",
+      "injury": 0,
       "momentum": 0.1,
       "_comment_rest_2026_11_23": "0.1, halved from 0.2 alongside Axis-3 (same pricing block) -- see config.axis-3.json for the measurement: rest is already in the price.",
       "_comment_rest_2026_11_24": "0 (was 0.1). Second measurement in two days: rest is worth 0.00 (+/-0.27) beyond the price, and dropping it raised the replay (Axis +5.6% -> +5.8%, Bain +6.2% -> +7.0%). Code kept; weight off.",
@@ -135,8 +136,8 @@
     "_comment_stopLoss": "ON at 0.70 (user, 2026-11-14), same as Axis-3. On the 116-side NBA replay a 70% stop was about EV-neutral versus holding; tighter stops (30-50%) cost ~2% per trade. At 25% sizing it caps a loss near -18% of NAV instead of -25%.",
     "exitStopLossEnabled": true,
     "exitStopLossMaxLossPct": 0.7,
-    "_comment_minEdge": "0.03 (user, 2026-11-14). Axis-3 pricing at 3c+: its 7 live trades +$1,158 (+23%/trade); replay over all 94 games it priced, 7 games, 6 winners, +14.9%/trade (t 1.0). THIN EVIDENCE -- 7 trades, 1 loss. Re-check at ~25 trades.",
-    "minEdge": 0.03,
+    "_comment_minEdge": "0.015 (user, 2026-11-24; was 0.03 since 2026-11-14 on 7 live trades). No-injury replay over 3 seasons: return per trade is flat from 1c to 2c (+8.0-8.2%, t 2.5-3.0) and FALLS above it (3c +6.0%, 5c +3.3%); with the 70% stop, 3c+ lost (-5.9%). The biggest disagreements are not the best ones. Size (15%) is what makes Bain high-risk, not a high threshold. Script: scratchpad bain_conc_only.js.",
+    "minEdge": 0.015,
     "kellyFraction": 0.25,
     "sizingMode": "flat",
     "_comment_size": "15% of NAV per position (user, 2026-11-24; was 25% from 2026-11-14). Stake sweep on the 144-trade 2025-26 replay, hold to final, 3,000 bootstrap seasons: the upside tail (95th pct) peaks at ~15% ($10k -> $44k) and shrinks above it ($29k at 25%); median $6.8k at 15% vs $1.0k at 25%; 25% is ~2.4x Kelly (~10.5%). 15% keeps the High tier (15%+). maxOpenExposure 0.45 = at most three positions at once, as before. Script: scratchpad bain_sizing.js.",
