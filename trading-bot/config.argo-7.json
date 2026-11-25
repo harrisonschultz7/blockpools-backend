@@ -22,9 +22,9 @@
     "weights": {
       "weather": 0.3,
       "_comment_scheme_LIVE_EXPERIMENT": "0.30 is a DELIBERATE OVERRIDE of a negative measurement, kept as a live experiment by the user on 2026-10-02, not an oversight. What it overrides: the residual calibration on 1,188 finished games fits scheme at beta -1.1131, t -1.74 against the total's deviation from the closing line, on the 311 games where it produces a value -- i.e. when scheme says over, the game has tended to come in under. The scheme fit itself is sound (t +2.52 predicting offensive EPA per play), which points at the EPA-to-points conversion as the fault: schemeSignal multiplies EPA/play by a flat expectedPlaysPerTeam of 64 for every team, while 70% of scheme's over-signal comes from SLOW offences, the ones that do not run 64 plays. t -1.74 is suggestive, not conclusive, which is why running it live to settle the question is reasonable. REVIEW TRIGGER: re-run run/calibrate-totals.js after roughly 40 more settled Argo-7 trades. If scheme still fits wrong-signed, zero it -- see git 8b036e49 for the commit that did so, reverted here. If it flips positive, the conversion was noise and the weight is earned. Do not let this comment become scenery: an override with no review date is just a mistake with extra steps.",
-    "_comment_scheme_2026_11_09": "ZEROED per the review trigger above (43 settled Argo-7 trades). calibrate-totals on 1,274 games (2022+): beta -0.657, t -1.14; on 2025-26 alone -1.39, t -2.18 -- wrong-signed again and stronger on recent data. The rule set on 2026-10-02 was: still wrong-signed, zero it.",
-    "_comment_scheme_2026_11_23": "1 = the scheme MATCHUP stance below (model.schemeMatchup), whose points are already in points against the line, so the weight is 1 and it takes no calibration scale. The old interaction input stays zeroed while schemeMatchup.enabled is true.",
-    "scheme": 1,
+      "_comment_scheme_2026_11_09": "ZEROED per the review trigger above (43 settled Argo-7 trades). calibrate-totals on 1,274 games (2022+): beta -0.657, t -1.14; on 2025-26 alone -1.39, t -2.18 -- wrong-signed again and stronger on recent data. The rule set on 2026-10-02 was: still wrong-signed, zero it.",
+      "_comment_scheme_2026_11_23": "1 = the scheme MATCHUP stance below (model.schemeMatchup), whose points are already in points against the line, so the weight is 1 and it takes no calibration scale. The old interaction input stays zeroed while schemeMatchup.enabled is true.",
+      "scheme": 1,
       "rest": 0.15,
       "pace": 0,
       "injury": 0.08,
@@ -173,10 +173,22 @@
       "maxPoints": 4.5,
       "_comment_constants": "z-score constants and component spreads from the 2022-26 sample (scratchpad scheme_replay2026.js). Fixed so the signal does not drift as the season adds games.",
       "traits": {
-        "off_pa_rate": { "mean": 0.25376, "sd": 0.05314 },
-        "def_heavy_box_rate": { "mean": 0.3353, "sd": 0.07196 },
-        "off_pass_rate": { "mean": 0.54491, "sd": 0.05197 },
-        "def_rushers_avg": { "mean": 4.28543, "sd": 0.11441 }
+        "off_pa_rate": {
+          "mean": 0.25376,
+          "sd": 0.05314
+        },
+        "def_heavy_box_rate": {
+          "mean": 0.3353,
+          "sd": 0.07196
+        },
+        "off_pass_rate": {
+          "mean": 0.54491,
+          "sd": 0.05197
+        },
+        "def_rushers_avg": {
+          "mean": 4.28543,
+          "sd": 0.11441
+        }
       },
       "paBoxSd": 1.43963,
       "passCoverageSd": 1.38334
@@ -214,6 +226,9 @@
     "pregameEntryOnly": true,
     "evaluationMode": "week",
     "exitAtFairValue": true,
+    "_comment_hold_2026_11_25": "0 (user, 2026-11-25): EVERY position rides to the final whistle; no resting sell target. Replay of this season's real trades: Adam-7 actual -$2,623 vs +$3,506 held to the final (29 target fills sold 15 eventual winners at 40-77c: $8,128 vs $14,320 held); Argo-7 actual -$2,243 vs +$509 held. Baseline over all 810 NFL moneyline sides since 2025 (minute prices): holding beat the target by +3.3-4.4% per trade, most on underdogs (+6.0%). Same direction as the NBA 646-trade test (t ~2) -- Axis-3/Bain-3 hold since 2026-11-24. Stops stay off. Script: scratchpad nfl_exit_replay.js. Argo had no hold setting before (every position got a resting sell); both keys added.",
+    "holdFavoritesToSettlement": true,
+    "holdToSettlementMinPrice": 0,
     "exitBufferCents": 0.005,
     "exitHoldThroughKickoff": true,
     "exitVolatilityAlphaLogit": 0.45,
@@ -231,7 +246,7 @@
     "_comment_sizing": "FLAT, not Kelly, as of week 4. Kelly puts the most money where the edge estimate is largest, which is correct only if that estimate is calibrated -- and week 3 says it is not: the second-largest edge (PHI@CHI, 13.3c) lost 100% while the largest (MIN@TB, 16.0c) won, and the smallest loser and a small winner sat a fraction of a cent apart. Same 2,500 deployed flat would have lost 34 instead of 117. One week proves nothing on its own, but the fitting already said the same thing -- no factor cleared 2 sigma at n=300 -- and sizing off an unranked edge just converts estimation error into position size. Set sizingMode back to kelly when top-quartile-edge trades demonstrably beat bottom-quartile over a real sample.",
     "sizingMode": "flat",
     "flatPositionPctNav": 0.07,
-    "maxOpenExposurePctNav": 0.60,
+    "maxOpenExposurePctNav": 0.6,
     "minPrice": 0.05,
     "maxPrice": 0.95,
     "minBookDepthUsd": 250,
@@ -252,11 +267,8 @@
     "_comment_recorder": "totalsLinesRecordedPerGame is the single most important number in this block. There are 2028 open NFL totals markets, so recording every one would be 4056 book calls per poll. Only the top few lines per game by liquidity are recorded -- the bot trades the deepest, and the neighbours are kept so a later version can compare lines without having lost the history. Historical depth cannot be backfilled from anywhere at any price, so an unrecorded line is gone for good.",
     "_comment_ftn_lag": "FTN charting lags the schedule. On 2026-09-26 the 2026 file held weeks 1-2 complete and one week-3 game. The scheme factor must therefore lean on the prior season for most of the first half of the year, which is what data.schemePriorSeason is for.",
     "pmNflTagId": 450,
-
     "_comment_passing": "Bruno-7 passing-yards prop probe reuses this ingest block. passingLinesRecordedPerPlayer records the N lines nearest the ladder centre per QB (liquidityNum is 0 on every prop, so the deepest-line rule totals use does not apply). passingRecordWindowHours is kept tighter than totals because props seed near kickoff.",
-
     "passingLinesRecordedPerPlayer": 3,
-
     "passingRecordWindowHours": 30,
     "totalsLinesRecordedPerGame": 1,
     "recordWindowHours": 120,
