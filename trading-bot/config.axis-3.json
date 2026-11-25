@@ -149,7 +149,13 @@
     "minPrice": 0.05,
     "maxPrice": 0.95,
     "minBookDepthUsd": 50,
-    "maxSlippageCents": 0.01
+    "maxSlippageCents": 0.01,
+    "_comment_makerEntry": "MAKER ENTRIES (user, 2026-11-25; exec/entryOrders.js). On a trade decision, rest a BID at mid - offsetCents instead of taking the ask; filled when the market trades strictly below it; still open fallbackMinutesBeforeTip before tip -> cancelled and the ask is taken as before. Replay (Polymarket minute prices, 662 Axis picks 2025-26 on): +1.13 points of return per trade (t 6.2), and 2024-25 (831 picks) +1.31; filled bids won 65% vs a 60c average price (no adverse selection). Paper fills only -- copiers still buy (FAK) when the bot's bid fills. Script: scratchpad maker_test.js.",
+    "makerEntry": {
+      "enabled": true,
+      "offsetCents": 0.005,
+      "fallbackMinutesBeforeTip": 10
+    }
   },
   "paper": {
     "startingNavUsd": 10000,

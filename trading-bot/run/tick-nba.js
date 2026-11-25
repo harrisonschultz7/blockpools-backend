@@ -29,6 +29,7 @@ const { saveForecast } = require("../src/model/forecast");
 const { decide } = require("../src/policy/medium");
 const { executePaper } = require("../src/exec/paper");
 const { manageExits, createExitOrder } = require("../src/exec/limits");
+const { openEntryOrder, openBidsUsd, cancelEntry, postOrKeepBid, reviewIdleBid, sweepEntryFills } = require("../src/exec/entryOrders");
 const { currentNav, snapshotNav, snapshotNavIntraday } = require("../src/accounting/nav");
 const { gradeClv, settleTrades, settleFromMarkets } = require("../src/accounting/settle");
 const { normaliseBook, fetchBook } = require("../src/ingest/polymarket");
@@ -168,10 +169,21 @@ async function main() {
     const teams = [...new Set(games.flatMap((g) => [g.home_team, g.away_team]))];
     const ctx = await loadNbaContext(teams, asOf);
     if ((c.model.weights.matchup ?? 0) > 0) ctx.ratings = await loadRatings(asOf);
+    // MAKER ENTRIES (policy.makerEntry): book any resting bid the market traded
+    // through since the last tick BEFORE deciding, so a filled game reads as held.
+    const mk = c.policy.makerEntry || {};
+    let makerOn = !!mk.enabled && !DRY;
+    // Until sql/014 is applied there is no entry_orders table: trade as a taker.
+    if (makerOn) await q(`select 1 from bots.entry_orders limit 1`).catch(() => {
+      makerOn = false;
+      log.warn("makerEntry is on but bots.entry_orders is missing (run migrate --only 014) -- taking the ask");
+    });
+    if (makerOn) await sweepEntryFills(c.botId).catch((e) => log.warn(`entry fill sweep failed: ${e.message}`));
     const nav = await currentNav(c.botId);
     const { rows: ex } = await q(
       `select coalesce(sum(notional_usd), 0) v from bots.trades where bot_id = $1 and settled = false`, [c.botId]);
-    let openExposure = Number(ex[0].v);
+    // Resting bids count against the open-exposure cap: each is a trade waiting to happen.
+    let openExposure = Number(ex[0].v) + (makerOn ? await openBidsUsd(c.botId) : 0);
 
     for (const game of games) {
       const { rows: books } = await q(
@@ -190,9 +202,11 @@ async function main() {
 
       const { rows: held } = await q(
         `select 1 from bots.positions where bot_id = $1 and game_id = $2 and shares > 0`, [c.botId, game.game_id]);
+      const ownBid = makerOn ? await openEntryOrder(c.botId, game.game_id) : null;
       let decision = decide({
         forecast, game, books: bySide, nav, existingPosition: held.length > 0,
-        openExposureUsd: openExposure, now,
+        // this game's own resting bid is not "other" exposure
+        openExposureUsd: openExposure - (ownBid ? Number(ownBid.notional_usd) : 0), now,
       });
       // SAFETY CHECK (Bain-3). Team ratings cannot see a scratch, so a big "edge" on
       // a team that just lost a real player is usually the model being late, not
@@ -209,10 +223,32 @@ async function main() {
         `(${inp.impliedMarginPts >= 0 ? "+" : ""}${inp.impliedMarginPts} -> ${inp.modelMarginPts >= 0 ? "+" : ""}${inp.modelMarginPts} pts, conf ${forecast.confidence.toFixed(2)})`;
 
       if (!decision.acted) {
+        if (ownBid) await reviewIdleBid(ownBid, forecast, decision);
         await logDecision(c.botId, game, forecast, decision);
         await snapshotSkip(forecast, decision);
         log(`  SKIP  ${label.padEnd(10)} ${decision.skip_reason.padEnd(20)} ${line}`);
         continue;
+      }
+      if (makerOn) {
+        const minsToTip = (new Date(game.kickoff).getTime() - now.getTime()) / 60000;
+        if (minsToTip > Number(mk.fallbackMinutesBeforeTip ?? 10)) {
+          const r = await postOrKeepBid({ botId: c.botId, game, decision, forecast, book: bySide[decision.side],
+            featureIdFn: () => saveForecast(forecast), nav });
+          if (r.order) {
+            if (r.action !== "kept") openExposure += Number(r.order.notional_usd) - (ownBid ? Number(ownBid.notional_usd) : 0);
+            await logDecision(c.botId, game, forecast,
+              { acted: false, skip_reason: `maker_bid_${r.action}`, edge: decision.edge, side: decision.side });
+            log(`  BID   ${label.padEnd(10)} ${decision.side.toUpperCase()} @ ${Number(r.order.limit_price).toFixed(3)} ` +
+                `(ask ${decision.price.toFixed(3)}, edge ${(decision.edge * 100).toFixed(1)}c) ${r.action} ${line}`);
+            continue;
+          }
+          // no usable mid: fall through and take the ask as before
+        } else if (ownBid) {
+          // FALLBACK: the bid never filled -- cancel it and take the ask now.
+          await cancelEntry(ownBid, "fallback_taker");
+          openExposure -= Number(ownBid.notional_usd);
+          log(`  BID   ${label.padEnd(10)} unfilled ${minsToTip.toFixed(0)} min before tip -- taking the ask`);
+        }
       }
       log(`  TRADE ${label.padEnd(10)} ${decision.side.toUpperCase()} @ ${decision.price.toFixed(2)} ` +
           `edge ${(decision.edge * 100).toFixed(1)}c $${decision.notionalUsd.toFixed(2)} ${line}`);

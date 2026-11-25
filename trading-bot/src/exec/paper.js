@@ -58,11 +58,20 @@ function walkDepth(asks, sharesWanted, maxSlippageCents, intendedPrice) {
 
 /** Record a paper trade against the book snapshot the decision was made on. */
 async function executePaper(args) {
-  const { botId, game, decision, forecast, book, featureId, nav } = args;
+  const { decision, book } = args;
   const c = cfg();
   const fill = walkDepth(book.asks, decision.shares, c.policy.maxSlippageCents, decision.price);
   if (!fill.filledShares) return { filled: false, reason: "no_fillable_depth" };
+  return recordFill({ ...args, fill, detail: { consumed: fill.consumed, bookTs: book.ts } });
+}
 
+/**
+ * Book a fill as a trade + position and emit the copy intent. Shared by the taker
+ * path (executePaper) and resting maker bids (exec/entryOrders.js).
+ */
+async function recordFill(args) {
+  const { botId, game, decision, forecast, book, featureId, nav, fill, detail } = args;
+  const c = cfg();
   const slippageBps = ((fill.avgPrice - decision.price) / decision.price) * 10000;
 
   const { rows } = await q(
@@ -77,7 +86,7 @@ async function executePaper(args) {
      c.mode, forecast.p_market, forecast.p_fair, decision.edge,
      decision.conviction, decision.kellyFraction, featureId,
      decision.price, fill.avgPrice, fill.filledShares, fill.costUsd,
-     slippageBps, JSON.stringify({ consumed: fill.consumed, bookTs: book.ts }),
+     slippageBps, JSON.stringify(detail || { consumed: fill.consumed, bookTs: book.ts }),
      fill.unfilledShares],
   );
 
@@ -103,4 +112,4 @@ async function executePaper(args) {
   return { filled: true, tradeId: rows[0].id, slippageBps, ...fill };
 }
 
-module.exports = { executePaper, walkDepth };
+module.exports = { executePaper, recordFill, walkDepth };
