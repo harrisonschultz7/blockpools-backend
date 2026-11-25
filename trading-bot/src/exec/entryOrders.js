@@ -26,6 +26,7 @@ const { q } = require("../db");
 const log = require("../log");
 const { recordFill } = require("./paper");
 const { createExitOrder } = require("./limits");
+const { emitBidEvent } = require("./intents");
 
 const DATA_API = "https://data-api.polymarket.com";
 
@@ -45,11 +46,35 @@ async function openBidsUsd(botId) {
   return Number(rows[0].v);
 }
 
+/**
+ * Withdraw a bid. Copiers cancel theirs too ('bid_cancel', no top-up) -- except on
+ * the fallback, where the bot's taker 'enter' (carrying this entry_order_id) tells
+ * them to close and top up instead.
+ */
 async function cancelEntry(order, reason) {
-  await q(
-    `update bots.entry_orders set status = 'cancelled', closed_reason = $2, updated_at = now()
+  const { rowCount } = await q(
+    `update bots.entry_orders set status = 'cancelled', closed_reason = $2, updated_at = now(),
+            copy_closed_at = coalesce(copy_closed_at, now())
       where id = $1 and status = 'open'`,
     [order.id, reason]);
+  if (rowCount && reason !== "fallback_taker") await emitBidEvent({ botId: order.bot_id, kind: "bid_cancel", order });
+}
+
+/**
+ * FALLBACK TIME on bids the BOT filled as a maker: tell copiers to cancel what is
+ * left of theirs and buy the rest at market, so they hold what the bot holds. Once
+ * per bid; run every tick.
+ */
+async function closeFilledBidsForCopiers(botId, fallbackMinutes) {
+  const { rows } = await q(
+    `update bots.entry_orders o set copy_closed_at = now()
+       from sports.nba_games g
+      where g.game_id = o.game_id and o.bot_id = $1 and o.status = 'filled' and o.copy_closed_at is null
+        and g.kickoff <= now() + ($2 || ' minutes')::interval
+      returning o.*`,
+    [botId, String(fallbackMinutes)]);
+  for (const o of rows) await emitBidEvent({ botId, kind: "bid_close", order: o });
+  return rows.length;
 }
 
 /** The bid price: mid less the offset, floored to the 0.001 grid, never under a cent. */
@@ -87,6 +112,7 @@ async function postOrKeepBid({ botId, game, decision, forecast, book, featureIdF
      decision.notionalUsd, forecast.p_market, forecast.p_fair, decision.edge, featureId, nav,
      JSON.stringify({ edge: decision.edge, conviction: decision.conviction, kellyFraction: decision.kellyFraction,
                       favSide: decision.favSide, betOnDog: decision.betOnDog, askAtPost: decision.price })]);
+  if (rows[0]) await emitBidEvent({ botId, kind: "bid", order: rows[0] });
   return { action: existing ? "replaced" : "posted", order: rows[0] || null };
 }
 
@@ -167,7 +193,9 @@ async function sweepEntryFills(botId) {
     const fill = { filledShares: Number(o.shares), unfilledShares: 0, avgPrice: limit,
       costUsd: Number(o.shares) * limit, consumed: [["maker_bid", Number(o.shares)]] };
     const rec = await recordFill({ botId, game: { game_id: o.game_id }, decision, forecast, book,
-      featureId: o.feature_id, nav: Number(o.nav_usd), fill, detail: { maker: true, entryOrderId: o.id, how } });
+      featureId: o.feature_id, nav: Number(o.nav_usd), fill, detail: { maker: true, entryOrderId: o.id, how },
+      // copiers' own bids are still resting: they act at bid_close, not now
+      entryOrderId: o.id, intentKind: "enter_maker" });
     await q(`update bots.entry_orders set trade_id = $2 where id = $1`, [o.id, rec.tradeId]);
     if (cfg().policy.exitAtFairValue) {
       await createExitOrder({ botId, tradeId: rec.tradeId, game: { game_id: o.game_id, kickoff: o.kickoff },
@@ -179,4 +207,5 @@ async function sweepEntryFills(botId) {
   return filled;
 }
 
-module.exports = { openEntryOrder, openBidsUsd, cancelEntry, postOrKeepBid, reviewIdleBid, sweepEntryFills, bidPrice };
+module.exports = { openEntryOrder, openBidsUsd, cancelEntry, postOrKeepBid, reviewIdleBid, sweepEntryFills,
+  closeFilledBidsForCopiers, bidPrice };

@@ -18,18 +18,18 @@ const log = require("../log");
  * took, which is the only number a subscriber needs to size the same exposure
  * against a different balance.
  */
-async function emitEnter({ botId, tradeId, game, decision, book, fill, nav }) {
+async function emitEnter({ botId, tradeId, game, decision, book, fill, nav, entryOrderId = null, kind = "enter" }) {
   const navFraction = nav > 0 ? fill.costUsd / nav : null;
   try {
     await q(
       `insert into bots.trade_intents
          (bot_id, kind, game_id, condition_id, token_id, side, market_type, line,
-          limit_price, nav_fraction, nav_usd, bot_trade_id)
-       values ($1,'enter',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          limit_price, nav_fraction, nav_usd, bot_trade_id, entry_order_id)
+       values ($1,$12,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$13)`,
       [botId, game.game_id, book.condition_id, book.token_id, decision.side,
        decision.marketType || "moneyline",
        decision.line === undefined ? null : decision.line,
-       fill.avgPrice, navFraction, nav, tradeId],
+       fill.avgPrice, navFraction, nav, tradeId, kind, entryOrderId],
     );
   } catch (e) {
     log.warn(`intent enter failed (${game.game_id}): ${e.message}`);
@@ -60,4 +60,25 @@ async function emitExit({ botId, kind, order, limitPrice }) {
   }
 }
 
-module.exports = { emitEnter, emitExit };
+/**
+ * A maker-entry bid event (exec/entryOrders.js): 'bid' when posted, 'bid_cancel'
+ * when withdrawn, 'bid_close' at fallback time on a bid the bot filled. Copiers
+ * mirror the bid with their own resting post-only order (copy/fanout.js).
+ */
+async function emitBidEvent({ botId, kind, order }) {
+  try {
+    const nav = Number(order.nav_usd) || 0;
+    await q(
+      `insert into bots.trade_intents
+         (bot_id, kind, game_id, condition_id, token_id, side, market_type, line,
+          limit_price, nav_fraction, nav_usd, entry_order_id)
+       values ($1,$2,$3,$4,$5,$6,'moneyline',null,$7,$8,$9,$10)`,
+      [botId, kind, order.game_id, order.condition_id, order.token_id, order.side,
+       order.limit_price, nav > 0 ? Number(order.notional_usd) / nav : null, nav, order.id],
+    );
+  } catch (e) {
+    log.warn(`intent ${kind} failed (${order.game_id}): ${e.message}`);
+  }
+}
+
+module.exports = { emitEnter, emitExit, emitBidEvent };

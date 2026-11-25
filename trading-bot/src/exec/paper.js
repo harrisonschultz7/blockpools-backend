@@ -70,7 +70,7 @@ async function executePaper(args) {
  * path (executePaper) and resting maker bids (exec/entryOrders.js).
  */
 async function recordFill(args) {
-  const { botId, game, decision, forecast, book, featureId, nav, fill, detail } = args;
+  const { botId, game, decision, forecast, book, featureId, nav, fill, detail, entryOrderId = null, intentKind = "enter" } = args;
   const c = cfg();
   const slippageBps = ((fill.avgPrice - decision.price) / decision.price) * 10000;
 
@@ -107,7 +107,7 @@ async function recordFill(args) {
   // After, not before: an intent for a fill that then failed to record would have
   // subscribers holding a position the bot does not.
   await emitEnter({ botId, tradeId: rows[0].id, game, decision, book, fill,
-                    nav: Number(nav) || 0 });
+                    nav: Number(nav) || 0, entryOrderId, kind: intentKind });
 
   return { filled: true, tradeId: rows[0].id, slippageBps, ...fill };
 }

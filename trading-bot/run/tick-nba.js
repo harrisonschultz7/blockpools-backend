@@ -29,7 +29,8 @@ const { saveForecast } = require("../src/model/forecast");
 const { decide } = require("../src/policy/medium");
 const { executePaper } = require("../src/exec/paper");
 const { manageExits, createExitOrder } = require("../src/exec/limits");
-const { openEntryOrder, openBidsUsd, cancelEntry, postOrKeepBid, reviewIdleBid, sweepEntryFills } = require("../src/exec/entryOrders");
+const { openEntryOrder, openBidsUsd, cancelEntry, postOrKeepBid, reviewIdleBid, sweepEntryFills,
+        closeFilledBidsForCopiers } = require("../src/exec/entryOrders");
 const { currentNav, snapshotNav, snapshotNavIntraday } = require("../src/accounting/nav");
 const { gradeClv, settleTrades, settleFromMarkets } = require("../src/accounting/settle");
 const { normaliseBook, fetchBook } = require("../src/ingest/polymarket");
@@ -173,12 +174,16 @@ async function main() {
     // through since the last tick BEFORE deciding, so a filled game reads as held.
     const mk = c.policy.makerEntry || {};
     let makerOn = !!mk.enabled && !DRY;
-    // Until sql/014 is applied there is no entry_orders table: trade as a taker.
-    if (makerOn) await q(`select 1 from bots.entry_orders limit 1`).catch(() => {
+    // Until sql/014 + 015 are applied: trade as a taker.
+    if (makerOn) await q(`select copy_closed_at from bots.entry_orders limit 1`).catch(() => {
       makerOn = false;
-      log.warn("makerEntry is on but bots.entry_orders is missing (run migrate --only 014) -- taking the ask");
+      log.warn("makerEntry is on but bots.entry_orders is missing or pre-015 (run migrate --only 014 and --only 015) -- taking the ask");
     });
-    if (makerOn) await sweepEntryFills(c.botId).catch((e) => log.warn(`entry fill sweep failed: ${e.message}`));
+    if (makerOn) {
+      await sweepEntryFills(c.botId).catch((e) => log.warn(`entry fill sweep failed: ${e.message}`));
+      await closeFilledBidsForCopiers(c.botId, Number(mk.fallbackMinutesBeforeTip ?? 10))
+        .catch((e) => log.warn(`copier bid close failed: ${e.message}`));
+    }
     const nav = await currentNav(c.botId);
     const { rows: ex } = await q(
       `select coalesce(sum(notional_usd), 0) v from bots.trades where bot_id = $1 and settled = false`, [c.botId]);
@@ -229,6 +234,7 @@ async function main() {
         log(`  SKIP  ${label.padEnd(10)} ${decision.skip_reason.padEnd(20)} ${line}`);
         continue;
       }
+      let fallbackBidId = null;
       if (makerOn) {
         const minsToTip = (new Date(game.kickoff).getTime() - now.getTime()) / 60000;
         if (minsToTip > Number(mk.fallbackMinutesBeforeTip ?? 10)) {
@@ -246,6 +252,7 @@ async function main() {
         } else if (ownBid) {
           // FALLBACK: the bid never filled -- cancel it and take the ask now.
           await cancelEntry(ownBid, "fallback_taker");
+          fallbackBidId = ownBid.id; // the taker buy below tells copiers to close their bid and top up
           openExposure -= Number(ownBid.notional_usd);
           log(`  BID   ${label.padEnd(10)} unfilled ${minsToTip.toFixed(0)} min before tip -- taking the ask`);
         }
@@ -257,6 +264,7 @@ async function main() {
       const featureId = await saveForecast(forecast);
       const fill = await executePaper({
         botId: c.botId, game, decision, forecast, book: bySide[decision.side], featureId, nav,
+        entryOrderId: fallbackBidId,
       });
       if (!fill.filled) {
         await logDecision(c.botId, game, forecast, { acted: false, skip_reason: fill.reason });

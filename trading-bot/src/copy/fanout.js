@@ -184,16 +184,16 @@ async function finish(orderId, patch) {
  * a book that moved -- which reads to a subscriber as the copy silently not
  * working. maxPrice caps how far past the bot's fill we will chase.
  */
-async function copyEnter(sub, intent, orderId) {
+async function copyEnter(sub, intent, orderId, usdOverride = null) {
   const nav = sleeveNav(sub);
   const frac = Number(intent.nav_fraction);
-  if (!Number.isFinite(frac) || frac <= 0) {
+  if (usdOverride === null && (!Number.isFinite(frac) || frac <= 0)) {
     await finish(orderId, { status: "skipped", skip_reason: "no_nav_fraction" });
     return false;
   }
 
-  let usd = nav * frac * Number(sub.multiplier);
-  if (sub.max_trade_usd !== null) usd = Math.min(usd, Number(sub.max_trade_usd));
+  let usd = usdOverride !== null ? usdOverride : nav * frac * Number(sub.multiplier);
+  if (usdOverride === null && sub.max_trade_usd !== null) usd = Math.min(usd, Number(sub.max_trade_usd));
 
   // A SMALLER-THAN-USUAL MODEL TRADE ON A BIG ENOUGH SLEEVE IS RAISED TO THE
   // MINIMUM, not skipped. Axis-3 bets 60% of its usual size on thin edges, so a
@@ -298,6 +298,21 @@ async function copyEnter(sub, intent, orderId) {
   });
 
   if (shares > 0) {
+    await upsertCopyPosition(sub, intent.token_id, intent.bot_trade_id, shares, spent);
+    if (!DRY_RUN && res?.orderId) {
+      // Into the shared order record (closed at once: a FAK does not rest), so
+      // the fill sync writes the buy to the subscriber's History with its fee.
+      await recordPmOrder(sub, intent, wallets, {
+        id: res.orderId, side: "buy", price: maxPrice, shares, live: false,
+      });
+      await notifyCopy(sub, intent, "buy", spent / shares, res.orderId);
+    }
+  }
+  return shares > 0;
+}
+
+/** Add bought shares to the subscriber's copied position (a closed one starts over). */
+async function upsertCopyPosition(sub, tokenId, botTradeId, shares, spent) {
     await q(
       `insert into copy.positions
          (subscription_id, token_id, bot_trade_id, shares, cost_usd, avg_price, dry_run)
@@ -318,18 +333,151 @@ async function copyEnter(sub, intent, orderId) {
          closed_at  = null,
          realized_usd = null,
          updated_at = now()`,
-      [sub.id, intent.token_id, intent.bot_trade_id, shares, spent, spent / shares, DRY_RUN],
+      [sub.id, tokenId, botTradeId, shares, spent, spent / shares, DRY_RUN],
     );
-    if (!DRY_RUN && res?.orderId) {
-      // Into the shared order record (closed at once: a FAK does not rest), so
-      // the fill sync writes the buy to the subscriber's History with its fee.
-      await recordPmOrder(sub, intent, wallets, {
-        id: res.orderId, side: "buy", price: maxPrice, shares, live: false,
-      });
-      await notifyCopy(sub, intent, "buy", spent / shares, res.orderId);
-    }
+}
+
+// ── Maker bids (sql/015) ─────────────────────────────────────────────────────
+//
+// The bot rests a bid under the mid (exec/entryOrders.js). Each copier rests a
+// POST-ONLY bid at the same price for their own size: a maker fill pays neither
+// Polymarket's taker fee (5% x (1 - price)) nor the 1% builder fee. At the bot's
+// fallback time ('bid_close', or the bot's taker 'enter' that carries the bid's
+// entry_order_id) whatever has not filled is cancelled and bought at market, so
+// copiers hold what the bot holds. 'bid_cancel' (the bot withdrew) cancels with
+// no top-up; anything already filled is kept and banked like any copied buy.
+
+/** A subscriber's resting copy bid for the bot's entry order, if any. */
+async function copyBidFor(subId, entryOrderId) {
+  const { rows } = await q(
+    `select o.id, o.clob_order_id, o.requested_usd, o.limit_price
+       from copy.orders o join bots.trade_intents ti on ti.id = o.intent_id
+      where o.subscription_id = $1 and ti.kind = 'bid' and ti.entry_order_id = $2 and o.status = 'placed'
+      order by o.id desc limit 1`,
+    [subId, entryOrderId]);
+  return rows[0] || null;
+}
+
+/** Same sizing as copyEnter, but a resting post-only limit at the bot's bid. */
+async function copyBid(sub, intent, orderId) {
+  const nav = sleeveNav(sub);
+  const frac = Number(intent.nav_fraction);
+  if (!Number.isFinite(frac) || frac <= 0) {
+    await finish(orderId, { status: "skipped", skip_reason: "no_nav_fraction" });
+    return false;
   }
-  return shares > 0;
+  let usd = nav * frac * Number(sub.multiplier);
+  if (sub.max_trade_usd !== null) usd = Math.min(usd, Number(sub.max_trade_usd));
+  if (usd < MIN_ORDER_USD && nav >= MIN_SLEEVE_USD
+      && (sub.max_trade_usd === null || Number(sub.max_trade_usd) >= MIN_ORDER_USD)) usd = MIN_ORDER_USD;
+  if (usd < MIN_ORDER_USD) {
+    await finish(orderId, { status: "skipped", skip_reason: "below_min_order", requested_usd: usd });
+    return false;
+  }
+  const client = await getPmClient(sub.wallet_address);
+  const wallets = await mkt.userWallets(sub.privy_did);
+  const balance = await mkt.spendableUsd(wallets.trading);
+  if (balance !== null && usd > balance) {
+    if (balance < MIN_ORDER_USD) {
+      await finish(orderId, { status: "skipped", skip_reason: "insufficient_funds", requested_usd: usd });
+      return false;
+    }
+    usd = balance;
+  }
+  const tick = await mkt.tickSize(intent.token_id);
+  const price = floorToTick(Number(intent.limit_price), tick);
+  const shares = Math.floor((usd / price) * 100) / 100;
+  if (!(price > 0) || !(shares > 0)) {
+    await finish(orderId, { status: "skipped", skip_reason: "bad_price", requested_usd: usd });
+    return false;
+  }
+  const { OrderSide } = await import("@polymarket/client");
+  let res;
+  try {
+    if (DRY_RUN) {
+      res = { orderId: dryOrderId("bid") };
+      log(`copy[dry] bid sub=${sub.id} ${shares} sh @ ${price}`);
+    } else {
+      res = await client.placeLimitOrder({
+        assetId: intent.token_id, side: OrderSide.BUY, price, size: shares,
+        // Never cross: a bid that would take the ask pays the taker fee this exists to avoid.
+        postOnly: true,
+        builderCode: process.env.POLYMARKET_BUILDER_CODE,
+      });
+    }
+  } catch (e) {
+    await finish(orderId, { status: "rejected", requested_usd: usd, limit_price: price,
+      error: String(e.message || e).slice(0, 400) }).catch(() => {});
+    throw e;
+  }
+  if (!DRY_RUN && res?.orderId) {
+    await recordPmOrder(sub, intent, wallets, { id: res.orderId, side: "buy", price, shares, live: true });
+  }
+  await finish(orderId, {
+    status: res?.orderId ? "placed" : "rejected", requested_usd: usd, limit_price: price,
+    clob_order_id: res?.orderId || null, error: res?.orderId ? null : (res?.message || "not placed"),
+  });
+  return Boolean(res?.orderId);
+}
+
+/**
+ * Close this subscriber's copy bid: cancel what is left, bank what filled, and --
+ * when topUp -- buy the unfilled remainder at market like a normal copied entry.
+ */
+async function copyBidEnd(sub, intent, orderId, topUp) {
+  const bid = await copyBidFor(sub.id, intent.entry_order_id);
+  if (!bid) {
+    // Never had a bid (subscribed after it was posted, or it was refused): a
+    // top-up is simply the normal copied buy at the bot's price.
+    if (topUp) return copyEnter(sub, intent, orderId);
+    await finish(orderId, { status: "skipped", skip_reason: "no_copy_bid" });
+    return false;
+  }
+  const price = Number(bid.limit_price);
+  let filled = 0;
+  if (!DRY_RUN && bid.clob_order_id) {
+    const client = await getPmClient(sub.wallet_address);
+    try { await client.cancelOrder({ orderId: bid.clob_order_id }); }
+    catch (e) { log.warn(`copy: cancel bid ${bid.clob_order_id} failed: ${e.message}`); }
+    try {
+      const o = await client.fetchOrder({ orderId: bid.clob_order_id });
+      filled = Number(o?.sizeMatched) || 0;
+    } catch (e) {
+      // The venue could not say: fall back to what the fill sync has attributed.
+      log.warn(`copy: read bid ${bid.clob_order_id} failed: ${e.message}`);
+      const r = await q(`select filled_shares from public.pm_limit_orders where id = $1`, [bid.clob_order_id]);
+      filled = Number(r.rows[0]?.filled_shares) || 0;
+    }
+    await q(
+      `update public.pm_limit_orders set status = 'closed', closed_reason = 'copy_bid_closed',
+              closed_at = now(), updated_at = now() where id = $1 and status = 'live'`,
+      [bid.clob_order_id]);
+  }
+  const filledUsd = filled * price;
+  await q(
+    `update copy.orders set status = $2, skip_reason = $3, filled_shares = $4, avg_price = $5, updated_at = now()
+      where id = $1`,
+    [bid.id, filled > 0 ? (filledUsd >= Number(bid.requested_usd) - 0.01 ? "filled" : "partial") : "skipped",
+     filled > 0 ? null : "bid_unfilled", filled || null, filled > 0 ? price : null]);
+  if (filled > 0) {
+    let tradeId = intent.bot_trade_id;
+    if (!tradeId) {
+      const t = await q(`select trade_id from bots.entry_orders where id = $1`, [intent.entry_order_id]);
+      tradeId = t.rows[0]?.trade_id || null;
+    }
+    await upsertCopyPosition(sub, intent.token_id, tradeId, filled, filledUsd);
+    if (!DRY_RUN) await notifyCopy(sub, intent, "buy", price, bid.clob_order_id);
+  }
+  if (!topUp) {
+    await finish(orderId, { status: "skipped", skip_reason: filled > 0 ? "bid_withdrawn_kept_fill" : "bid_withdrawn" });
+    return false;
+  }
+  const remaining = Number(bid.requested_usd) - filledUsd;
+  if (remaining < MIN_ORDER_USD) {
+    await finish(orderId, { status: "skipped", skip_reason: filled > 0 ? "bid_filled" : "remainder_below_min" });
+    return filled > 0;
+  }
+  return copyEnter(sub, intent, orderId, remaining);
 }
 
 /** USDC the Deposit Wallet can actually spend, or null if it cannot be read. */
@@ -531,7 +679,15 @@ async function runFanout() {
       const orderId = await claim(sub.id, intent);
       if (!orderId) continue; // already handled
       try {
-        const ok = intent.kind === "enter"
+        const ok = intent.kind === "bid" ? await copyBid(sub, intent, orderId)
+          : intent.kind === "bid_cancel" ? await copyBidEnd(sub, intent, orderId, false)
+          : intent.kind === "bid_close" ? await copyBidEnd(sub, intent, orderId, true)
+          : intent.kind === "enter_maker"
+            // the bot's own maker fill: copiers' bids are still resting; bid_close tops up
+            ? (await finish(orderId, { status: "skipped", skip_reason: "maker_wait" }), false)
+          : intent.kind === "enter" && intent.entry_order_id
+            ? await copyBidEnd(sub, intent, orderId, true)
+          : intent.kind === "enter"
           ? await copyEnter(sub, intent, orderId)
           : intent.kind === "stop"
             ? await copyStop(sub, intent, orderId)
