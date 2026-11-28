@@ -1,5 +1,5 @@
 {
-  "_comment": "Bain-3: the HIGH-RISK NBA game-winner model. Since 2026-11-14 it prices exactly like Axis-3 but trades edges of 1.5c or more (3c until 2026-11-24), at 15% of NAV (25% until 2026-11-24), held to the final with a 70% stop. PAPER, HIDDEN. v1 (own team-ratings formula, 2026-11-04 to 2026-11-14) is archived as bain-3-v1.",
+  "_comment": "Bain-3: the HIGH-RISK NBA game-winner model. Since 2026-11-14 it prices exactly like Axis-3 but trades edges of 1.5c or more (3c until 2026-11-24), at 15% of NAV (25% until 2026-11-24), held to the final, no stop (since 2026-11-28). PAPER, HIDDEN. v1 (own team-ratings formula, 2026-11-04 to 2026-11-14) is archived as bain-3-v1.",
   "botId": "bain-3",
   "botName": "Bain-3",
   "league": "NBA",
@@ -119,7 +119,7 @@
     }
   },
   "policy": {
-    "_comment": "Axis-3's windows and exits, traded only at 3c+ edge with 15% of NAV per position, held to the final, 70% stop. High risk by design: one stopped loss is about -10.5% of NAV, two in a row about -20%.",
+    "_comment": "Axis-3's windows and exits, traded only at 3c+ edge with 15% of NAV per position, held to the final, no stop since 2026-11-28. High risk by design: one stopped loss is about -10.5% of NAV, two in a row about -20%.",
     "pregameOnly": true,
     "evaluationMode": "rolling",
     "priceWindowHoursBeforeTip": 2,
@@ -134,7 +134,8 @@
     "exitVolatilityAlphaLogit": 0.45,
     "exitInPlayMaxPrice": 0.97,
     "_comment_stopLoss": "ON at 0.70 (user, 2026-11-14), same as Axis-3. On the 116-side NBA replay a 70% stop was about EV-neutral versus holding; tighter stops (30-50%) cost ~2% per trade. At 25% sizing it caps a loss near -18% of NAV instead of -25%.",
-    "exitStopLossEnabled": true,
+    "_comment_stopLoss_2026_11_28": "OFF (user, 2026-11-28). Replay of 1,493 Axis-rule picks (2024-25 + 2025-26, Polymarket minute prices, copier sell costs): a 70% stop cost -4.2 pts per trade vs holding to the final (t -2.7), negative in BOTH seasons; worst on 50-65c favourites (-7.0, t -2.6; 22% of stopped favourites came back to win), mixed on <35c underdogs, ~neutral only on 35-50c underdogs. Comeback rates match the dip price (touched 5c -> won 2.6%), so the stop sells near fair value but pays the spread/taker fee. Trigger: ATL@BOS 2026-11-27, stopped at 6.5c, won by 1. Script: scratchpad stop_by_band.js.",
+    "exitStopLossEnabled": false,
     "exitStopLossMaxLossPct": 0.7,
     "_comment_minEdge": "0.015 (user, 2026-11-24; was 0.03 since 2026-11-14 on 7 live trades). No-injury replay over 3 seasons: return per trade is flat from 1c to 2c (+8.0-8.2%, t 2.5-3.0) and FALLS above it (3c +6.0%, 5c +3.3%); with the 70% stop, 3c+ lost (-5.9%). The biggest disagreements are not the best ones. Size (15%) is what makes Bain high-risk, not a high threshold. Script: scratchpad bain_conc_only.js.",
     "minEdge": 0.015,
